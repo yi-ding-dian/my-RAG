@@ -20,7 +20,9 @@ frontend/dist/
 # 运行时数据
 reports/
 data/uploads/
-profiles.json
+.deps_installed
+# 注意: 根目录 profiles.json（脱敏默认配置档案）入库分发，勿加入忽略；
+#       docker/ 下的运行时残留继续忽略（见下）
 
 # IDE
 .vscode/

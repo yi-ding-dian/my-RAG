@@ -30,6 +30,8 @@ dist/
 
 # ===== 开源发布：本地部署与环境 =====
 docker/.env.docker
+# infra compose 运行时数据卷（docker-compose.infra.yml 创建）
+docker/volumes/
 
 # ===== 本地参考材料与工作日志（不入库） =====
 参考/

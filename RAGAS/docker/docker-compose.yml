@@ -1,5 +1,27 @@
+# ============================================================
+# docker/docker-compose.yml — RAGAS 评估系统部署编排
+# 用法（在 RAGAS 目录下）:
+#   docker compose -f docker/docker-compose.yml up -d --build   # 构建并启动
+#   docker compose -f docker/docker-compose.yml logs -f
+#   docker compose -f docker/docker-compose.yml down            # 停止（挂载卷保留）
+#
+# 服务: ragas-eval（FastAPI 8090，前端产物内置镜像）
+# 说明:
+#   - 相对路径以本文件位置（docker/）为准：context 为项目根（..），
+#     Dockerfile 在项目根；数据卷均为 docker/ 下目录
+#   - profiles.json 不再 bind 挂载（根目录该文件不入库，挂载源缺失时
+#     Docker 会创建目录导致 settings_service 写配置崩溃）；改为由
+#     Dockerfile 内置仓库内脱敏默认版（占位 key），运行时配置档案写入
+#     容器可写层，容器重建后回退默认（网页「模型配置」可重新配置）
+#   - 环境变量（LLM/Embedding/ES 等）可用宿主机 env 注入，或：
+#     docker compose --env-file .env -f docker/docker-compose.yml up -d
+# ============================================================
+
 services:
   ragas-eval:
+    build:
+      context: ..
+      dockerfile: Dockerfile
     image: ragas-eval:latest
     container_name: ragas-eval
     restart: unless-stopped
@@ -10,6 +32,12 @@ services:
       - ./data/uploads:/app/data/uploads
       - ./reports:/app/reports
       - ./prompts:/app/prompts
-      - ../profiles.json:/app/profiles.json
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      # RAGAS 镜像基于 python:3.10-slim（无 curl），用 python urllib 探测 /api/health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

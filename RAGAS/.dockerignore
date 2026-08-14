@@ -36,5 +36,4 @@ reports/
 .claude/
 
 # 其他
-profiles.json
 tests/

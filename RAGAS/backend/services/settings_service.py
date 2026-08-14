@@ -29,7 +29,9 @@ class SettingsService:
 
     # ---- 持久化 ----
     def _load(self):
-        if PROFILES_FILE.exists():
+        # 容错: profiles.json 可能不存在（首次运行）或是目录
+        # （Docker bind mount 源缺失时 Docker 会创建目录），此时跳过读取不崩溃
+        if PROFILES_FILE.is_file():
             try:
                 data = json.loads(PROFILES_FILE.read_text())
                 self._profiles = data.get("profiles", {})
@@ -39,6 +41,8 @@ class SettingsService:
                 logger.info("已加载 %d 个配置档案", len(self._profiles))
             except Exception as e:
                 logger.warning("加载配置档案失败: %s", e)
+        elif PROFILES_FILE.is_dir():
+            logger.warning("profiles.json 路径是目录（可能被 Docker bind mount 误创建），跳过加载")
         # 如果没有档案，从 .env 导入一个默认档案
         if not self._profiles:
             self._migrate_from_config()
@@ -71,15 +75,22 @@ class SettingsService:
         self.activate(pid)
 
     def _save(self):
+        # 容错: 路径是目录（Docker bind mount 误建）或不可写时记日志不崩溃
+        if PROFILES_FILE.is_dir():
+            logger.warning("profiles.json 路径是目录，跳过保存（配置档案本次不持久化）")
+            return
         active_id = None
         for pid, p in self._profiles.items():
             if p.get("active"):
                 active_id = pid
                 break
-        PROFILES_FILE.write_text(
-            json.dumps({"profiles": self._profiles, "active_id": active_id},
-                       ensure_ascii=False, indent=2)
-        )
+        try:
+            PROFILES_FILE.write_text(
+                json.dumps({"profiles": self._profiles, "active_id": active_id},
+                           ensure_ascii=False, indent=2)
+            )
+        except Exception as e:
+            logger.error("保存配置档案失败: %s", e)
 
     # ---- 应用配置到全局 ----
     def _apply_profile(self, profile_id: str):

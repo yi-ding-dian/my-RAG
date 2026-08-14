@@ -1,0 +1,4 @@
+# my-RAG RAGAS 评估系统 测试/开发依赖（CI 与本地跑测试用；生产运行时仅需 requirements.txt）
+-r requirements.txt
+
+pytest>=8.0

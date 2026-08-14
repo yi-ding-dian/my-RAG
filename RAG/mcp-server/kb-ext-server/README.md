@@ -1,8 +1,8 @@
 # kb-ext — 企业知识库 MCP server
 
-把企业知识库（FastAPI，[`http://localhost:8091`](http://localhost:8091)）的**问答能力**包装成标准 MCP 工具 `kb_query`：Agent 提问 → 知识库完成「检索 + LLM 回答 + 引用来源」→ 一次返回完整答案。基于官方 `@modelcontextprotocol/sdk`（与 `mcp/` 现有 server 相同的 SDK 与写法），stdio 传输。
+把企业知识库（FastAPI，[`http://localhost:8091`](http://localhost:8091)）的**问答能力**包装成标准 MCP 工具 `kb_query`：Agent 提问 → 知识库完成「检索 + LLM 回答 + 引用来源」→ 一次返回完整答案。基于官方 `@modelcontextprotocol/sdk`，stdio 传输。
 
-与 `mcp/rag-server`（纯检索 `search_knowledge`）的区别：`kb_query` 走知识库的**外部查询同步接口**（`/api/ext/{id}/query`），凭外部查询 token 鉴权，返回的是**基于知识库内容的完整回答**（带 [n] 引用编号与来源片段），不是原始检索片段。
+**功能概述**：`kb_query` 走知识库的**外部查询同步接口**（`/api/ext/{id}/query`），凭外部查询 token 鉴权，返回的是**基于知识库内容的完整回答**（带 [n] 引用编号与来源片段），而不是原始检索片段。仓库内另有同功能的 HTTP 直连方式（见 [`kbQuery-接入说明.md`](../kbQuery-接入说明.md) 与 `../kbQuery.js`），本 server 是其标准 MCP 封装，供外部 Agent 项目接入使用（如 my-Agent，属仓库外部项目，相关接入细节见该项目文档）。
 
 ## 用途
 
@@ -63,8 +63,10 @@ node --check index.js && node --check query.js   # 语法检查
 
 ## 方式 A：在 my-Agent 设置界面添加（推荐）
 
+> my-Agent 为仓库外部项目，以下步骤以其界面为例；其他 MCP 客户端（Claude/Cursor 等）配置方式同理，只是界面入口不同。
+
 1. **知识库侧**：超管登录知识库管理端 →「外部查询」→ 新建配置（选择要暴露的知识库，可调温度/检索条数等）→ 复制返回的**配置 id** 与 **token**
-2. **启动环境**：在启动 my-Agent 后端进程的环境中设置环境变量（MCP server 子进程继承后端进程环境，见 mcp接入文档.md 第六节）：
+2. **启动环境**：在启动 my-Agent 后端进程的环境中设置环境变量（MCP server 子进程继承后端进程环境，环境变量必须配置在启动进程的环境中，不能在客户端界面填写）：
 
    ```bash
    KB_EXT_URL=http://localhost:8091 KB_EXT_ID=<配置id> KB_EXT_TOKEN=<token> ./start.sh
@@ -81,7 +83,7 @@ node --check index.js && node --check query.js   # 语法检查
 
 4. **新会话生效**：保存后桥接自动重建，开新会话即可看到 `mcp__kb_ext__kb_query` 工具；Agent 对话中按需自动调用
 
-> 依赖安装：脚本目录需先执行 `npm install`（93 个包，约 8s）。凭据必须配在进程环境变量中，不能在界面填写（mcp接入文档.md 第六节）。
+> 依赖安装：脚本目录需先执行 `npm install`（93 个包，约 8s）。凭据必须配在进程环境变量中，不能在界面填写。
 
 ## 文件结构
 

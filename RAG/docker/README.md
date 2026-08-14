@@ -5,7 +5,8 @@
 ## 快速开始
 
 ```bash
-# 1. 编辑 .env.docker（外部服务地址 / MySQL / MinIO / JWT_SECRET）
+# 1. 生成 .env.docker 并编辑（外部服务地址 / MySQL / MinIO / JWT_SECRET）
+cp docker/.env.docker.example docker/.env.docker
 vi docker/.env.docker
 
 # 2. 构建并后台启动（前端 80 + 后端 8091）
@@ -20,9 +21,43 @@ docker compose -f docker/docker-compose.yml build rag-backend  # 单独重建后
 - 前端: http://localhost（nginx，SPA + /api 反代 8091）
 - 后端: http://localhost:8091/api/health
 
+## 一键启动外部依赖（可选）
+
+MySQL 与 MinIO 可用 `docker-compose.infra.yml` 一条命令起齐
+（端口与系统配置页默认一致：MySQL 5455、MinIO 9000 + 控制台 9001，口令用
+占位符，需自行修改后使用）：
+
+```bash
+cp docker/.env.docker.example docker/.env.docker   # 未生成过则先复制
+vi docker/.env.docker                              # 将 MYSQL_PASSWORD 等改为真实口令
+
+# 仅启动基础服务（MySQL + MinIO）
+docker compose -f docker/docker-compose.infra.yml up -d
+
+# 单独启动某一个
+docker compose -f docker/docker-compose.infra.yml up -d mysql
+docker compose -f docker/docker-compose.infra.yml up -d minio
+
+# 查看/停止（数据卷保留）
+docker compose -f docker/docker-compose.infra.yml logs -f
+docker compose -f docker/docker-compose.infra.yml down
+```
+
+- 启动前将 `docker/.env.docker` 中 `MYSQL_HOST` / `MINIO_ENDPOINT` 改为
+  `127.0.0.1`（宿主机同机运行 compose 时即此值，无需改动），口令与
+  infra.yml 中保持一致
+- 无需 MinIO 时，可将 `.env.docker` 中 `STORAGE_BACKEND` 改为 `local`
+  （对象存本地 `data/storage`），仅需保留 MySQL
+- 外部依赖（LLM / Embedding / MinerU / Rerank / RAGAS）的获取方式与可降级性
+  见 `../docs/external-deps.md`
+
 ## 配置说明
 
 ### 环境变量（docker/.env.docker）
+
+首次使用先 `cp docker/.env.docker.example docker/.env.docker` 生成模板，
+`.env.docker` 已被 gitignore 忽略，**不会**随仓库分发（.env.docker.example
+才是入库模板）。
 
 容器环境变量只作出厂默认值，字段名与 `backend/config.py` 的 Settings 完全一致，
 覆盖范围：LLM / Embedding / MinerU / 检索 top_k / 切块 / 会话轮数 / MySQL /

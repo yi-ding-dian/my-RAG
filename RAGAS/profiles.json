@@ -1,0 +1,56 @@
+{
+  "profiles": {
+    "3d9f57d3": {
+      "id": "3d9f57d3",
+      "name": "默认配置",
+      "llm_base_url": "http://127.0.0.1:8000/v1",
+      "llm_api_key": "not-needed",
+      "llm_model": "Qwen3.5-9B-GPTQ-4bit",
+      "llm_temperature": 0.0,
+      "llm_max_tokens": 8192,
+      "embedding_base_url": "http://127.0.0.1:8300/v1",
+      "embedding_api_key": "not-needed",
+      "embedding_model": "bge-m3",
+      "es_host": "localhost",
+      "es_port": 1200,
+      "es_user": "elastic",
+      "es_password": "<change-me>",
+      "active": false
+    },
+    "f9536083": {
+      "id": "f9536083",
+      "name": "DeepSeek 在线",
+      "llm_base_url": "https://api.deepseek.com/v1",
+      "llm_api_key": "<your-api-key>",
+      "llm_model": "deepseek-v4-flash",
+      "llm_temperature": 0,
+      "llm_max_tokens": 8192,
+      "embedding_base_url": "http://127.0.0.1:8300/v1",
+      "embedding_api_key": "not-needed",
+      "embedding_model": "bge-m3",
+      "es_host": "localhost",
+      "es_port": 1200,
+      "es_user": "elastic",
+      "es_password": "<change-me>",
+      "active": false
+    },
+    "8fb03767": {
+      "id": "8fb03767",
+      "name": "本地",
+      "llm_base_url": "http://127.0.0.1:8000/v1",
+      "llm_api_key": "not-needed",
+      "llm_model": "Qwen3.5-9B-GPTQ-4bit",
+      "llm_temperature": 0,
+      "llm_max_tokens": 8192,
+      "embedding_base_url": "http://127.0.0.1:8300/v1",
+      "embedding_api_key": "not-needed",
+      "embedding_model": "bge-m3",
+      "es_host": "localhost",
+      "es_port": 9200,
+      "es_user": "elastic",
+      "es_password": "<change-me>",
+      "active": true
+    }
+  },
+  "active_id": "8fb03767"
+}

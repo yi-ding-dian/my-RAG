@@ -1,0 +1,81 @@
+# CI：纯离线测试与构建（不依赖任何外部服务/密钥）
+# 触发范围：RAG/ 目录或仓库根（README、CHANGELOG、CI 配置等）变更
+name: CI
+
+on:
+  push:
+    paths:
+      - 'RAG/**'
+      - '.github/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+  pull_request:
+    paths:
+      - 'RAG/**'
+      - '.github/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+
+jobs:
+  # ---- RAG 后端：pytest（conftest 注入 sqlite/mock，完全离线）----
+  rag-backend:
+    name: RAG backend tests (Python 3.12)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: RAG
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'RAG/requirements*.txt'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        # 测试通过 backend.* 导入，须在 RAG/ 根目录用 python -m pytest 运行
+        # （pytest.ini 已用 norecursedirs 排除 data/dist 等目录）
+        run: python -m pytest tests/ -v
+
+  # ---- RAG 前端：构建校验 ----
+  rag-frontend:
+    name: RAG frontend build (Node 20)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: RAG/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'RAG/frontend/package-lock.json'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+
+  # ---- RAGAS 后端：pytest ----
+  ragas:
+    name: RAGAS backend tests (Python 3.12)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: RAGAS
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'RAGAS/requirements*.txt'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest tests/ -v

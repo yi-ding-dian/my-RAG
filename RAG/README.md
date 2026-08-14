@@ -36,6 +36,19 @@
 - 一键部署脚本（源码 / Docker 双路径）、健康检查、日志审计、数据持久化（`data/` 或 MinIO）
 - 端到端验证脚本 `scripts/verify.sh`（21 步，含全部新增功能）
 
+## 界面预览
+
+> 以下截图来自演示环境（演示知识库 + QA 示例文档），完整功能请自行部署体验。
+
+| 页面 | 说明 |
+| --- | --- |
+| ![登录页](docs/screenshots/01-login.png) | 登录页：用户名 / 密码登录（支持记住账号） |
+| ![知识库列表](docs/screenshots/02-knowledge-bases.png) | 知识库列表：卡片式展示，支持标签筛选 / 搜索 / 新建 / 外部查询 |
+| ![文档管理](docs/screenshots/03-documents.png) | 文档管理：上传、解析入库、切块状态一目了然 |
+| ![切块详情](docs/screenshots/04-chunk-detail.png) | 切块详情：左栏切块列表 + 右栏原文高亮，双向联动 |
+| ![聊天问答](docs/screenshots/05-chat.png) | 流式问答：强制引用溯源，回答句末 [n] 引用标 + 来源片段 |
+| ![统计分析](docs/screenshots/06-analytics.png) | 统计分析：系统运行统计 + RAGAS 检索质量评估 |
+
 ## 架构
 
 ```
@@ -81,6 +94,21 @@
 
 ## 快速开始
 
+### 必改清单（首次部署前逐项确认）
+
+> 详细说明（各服务的获取方式 / 端口 / 可降级性）见 **`docs/external-deps.md`**。
+
+1. **JWT_SECRET**：`cp .env.example .env` 后，必须把 `.env` 中 `JWT_SECRET`
+   改为 ≥16 字符的强随机值（`openssl rand -hex 32` 生成），否则后端**拒绝启动**。
+2. **MySQL 连接**：登录/多租户依赖 MySQL，未配置则无法登录。填写
+   `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` /
+   `MYSQL_DATABASE`（Docker 部署填 `docker/.env.docker`；也可用
+   `docker compose -f docker/docker-compose.infra.yml up -d mysql` 一键起库）。
+3. **MinIO 或 local 存储**：有 MinIO 则填 `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` /
+   `MINIO_SECRET_KEY`（或 `docker compose -f docker/docker-compose.infra.yml
+   up -d minio` 一键启动）；无 MinIO 时设 `STORAGE_BACKEND=local`
+   （对象存本地 `data/storage`）。
+
 ### 路径一：源码部署（dev 开发，热更新，推荐日常开发）
 
 所有部署脚本统一放在 `deploy/` 目录（install.sh 装依赖 / build.sh 编译前端 /
@@ -110,7 +138,7 @@ cd frontend && npm install && npm run dev
 ### 路径二：Docker 部署（生产）
 
 ```bash
-cp docker/.env.docker .env.docker          # 或直接编辑 docker/.env.docker
+cp docker/.env.docker.example docker/.env.docker   # 生成后编辑 docker/.env.docker
 docker compose -f docker/docker-compose.yml up -d --build   # 构建并后台启动
 docker compose -f docker/docker-compose.yml logs -f         # 查看日志
 docker compose -f docker/docker-compose.yml down            # 停止（数据卷 ../data 保留）
@@ -202,7 +230,7 @@ my-RAG/
 ├── docker/            # Docker 部署（Dockerfile×2 / compose / nginx.conf / .env.docker / README）
 ├── docs/api_contract.md  # API 契约（v1.2，全部接口）
 ├── scripts/verify.sh  # 端到端验证（21 步）
-├── tests/             # pytest（371 例全绿）
+├── tests/             # pytest（90+ 测试文件 / 900+ 用例，离线可跑）
 ├── README.md / .gitignore / .dockerignore
 ├── requirements.txt / requirements-dev.txt / .env.example
 ├── backend/

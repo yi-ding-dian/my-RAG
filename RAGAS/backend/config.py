@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     # Elasticsearch（知识库检索链路）
     ES_HOST: str = "localhost"
+    # 非标准端口：默认适配端口转发场景，标准 ES 为 9200
     ES_PORT: int = 1200
     ES_USER: str = "elastic"
     ES_PASSWORD: str = "<change-me>"
