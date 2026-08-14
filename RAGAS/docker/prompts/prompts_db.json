@@ -1,0 +1,60 @@
+{
+  "active_language": "zh",
+  "metrics": {
+    "faithfulness": {
+      "prompts": {
+        "n_l_i_statement_prompt": {
+          "en": "Your task is to judge the faithfulness of a series of statements based on a given context. For each statement you must return verdict as 1 if the statement can be directly inferred based on the context or 0 if the statement can not be directly inferred based on the context.",
+          "zh": "您的任务是根据给定的上下文判断一系列陈述的忠实度。对于每个陈述，如果该陈述可以直接从上下文中推断出来，则返回 1；否则返回 0。",
+          "edited": true
+        },
+        "statement_generator_prompt": {
+          "en": "Given a question and an answer, analyze the complexity of each sentence in the answer. Break down each sentence into one or more fully understandable statements. Ensure that no pronouns are used in any statement. Format the outputs in JSON.",
+          "zh": "给定一个问题和一个答案，分析答案中每个句子的复杂性。将每个句子分解为一个或多个完全可理解的陈述。确保任何陈述中都不使用代词。以 JSON 格式输出结果。",
+          "edited": true
+        }
+      }
+    },
+    "answer_relevancy": {
+      "prompts": {
+        "response_relevance_prompt": {
+          "en": "Generate a question for the given answer and Identify if answer is noncommittal. Give noncommittal as 1 if the answer is noncommittal and 0 if the answer is committal. A noncommittal answer is one that is evasive, vague, or ambiguous. For example, \"I don't know\" or \"I'm not sure\" are noncommittal answers",
+          "zh": "为给定的答案生成一个问题，并识别答案是否含糊。如果答案含糊，将其标记为 1；如果答案明确，则标记为 0。含糊的答案是指那些回避、模糊或模棱两可的答案。例如，\"我不知道\"或\"我不确定\"就是含糊的答案。",
+          "edited": true
+        }
+      }
+    },
+    "context_precision": {
+      "prompts": {
+        "context_precision_prompt": {
+          "en": "Given question, answer and context verify if the context was useful in arriving at the given answer. Give verdict as \"1\" if useful and \"0\" if not with json output.",
+          "zh": "给定问题、答案和上下文，验证上下文对于得出给定答案是否有用。如有用则输出\"1\"，否则输出\"0\"，并以 json 格式输出。",
+          "edited": false
+        }
+      }
+    },
+    "context_recall": {
+      "prompts": {
+        "context_recall_classification_prompt": {
+          "en": "Given a context, and an answer, analyze each sentence in the answer and classify if the sentence can be attributed to the given context or not. Use only 'Yes' (1) or 'No' (0) as a binary classification. Output json with reason.",
+          "zh": "给定一个上下文和一个答案，分析答案中的每个句子，并分类该句子是否可以归因于给定的上下文。仅使用'是'(1)或'否'(0)作为二分类。输出带有理由的json。",
+          "edited": false
+        }
+      }
+    },
+    "answer_correctness": {
+      "prompts": {
+        "correctness_classifier": {
+          "en": "Given a ground truth and an answer statements, analyze each statement and classify them in one of the following categories: TP (true positive): statements that are present in answer that are also directly supported by the one or more statements in ground truth, FP (false positive): statements present in the answer but not directly supported by any statement in ground truth, FN (false negative): statements found in the ground truth but not present in answer. Each statement can only belong to one of the categories. Provide a reason for each classification.",
+          "zh": "给定一个真实答案和一组陈述，分析每个陈述并将其分类为以下类别之一：TP（真阳性）：在答案中存在且直接由一个或多个真实答案陈述支持的陈述；FP（假阳性）：在答案中存在但未被任何真实答案陈述直接支持的陈述；FN（假阴性）：在真实答案中存在但未出现在答案中的陈述。每个陈述只能属于其中一个类别。为每个分类提供理由。",
+          "edited": false
+        },
+        "statement_generator_prompt": {
+          "en": "Given a question and an answer, analyze the complexity of each sentence in the answer. Break down each sentence into one or more fully understandable statements. Ensure that no pronouns are used in any statement. Format the outputs in JSON.",
+          "zh": "给定一个问题和一个答案，分析答案中每个句子的复杂性。将每个句子分解为一个或多个完全可理解的陈述。确保任何陈述中都不使用代词。以 JSON 格式输出结果。",
+          "edited": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+services:
+  ragas-eval:
+    image: ragas-eval:latest
+    container_name: ragas-eval
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8090}:8090"
+    volumes:
+      - ./data/datasets:/app/data/datasets
+      - ./data/uploads:/app/data/uploads
+      - ./reports:/app/reports
+      - ./prompts:/app/prompts
+      - ../profiles.json:/app/profiles.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

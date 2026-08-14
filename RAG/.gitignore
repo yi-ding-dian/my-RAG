@@ -1,0 +1,43 @@
+# ===== 运行时数据（全部持久化于此，不进版本库）=====
+data/
+*.pid
+.deps_installed
+
+# ===== 环境与密钥 =====
+.env
+.env.local
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# ===== 前端 =====
+node_modules/
+dist/
+*.log
+
+# ===== IDE / 系统 =====
+.idea/
+.vscode/
+.DS_Store
+
+# ===== 临时 =====
+/tmp/
+
+# ===== 开源发布：本地部署与环境 =====
+docker/.env.docker
+
+# ===== 本地参考材料与工作日志（不入库） =====
+参考/
+record.md
+mcp-server/**/record.md
+
+# ===== 前端构建缓存 =====
+*.tsbuildinfo
+frontend/.vite/
+frontend/vite.config.js
+frontend/vite.config.d.ts

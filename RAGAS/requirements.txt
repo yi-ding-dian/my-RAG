@@ -1,0 +1,13 @@
+ragas==0.4.3
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic-settings>=2.4.0
+python-multipart>=0.0.9
+elasticsearch7>=7.17.0
+datasets>=2.20.0
+pandas>=2.0.0
+langchain-openai>=1.0.0
+langchain-community>=0.3.0,<0.4.0
+openai>=1.30.0
+# ragas 0.4.3 无条件导入 ChatVertexAI 需要
+google-cloud-aiplatform>=1.0.0

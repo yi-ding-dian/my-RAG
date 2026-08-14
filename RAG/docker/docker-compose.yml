@@ -1,0 +1,58 @@
+# ============================================================
+# docker/docker-compose.yml — my-RAG 知识库系统生产部署编排
+# 用法（在项目根目录或 docker/ 目录均可）:
+#   docker compose -f docker/docker-compose.yml up -d --build
+#   docker compose -f docker/docker-compose.yml logs -f
+#   docker compose -f docker/docker-compose.yml down        # 数据卷 ../data 保留
+#   docker compose -f docker/docker-compose.yml build rag-backend  # 单独重建后端
+#
+# 服务: rag-backend（FastAPI 8091）+ rag-frontend（nginx 80）
+# 前置条件: 外部服务宿主机可达（LLM 127.0.0.1:1234 / Embedding 127.0.0.1:8300 /
+#           MinerU 8001 / RAGAS 8090），地址在 .env.docker 中配置
+# 说明: 本文件位于 docker/ 下，所有相对路径以本文件位置为准：
+#       context 为项目根（..），数据卷为 ../data，env_file 为同目录 .env.docker
+# ============================================================
+
+services:
+  # ---------- 后端: FastAPI + Chroma ----------
+  rag-backend:
+    build:
+      context: ..                  # 项目根目录为 context（requirements.txt 在根目录）
+      dockerfile: docker/backend.Dockerfile
+    container_name: rag-backend
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+    env_file:
+      - .env.docker                # 生产配置全部经环境变量注入（字段与 backend/config.py 一致）
+    volumes:
+      # 数据持久化: uploads/parsed/kbs/documents/chat/chroma + settings.json
+      # 注意: bind 挂载保留宿主机属主；容器内 rag 用户 uid=1000 与宿主机普通用户对齐，
+      #       若宿主 data/ 属主不是 uid=1000，请先执行: sudo chown -R 1000:1000 ../data
+      - ../data:/app/data
+    # Linux 下容器访问宿主机服务的标准做法:
+    # 将容器内的 host.docker.internal 解析到宿主机网关（对应 .env.docker 中
+    # MINERU_API_URL / RAGAS_BASE_URL 的 host.docker.internal 写法）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # 健康检查: 后端就绪前 nginx 不会启动（depends_on condition: service_healthy）
+      test: ["CMD", "curl", "-sf", "http://localhost:8091/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------- 前端: nginx 托管 dist + 反代 /api ----------
+  rag-frontend:
+    build:
+      context: ..                  # 项目根目录为 context（Dockerfile 统一在 docker/ 下）
+      dockerfile: docker/frontend.Dockerfile
+    container_name: rag-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"                    # 若宿主机 80 被占用，可改为 "8080:80"
+    # 后端健康检查通过后才启动（nginx 启动时后端必须可达，否则 /api 返回 502）
+    depends_on:
+      rag-backend:
+        condition: service_healthy

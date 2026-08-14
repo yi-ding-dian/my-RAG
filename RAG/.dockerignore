@@ -1,0 +1,47 @@
+# ===== my-RAG 镜像构建上下文排除项（统一在项目根）=====
+# （两个 Dockerfile 均以项目根目录为 context：docker/backend.Dockerfile COPY requirements.txt
+#   与 backend/，docker/frontend.Dockerfile COPY frontend/；本文件作用于根 context 的所有 COPY，
+#   运行时数据与前端产物一律排除）
+
+# 运行时数据（由 compose 卷挂载 ./data:/app/data 持久化，绝不进镜像）
+data/
+
+# Python 环境与缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.deps_installed
+
+# 前端构建产物（后端镜像不需要；前端镜像在根 context 下 COPY frontend/，
+# 排除 node_modules 防止覆盖 npm ci 产物）
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+# 环境与密钥（.env 含本机真实地址/密钥，绝不进镜像）
+.env
+.env.local
+.env.docker
+
+# 文档与辅助脚本（镜像内不需要）
+*.md
+record.md
+deploy/
+docker/
+scripts/
+tests/
+
+# 版本库与 IDE / 系统
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+# 临时文件
+*.log
+*.pid
+tmp/

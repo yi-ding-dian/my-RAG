@@ -1,0 +1,24 @@
+# RAGAS 评估系统配置文件
+# 生产环境中敏感信息应通过 .env 注入，勿直接写入此文件
+
+llm:
+  base_url: "http://localhost:8000/v1"
+  api_key: "sk-placeholder"
+  model: "Qwen3.5-9B-GPTQ-4bit"
+  temperature: 0.0
+  max_tokens: 2048
+
+embedding:
+  base_url: "http://localhost:8300/v1"
+  api_key: "sk-placeholder"
+  model: "bge-m3"
+
+elasticsearch:
+  host: "localhost"
+  port: 1200
+  user: "elastic"
+  password: "changeme"
+
+server:
+  host: "0.0.0.0"
+  port: 8090

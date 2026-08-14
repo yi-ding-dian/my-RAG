@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="默认头像">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="64" fill="url(#bg)"/>
+  <!-- 人形剪影：头 + 肩（白色，简洁专业） -->
+  <circle cx="64" cy="42" r="19" fill="#ffffff" opacity="0.95"/>
+  <path d="M32 112a32 32 0 0 1 64 0Z" fill="#ffffff" opacity="0.95"/>
+</svg>

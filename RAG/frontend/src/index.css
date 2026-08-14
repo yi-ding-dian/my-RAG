@@ -1,0 +1,1049 @@
+/* ============================================================
+   my-RAG 全局样式（仅视觉装饰，不影响业务逻辑）
+   ============================================================ */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---------- 细滚动条（WebKit） ---------- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.32);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.55);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------- 页面切换淡入过渡 ---------- */
+.page-fade {
+  animation: pageFadeIn 0.24s ease both;
+}
+@keyframes pageFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================================
+   登录页：左品牌区（深蓝渐变 + 装饰圆 + 网格）+ 右表单区
+   ============================================================ */
+.login-page {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  overflow: hidden;
+  background: var(--login-form-bg, #f4f6fb);
+}
+.login-panel {
+  position: relative;
+  min-height: 100vh;
+}
+/* 左：品牌区（55%） */
+.login-panel--brand {
+  flex: 0 0 55%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0f1e4d 0%, #1e3a8a 42%, #2563eb 78%, #4f46e5 100%);
+}
+/* 半透明装饰圆 */
+.login-deco {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0) 70%);
+}
+.login-deco--1 {
+  width: 460px;
+  height: 460px;
+  top: -140px;
+  right: -100px;
+}
+.login-deco--2 {
+  width: 360px;
+  height: 360px;
+  bottom: -120px;
+  left: -90px;
+  background: radial-gradient(circle, rgba(96, 165, 250, 0.22) 0%, rgba(96, 165, 250, 0) 70%);
+}
+.login-deco--3 {
+  width: 150px;
+  height: 150px;
+  top: 16%;
+  left: 12%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+}
+/* 网格纹理（浅层叠加） */
+.login-panel--brand::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+.login-brand {
+  position: relative;
+  z-index: 1;
+  max-width: 460px;
+  padding: 40px;
+  color: #fff;
+}
+.login-logo {
+  width: 58px;
+  height: 58px;
+  margin-bottom: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  color: #fff;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 8px 24px rgba(2, 8, 30, 0.35);
+  backdrop-filter: blur(6px);
+}
+.login-title {
+  margin: 0 0 10px;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1.2;
+}
+.login-slogan {
+  margin: 0 0 18px;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 3px;
+  color: #c7d7fe;
+}
+.login-desc {
+  margin: 0 0 34px;
+  font-size: 14px;
+  line-height: 1.9;
+  color: rgba(226, 232, 240, 0.85);
+}
+.login-features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.login-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 0;
+}
+.login-feature-icon {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: #bfdbfe;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.login-features li span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.login-features li b {
+  font-size: 14px;
+  font-weight: 600;
+}
+.login-features li em {
+  font-style: normal;
+  font-size: 12.5px;
+  color: rgba(203, 213, 225, 0.8);
+}
+/* 右：表单区（45%） */
+.login-panel--form {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+}
+.login-form-wrap {
+  width: 100%;
+  max-width: 400px;
+}
+.login-card {
+  position: relative;
+  z-index: 1;
+  padding: 36px 34px 28px;
+  background: var(--login-card-bg, #ffffff);
+  border-radius: 16px;
+  box-shadow: 0 20px 56px rgba(16, 24, 40, 0.12), 0 2px 8px rgba(16, 24, 40, 0.06);
+}
+.login-card-title {
+  margin: 0 0 6px;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--login-title-color, #0f172a);
+  letter-spacing: 0.5px;
+}
+.login-subtitle {
+  margin: 0 0 26px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--login-subtitle-color, #64748b);
+}
+.login-form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.login-version {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--login-version-color, #94a3b8);
+}
+.login-footer {
+  position: absolute;
+  bottom: 18px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--login-copyright-color, #94a3b8);
+  pointer-events: none;
+}
+.login-card .ant-input-affix-wrapper,
+.login-card .ant-input {
+  border-radius: 8px;
+}
+.login-card .ant-btn-primary {
+  height: 42px;
+  font-size: 15px;
+  letter-spacing: 4px;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.3);
+}
+/* 深色模式下的登录页变量（左侧品牌区保持深蓝渐变不变） */
+[data-theme='dark'] {
+  --login-form-bg: #0f1116;
+  --login-card-bg: #181b23;
+  --login-title-color: #e2e8f0;
+  --login-subtitle-color: #94a3b8;
+  --login-version-color: #64748b;
+  --login-copyright-color: #64748b;
+}
+/* 窄屏（<992px）收起品牌区，仅保留表单卡片 */
+@media (max-width: 991px) {
+  .login-panel--brand {
+    display: none;
+  }
+  .login-panel--form {
+    background: linear-gradient(160deg, #0f1e4d 0%, #1e3a8a 55%, #2563eb 100%);
+    padding: 48px 20px;
+  }
+  [data-theme='dark'] .login-panel--form {
+    background: #0f1116;
+  }
+}
+
+/* ============================================================
+   消息气泡（聊天页）
+   ============================================================ */
+.bubble-user {
+  border-radius: 14px 14px 4px 14px;
+  background: linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #4f46e5) 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.22);
+}
+.bubble-assistant {
+  border-radius: 14px 14px 14px 4px;
+  background: #fff;
+  border: 1px solid #eef2f7;
+  color: rgba(15, 23, 42, 0.88);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.05);
+}
+/* 流式输出末尾光标 */
+.typing-cursor::after {
+  content: '▍';
+  display: inline-block;
+  margin-left: 1px;
+  color: var(--brand-primary, #2563eb);
+  animation: cursorBlink 0.9s steps(2, start) infinite;
+}
+@keyframes cursorBlink {
+  to {
+    visibility: hidden;
+  }
+}
+/* 等待回复：三点跳动 */
+.thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 2px;
+}
+.thinking-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  animation: dotBounce 1.1s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+@keyframes dotBounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* 引用来源入口：默认收起为一行小按钮，主色小字，悬停变深 */
+.source-trigger.ant-btn-link {
+  padding: 0;
+  height: auto;
+  line-height: 20px;
+  font-size: 12px;
+  color: var(--brand-primary, #2563eb);
+}
+.source-trigger.ant-btn-link:hover {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+/* 来源详情弹窗内卡片：浅底描边 + hover 提亮（背景/描边走 class，可被 hover 覆盖 inline token） */
+.source-card--modal {
+  background: rgba(15, 23, 42, 0.025);
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.source-card--modal:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.05);
+  border-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.4);
+  box-shadow: 0 2px 10px rgba(16, 24, 40, 0.06);
+}
+
+/* ---------- 会话列表项 ---------- */
+.session-item {
+  border-radius: 8px !important;
+  padding: 10px 12px !important;
+  margin-bottom: 2px;
+  transition: background 0.18s ease;
+  border-block-end: none !important;
+}
+.session-item:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.06);
+}
+.session-item--active {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10) !important;
+}
+.session-item--active .ant-list-item-meta-title {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+/* 会话重命名：默认隐藏，hover 会话项时显示（删除按钮常显，操作不喧宾夺主） */
+.session-item .session-rename-btn {
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.session-item:hover .session-rename-btn {
+  opacity: 1;
+}
+
+/* ============================================================
+   文档上传 Dragger：hover 主色增强
+   ============================================================ */
+.upload-zone .ant-upload-drag {
+  border-radius: 12px;
+  border-color: #dbe3f0;
+  background: #fafbfe;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+.upload-zone .ant-upload-drag:hover {
+  border-color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.03);
+  box-shadow: 0 4px 16px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.08);
+}
+.upload-zone .ant-upload-drag .ant-upload-drag-icon .anticon {
+  color: var(--brand-primary, #2563eb) !important;
+}
+
+/* ---------- 上传条（波2：收敛为列表卡片顶部的内嵌窄条） ---------- */
+.upload-zone--inline {
+  flex: 1;
+  min-width: 0;
+}
+.upload-zone--inline .ant-upload-drag {
+  height: 100%;
+  border-radius: 10px;
+  padding: 0 !important;
+}
+.upload-zone--inline .ant-upload-drag .ant-upload-btn {
+  padding: 8px 16px !important;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.upload-inline__content {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: rgba(15, 23, 42, 0.65);
+}
+/* 普通用户（无上传权限）：等价窄条展示提示 */
+.upload-inline__denied {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: rgba(15, 23, 42, 0.45);
+  border: 1px dashed #dbe3f0;
+  border-radius: 10px;
+  background: #fafbfe;
+}
+
+/* ---------- 表格斑马纹 ---------- */
+.table-zebra tbody > tr:nth-child(even) > td {
+  background: #fafbfe;
+}
+.table-zebra tbody > tr:hover > td {
+  background: #f0f6ff !important;
+}
+
+/* ============================================================
+   知识库卡片网格（KnowledgeBases 页：表格 → 卡片）
+   ============================================================ */
+.kb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+/* 知识库卡片：radius-lg、hover 上浮 + 阴影 + 主色边框（参照 KnowFlow） */
+.kb-card.ant-card {
+  border-radius: 12px;
+  border-color: #e5eaf2;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.05);
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+.kb-card .ant-card-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 160px;
+}
+.kb-card.ant-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 10px 26px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.16);
+}
+.kb-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.kb-card__icon {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(16, 24, 40, 0.18);
+}
+.kb-card__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+}
+/* 操作按钮：hover 卡片时显示（保留占位，避免布局跳动） */
+.kb-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+.kb-card.ant-card:hover .kb-card__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.kb-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  min-height: 22px;
+}
+/* 描述：2 行 clamp，无描述显示灰色占位 */
+.kb-card__desc {
+  flex: 1;
+  margin: 8px 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(15, 23, 42, 0.65);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+.kb-card__desc--empty {
+  color: rgba(15, 23, 42, 0.35);
+}
+.kb-card__footer {
+  padding-top: 10px;
+  border-top: 1px solid #f1f4f9;
+}
+/* 常显「进入文档管理」入口：主色小字 + hover 加深（H5 可发现性，不依赖 hover/触屏） */
+.kb-card__enter.ant-btn-link {
+  padding: 0;
+  height: 20px;
+  line-height: 20px;
+  font-size: 12px;
+  color: var(--brand-primary, #2563eb);
+  margin: 6px 0 2px;
+}
+.kb-card__enter.ant-btn-link:hover {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+/* 触屏设备（无 hover）：卡片顶部操作按钮常显，保证编辑/删除/重建可达 */
+@media (hover: none) {
+  .kb-card__actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.kb-card__footerTop {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.kb-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 14px;
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+/* 新建知识库 addCard：虚线卡片（canManage 可见） */
+.kb-add-card {
+  min-height: 160px;
+  border-radius: 12px;
+  border: 2px dashed #c3cfe0;
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.02);
+  color: var(--brand-primary, #2563eb);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+.kb-add-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.06);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+}
+
+/* ---------- 统计卡片（效果展示） ---------- */
+.stat-card {
+  border-radius: 12px;
+  overflow: hidden;
+  border: none !important;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+  position: relative;
+}
+.stat-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle at 85% 15%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 55%);
+}
+.stat-card--blue {
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+}
+.stat-card--green {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+}
+.stat-card--purple {
+  background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+}
+.stat-card--orange {
+  background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+}
+.stat-card--blue .stat-icon {
+  background: #2563eb;
+}
+.stat-card--green .stat-icon {
+  background: #16a34a;
+}
+.stat-card--purple .stat-icon {
+  background: #7c3aed;
+}
+.stat-card--orange .stat-icon {
+  background: #f59e0b;
+}
+.stat-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(16, 24, 40, 0.16);
+}
+
+/* ---------- 侧栏主体布局：antd 的 .ant-layout-sider-children 默认是 block（高度虽 100%
+   但内部无 flex 约束），Menu 的 flex:1 不生效、留白出不来。
+   改为 flex column 后：Logo/菜单/底部三块垂直排布，Menu(flex:1 + min-height:0) 撑开
+   中间留白并在菜单多时内部滚动，底部贴底不动（Sider height:100vh 由内联 style 保证） ---------- */
+.ant-layout-sider > .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- 侧边栏用户区 hover ---------- */
+.sider-user {
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition: background 0.18s ease;
+  cursor: default;
+}
+.sider-user:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.05);
+}
+
+/* ---------- 通用微调 ---------- */
+.ant-menu-item {
+  font-weight: 500;
+}
+.ant-typography .anticon {
+  vertical-align: -0.125em;
+}
+
+/* ============================================================
+   暗色模式适配（[data-theme='dark']，覆盖自绘区域硬编码颜色）
+   AntD 组件本身由 darkAlgorithm 自动适配，仅以下自绘样式需要覆盖
+   ============================================================ */
+[data-theme='dark'] {
+  /* 消息气泡：助手白底 → 深色面板 */
+  --bubble-assistant-bg: #1e2430;
+  --bubble-assistant-border: #2e3646;
+  --bubble-assistant-color: rgba(229, 231, 235, 0.92);
+}
+[data-theme='dark'] .bubble-assistant {
+  background: var(--bubble-assistant-bg);
+  border-color: var(--bubble-assistant-border);
+  color: var(--bubble-assistant-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+[data-theme='dark'] .thinking-dots span {
+  background: #7c8aa0;
+}
+/* 引用来源入口：暗色下主色提亮保证可读，悬停再亮一档 */
+[data-theme='dark'] .source-trigger.ant-btn-link {
+  color: var(--brand-primary-soft, #60a5fa);
+}
+[data-theme='dark'] .source-trigger.ant-btn-link:hover {
+  color: var(--brand-primary-soft, #93c5fd);
+}
+/* 来源详情弹窗卡片：深色面板 + hover 主色提亮 */
+[data-theme='dark'] .source-card--modal {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: #2e3646;
+}
+[data-theme='dark'] .source-card--modal:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.18);
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+/* 表格斑马纹：浅底 → 半透明白 */
+[data-theme='dark'] .table-zebra tbody > tr:nth-child(even) > td {
+  background: rgba(255, 255, 255, 0.035);
+}
+[data-theme='dark'] .table-zebra tbody > tr:hover > td {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.18) !important;
+}
+/* 知识库卡片：深色面板 + 深阴影，hover 主色边框不变 */
+[data-theme='dark'] .kb-card.ant-card {
+  border-color: #2e3646;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+[data-theme='dark'] .kb-card.ant-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+[data-theme='dark'] .kb-card__desc {
+  color: rgba(229, 231, 235, 0.6);
+}
+[data-theme='dark'] .kb-card__desc--empty {
+  color: rgba(229, 231, 235, 0.3);
+}
+[data-theme='dark'] .kb-card__meta {
+  color: rgba(229, 231, 235, 0.55);
+}
+[data-theme='dark'] .kb-card__footer {
+  border-top-color: #2e3646;
+}
+[data-theme='dark'] .kb-add-card {
+  border-color: #3b4457;
+  background: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .kb-add-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+}
+/* 文档上传 Dragger：浅底 → 深底 */
+[data-theme='dark'] .upload-zone .ant-upload-drag {
+  border-color: #2e3646;
+  background: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .upload-zone .ant-upload-drag:hover {
+  border-color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+[data-theme='dark'] .upload-inline__content {
+  color: rgba(229, 231, 235, 0.65);
+}
+[data-theme='dark'] .upload-inline__denied {
+  color: rgba(229, 231, 235, 0.45);
+  border-color: #2e3646;
+  background: rgba(255, 255, 255, 0.02);
+}
+/* 统计卡片（效果展示）：浅色渐变 → 深色渐变，白色光晕减弱 */
+[data-theme='dark'] .stat-card::before {
+  background-image: radial-gradient(circle at 85% 15%, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0) 55%);
+}
+[data-theme='dark'] .stat-card--blue {
+  background: linear-gradient(135deg, #1e3a8a 0%, #172554 100%);
+}
+[data-theme='dark'] .stat-card--green {
+  background: linear-gradient(135deg, #166534 0%, #14532d 100%);
+}
+[data-theme='dark'] .stat-card--purple {
+  background: linear-gradient(135deg, #5b21b6 0%, #4c1d95 100%);
+}
+[data-theme='dark'] .stat-card--orange {
+  background: linear-gradient(135deg, #9a3412 0%, #7c2d12 100%);
+}
+/* 会话列表项：hover/选中加深（浅蓝在深底上不可见） */
+[data-theme='dark'] .session-item:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.16);
+}
+[data-theme='dark'] .session-item--active {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.24) !important;
+}
+[data-theme='dark'] .session-item--active .ant-list-item-meta-title {
+  color: var(--brand-primary-soft, #93c5fd);
+}
+[data-theme='dark'] .sider-user:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+}
+/* 侧栏底部主题切换按钮 hover 反馈 */
+[data-theme='dark'] .ant-btn-text:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+/* "最新消息"按钮：暗色下深色透明胶囊，主色提亮保证可读 */
+[data-theme='dark'] .chat-scroll-bottom {
+  background: rgba(30, 30, 30, 0.6);
+  border-color: rgba(var(--brand-primary-soft-rgb, 96, 165, 250), 0.4);
+  color: var(--brand-primary-soft, #93c5fd);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+[data-theme='dark'] .chat-scroll-bottom:hover {
+  background: rgba(30, 30, 30, 0.88);
+  border-color: rgba(var(--brand-primary-soft-rgb, 96, 165, 250), 0.65);
+}
+/* 滚动条：暗色下提亮 */
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+}
+[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+/* ============================================================
+   Chat 输入区容器（波3）：聚焦时主色描边 + 光晕
+   （border 由内联 token 控制，CSS 用 box-shadow 模拟 1px 主色边，避免 !important 覆盖内联）
+   ============================================================ */
+.chat-input-box {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.chat-input-box:focus-within {
+  box-shadow: 0 0 0 1px var(--brand-primary, #2563eb), 0 0 0 4px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+}
+
+/* ============================================================
+   消息列表"最新消息"悬浮按钮：离开底部时淡入，回到底部淡出
+   透明胶囊 + 消息列表底部居中（输入框正上方），不遮挡消息与输入框
+   （常驻 DOM，class 切换 opacity/transform 过渡，避免闪烁）
+   ============================================================ */
+.chat-scroll-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--brand-primary, #2563eb);
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.1);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  transform: translate(-50%, 8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.chat-scroll-bottom--visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+.chat-scroll-bottom:hover {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.6);
+}
+
+/* ============================================================
+   RAGAS 任务行尾"查看报告"（波3）：默认透明，行 hover 时浮现
+   ============================================================ */
+.ragas-row-action {
+  color: var(--brand-primary, #2563eb);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.ant-table-tbody > tr:hover .ragas-row-action {
+  opacity: 1;
+}
+[data-theme='dark'] .ragas-row-action {
+  color: var(--brand-primary-soft, #93c5fd);
+}
+
+/* ============================================================
+   固定高度弹窗（切块详情 / 引用溯源 / 解析配置 / 配置档案）：
+   头部不随滚动、滚动条贴在内容区内部的滚动结构修复
+   ============================================================
+   背景：antd v5（rc-dialog）的 Modal DOM 结构为
+     .ant-modal-wrap（fixed 全屏, overflow:auto ← 兜底滚动容器）
+       .ant-modal（style 的 top/height 在这里，overflow:visible）
+         div[tabindex]（rc-dialog 插入的 sentinel 中间层，高度 auto）
+           .ant-modal-content
+             .ant-modal-close / .ant-modal-header / .ant-modal-body
+   问题：content 的 height:100% 相对的不是 .ant-modal（确定高度），
+   而是 sentinel 层（height:auto = 被内容撑开的自然高度），百分比高度
+   因此解析为内容高度，body 的 flex:1 / overflow:auto 整条链失效。
+   内容超高 → .ant-modal 溢出（overflow:visible）→ 全屏 wrap 兜底滚动：
+   滚动条出现在浏览器窗口最右侧、标题/关闭按钮随滚动滚出视野。
+   修复：className（挂在 .ant-modal 上）把它变成 flex column 容器并裁掉
+   溢出（overflow:hidden），sentinel 层 flex:1 填满剩余高度，content 高度
+   随之确定，body 内部滚动恢复。依赖 rc-dialog 的 sentinel 结构
+   （第一个子元素），antd 5.x 系列结构稳定。
+   复用方式：新弹窗若需固定高度 + 头部固定，给 Modal 加 className 并
+   加入下方选择器列表，同时设置 style 的 top/height（参考
+   min(88vh, calc(100vh - 120px)) 模式）与 styles 的 content/header/body
+   flex 链（header flexShrink:0，body flex:1 + overflow:auto）。 */
+.chunk-detail-modal.ant-modal,
+.parse-config-modal.ant-modal,
+.profile-config-modal.ant-modal {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+/* sentinel 中间层：作为 flex item 填满剩余高度（高度确定后 content 的
+   height:100% / flex:1 才能生效） */
+.chunk-detail-modal.ant-modal > div:first-child,
+.parse-config-modal.ant-modal > div:first-child,
+.profile-config-modal.ant-modal > div:first-child {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+/* content：在 sentinel 确定高度内 flex 撑满，不再依赖 height:100% */
+.chunk-detail-modal.ant-modal > div:first-child > .ant-modal-content,
+.parse-config-modal.ant-modal > div:first-child > .ant-modal-content,
+.profile-config-modal.ant-modal > div:first-child > .ant-modal-content {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+/* ============================================================
+   图片点击放大（Lightbox）：MdImages 渲染的图片点击全屏查看
+   ============================================================ */
+.lightbox-overlay {
+  animation: lightbox-fade-in 0.2s ease;
+}
+@keyframes lightbox-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* 可放大图片：鼠标提示 + hover 轻微提亮（仅视觉，不影响布局/现有图片样式） */
+.md-image-zoom {
+  cursor: zoom-in;
+  transition: filter 0.15s ease;
+}
+.md-image-zoom:hover {
+  filter: brightness(1.08);
+}
+
+/* ============================================================
+   RAGAS 发起评估成功"魔法注入"动画：测试集飞向任务列表 + 光晕
+   ============================================================ */
+.eval-inject-wrap {
+  position: relative;
+}
+/* 注入动画：缩小 + 渐隐 + 向任务列表方向（右/下）位移，0.6s 轻微弹性 */
+.eval-inject-anim {
+  animation: eval-inject-away 0.6s cubic-bezier(0.4, 1.1, 0.5, 1) forwards;
+  will-change: transform, opacity;
+}
+@keyframes eval-inject-away {
+  0% {
+    transform: scale(1) translate(0, 0);
+    opacity: 1;
+  }
+  55% {
+    transform: scale(0.78) translate(9%, 5%);
+    opacity: 0.92;
+  }
+  100% {
+    transform: scale(0.58) translate(22%, 14%);
+    opacity: 0;
+  }
+}
+/* 魔法光晕：主色径向渐变圆，从测试集上方扩散 1 次（半透明，适配暗色） */
+.eval-glow {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    rgba(var(--brand-primary-rgb, 37, 99, 235), 0.34) 0%,
+    rgba(var(--brand-primary-rgb, 37, 99, 235), 0.15) 45%,
+    rgba(var(--brand-primary-rgb, 37, 99, 235), 0) 72%);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  animation: eval-glow-pulse 0.7s ease-out both;
+  will-change: transform, opacity;
+}
+@keyframes eval-glow-pulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.25);
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.1);
+    opacity: 0;
+  }
+}
+[data-theme='dark'] .eval-glow {
+  background: radial-gradient(circle,
+    rgba(99, 102, 241, 0.3) 0%,
+    rgba(99, 102, 241, 0.13) 45%,
+    rgba(99, 102, 241, 0) 72%);
+}
+
+/* 新任务行高亮：主色淡光呼吸 1.5s 渐退（class 2.6s 后移除） */
+.ragas-row-highlight > td {
+  animation: ragas-row-glow 1.5s ease-out;
+}
+@keyframes ragas-row-glow {
+  0% {
+    background-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.3);
+    box-shadow: inset 0 0 0 1px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.5);
+  }
+  55% {
+    background-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+/* 系统偏好减弱动画：禁用全部魔法动画（流程不受影响） */
+@media (prefers-reduced-motion: reduce) {
+  .eval-inject-anim,
+  .eval-glow,
+  .ragas-row-highlight > td {
+    animation: none !important;
+  }
+}

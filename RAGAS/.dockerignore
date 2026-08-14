@@ -1,0 +1,40 @@
+# 环境变量（含敏感凭据）
+.env
+
+# Git
+.git/
+.gitignore
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.venv/
+venv/
+.pytest_cache/
+
+# 前端 node_modules（由构建阶段处理）
+frontend/node_modules/
+frontend/dist/
+
+# 运行时数据（挂载 volume）
+data/uploads/
+reports/
+
+# IDE 和辅助配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.claude/
+
+# 其他
+profiles.json
+tests/

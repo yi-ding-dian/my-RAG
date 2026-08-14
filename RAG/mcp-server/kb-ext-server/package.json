@@ -1,0 +1,13 @@
+{
+  "name": "kb-ext-server",
+  "version": "1.0.0",
+  "description": "企业知识库外部查询 MCP server：通过外部查询 token 调用知识库同步问答接口，工具 kb_query",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  }
+}

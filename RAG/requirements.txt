@@ -1,0 +1,23 @@
+# my-RAG 后端依赖（Python 3.12）
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic-settings>=2.4.0
+python-multipart>=0.0.9
+openai>=1.30.0
+httpx>=0.27.0
+chromadb>=0.6.0
+# 混合检索（BM25）中文分词
+jieba>=0.42.1
+pypdf>=4.0.0
+python-docx>=1.1.0
+# 系统 libsqlite3 < 3.35 时 chromadb 无法启动，用其自带新版 sqlite（Docker slim 镜像可不用）
+pysqlite3-binary>=0.5.0
+# ---- 多租户+团队协作（认证/数据库/对象存储）----
+sqlalchemy[asyncio]>=2.0
+aiomysql>=0.2
+# MySQL 8 caching_sha2_password 认证需要
+cryptography>=42.0
+aiosqlite>=0.20
+PyJWT>=2.8
+bcrypt>=4.1
+minio>=7.2
