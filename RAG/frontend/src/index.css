@@ -48,169 +48,173 @@ body {
 }
 
 /* ============================================================
-   登录页：左品牌区（深蓝渐变 + 装饰圆 + 网格）+ 右表单区
+   登录页：现代 SaaS 风格——浅色渐变背景（浅蓝→浅紫）+ 柔和光晕/散点
+   + 中央白色大圆角卡片（品牌区置顶居中 + 登录表单）
    ============================================================ */
 .login-page {
   position: relative;
   min-height: 100vh;
   display: flex;
-  overflow: hidden;
-  background: var(--login-form-bg, #f4f6fb);
-}
-.login-panel {
-  position: relative;
-  min-height: 100vh;
-}
-/* 左：品牌区（55%） */
-.login-panel--brand {
-  flex: 0 0 55%;
-  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #0f1e4d 0%, #1e3a8a 42%, #2563eb 78%, #4f46e5 100%);
+  padding: 48px 20px 72px;
+  overflow: hidden;
+  background: linear-gradient(
+    160deg,
+    var(--login-bg-start, #eef2ff) 0%,
+    var(--login-bg-mid, #f5f1ff) 48%,
+    var(--login-bg-end, #fdf4ff) 100%
+  );
 }
-/* 半透明装饰圆 */
-.login-deco {
+/* 氛围光晕：大尺寸柔和径向渐变，subtle 不抢主体 */
+.login-aurora {
   position: absolute;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0) 70%);
 }
-.login-deco--1 {
-  width: 460px;
-  height: 460px;
-  top: -140px;
-  right: -100px;
+.login-aurora--1 {
+  width: 720px;
+  height: 720px;
+  top: -260px;
+  left: -180px;
+  background: radial-gradient(circle, rgba(129, 140, 248, 0.32) 0%, rgba(129, 140, 248, 0) 65%);
 }
-.login-deco--2 {
-  width: 360px;
-  height: 360px;
-  bottom: -120px;
-  left: -90px;
-  background: radial-gradient(circle, rgba(96, 165, 250, 0.22) 0%, rgba(96, 165, 250, 0) 70%);
+.login-aurora--2 {
+  width: 640px;
+  height: 640px;
+  bottom: -240px;
+  right: -160px;
+  background: radial-gradient(circle, rgba(192, 132, 252, 0.26) 0%, rgba(192, 132, 252, 0) 65%);
 }
-.login-deco--3 {
-  width: 150px;
-  height: 150px;
-  top: 16%;
-  left: 12%;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: transparent;
-}
-/* 网格纹理（浅层叠加） */
-.login-panel--brand::after {
-  content: '';
+/* 散点装饰：微点阵 + 径向淡出遮罩（仅视觉） */
+.login-dots {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image: linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
-  background-size: 44px 44px;
+  background-image: radial-gradient(rgba(99, 102, 241, 0.20) 1px, transparent 1.5px);
+  background-size: 34px 34px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 30%, transparent 78%);
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 45%, #000 30%, transparent 78%);
 }
-.login-brand {
+/* 书籍/书架装饰（纯 CSS：圆角长条 + 竖排书名，知识库意象）
+   书脊阵列：左右边缘各一列"立在书架上的书"，每本一个完整彩色长条、
+   左侧 3px 深色书脊阴影模拟立体感；底部半透明书架板；左下角整齐平放的书。
+   颜色饱满不透明，但尺寸细小 + z-index 低于卡片，不抢中央卡片 */
+.login-bookshelf {
+  position: absolute;
+  z-index: 0;
+  display: flex;
+  flex-direction: row; /* 书并排站立，不是纵向摞叠 */
+  align-items: flex-end; /* 每本书底部对齐书架板 */
+  gap: 4px;
+  pointer-events: none;
+}
+.login-bookshelf--left {
+  left: clamp(20px, 4vw, 56px);
+  bottom: clamp(96px, 12vh, 120px);
+  width: 190px; /* 9 本 × 15px + gap */
+  height: min(660px, calc(100vh - 240px));
+}
+.login-bookshelf--right {
+  right: clamp(20px, 4vw, 56px);
+  bottom: clamp(140px, 17vh, 180px);
+  width: 170px; /* 8 本 × 15px + gap */
+  height: min(630px, calc(100vh - 240px));
+}
+/* 书架板：书脊底部一条浅色半透明横条，给书"立着"的支撑感 */
+.login-shelf-board {
+  position: absolute;
+  bottom: -2px;
+  left: -3px;
+  right: -3px;
+  height: 6px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.38) 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.10);
+}
+/* 书脊：完整圆角长条，饱满颜色由数据注入；左侧 3px 深色"书脊阴影" + 顶部/右侧微光增强立体感 */
+.login-book--spine {
   position: relative;
-  z-index: 1;
-  max-width: 460px;
-  padding: 40px;
-  color: #fff;
-}
-.login-logo {
-  width: 58px;
-  height: 58px;
-  margin-bottom: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 28px;
-  color: #fff;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.14);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  box-shadow: 0 8px 24px rgba(2, 8, 30, 0.35);
-  backdrop-filter: blur(6px);
-}
-.login-title {
-  margin: 0 0 10px;
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  line-height: 1.2;
-}
-.login-slogan {
-  margin: 0 0 18px;
-  font-size: 15px;
-  font-weight: 500;
-  letter-spacing: 3px;
-  color: #c7d7fe;
-}
-.login-desc {
-  margin: 0 0 34px;
-  font-size: 14px;
-  line-height: 1.9;
-  color: rgba(226, 232, 240, 0.85);
-}
-.login-features {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.login-features li {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 12px 0;
-}
-.login-feature-icon {
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
+  width: 15px;
+  border-radius: 3px 3px 1px 1px;
+  box-shadow:
+    inset 3px 0 0 rgba(15, 23, 42, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset -1px 0 0 rgba(255, 255, 255, 0.10);
+}
+/* 书名：竖排文字画在书脊上（CSS 变量传内容与前景色），单列居中不重叠；
+   字高（11px * 1.2）与书脊高匹配，超过 6 字由 text-align: justify 沿书脊两端对齐 */
+.login-book--titled::after {
+  content: var(--book-t);
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  color: #bfdbfe;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.10);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-}
-.login-features li span {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.login-features li b {
-  font-size: 14px;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  text-align: justify;
+  font-size: 11px;
   font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0;
+  color: var(--book-fg, #ffffff);
+  pointer-events: none;
 }
-.login-features li em {
-  font-style: normal;
-  font-size: 12.5px;
-  color: rgba(203, 213, 225, 0.8);
-}
-/* 右：表单区（45%） */
-.login-panel--form {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px 24px;
-}
-.login-form-wrap {
-  width: 100%;
-  max-width: 400px;
-}
+/* 中央登录卡片 */
 .login-card {
   position: relative;
   z-index: 1;
-  padding: 36px 34px 28px;
+  width: 100%;
+  max-width: 420px;
+  padding: 40px 38px 32px;
   background: var(--login-card-bg, #ffffff);
   border-radius: 16px;
-  box-shadow: 0 20px 56px rgba(16, 24, 40, 0.12), 0 2px 8px rgba(16, 24, 40, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 24px 64px rgba(99, 102, 241, 0.10), 0 4px 18px rgba(16, 24, 40, 0.06);
+}
+/* 卡片顶部品牌区：logo 渐变方块 + 名称 + slogan（居中） */
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 26px;
+}
+.login-logo {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  color: #fff;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  box-shadow: 0 10px 22px rgba(99, 102, 241, 0.35);
+}
+.login-title {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 1.25;
+  color: var(--login-title-color, #0f172a);
+}
+.login-slogan {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  color: var(--login-subtitle-color, #64748b);
 }
 .login-card-title {
   margin: 0 0 6px;
   text-align: center;
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 600;
   color: var(--login-title-color, #0f172a);
   letter-spacing: 0.5px;
@@ -227,11 +231,19 @@ body {
   justify-content: space-between;
   margin-bottom: 20px;
 }
+.login-forgot {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--login-forgot-color, rgba(15, 23, 42, 0.55));
+}
 .login-version {
+  position: relative;
+  z-index: 1;
   margin-top: 20px;
   text-align: center;
   font-size: 12px;
-  color: var(--login-version-color, #94a3b8);
+  color: var(--login-version-color, #767f94);
 }
 .login-footer {
   position: absolute;
@@ -240,40 +252,77 @@ body {
   right: 0;
   text-align: center;
   font-size: 12px;
-  color: var(--login-copyright-color, #94a3b8);
+  color: var(--login-copyright-color, #767f94);
   pointer-events: none;
 }
+/* 输入框：圆角 + focus 边框/光晕跟随紫蓝 */
 .login-card .ant-input-affix-wrapper,
 .login-card .ant-input {
-  border-radius: 8px;
+  border-radius: 10px;
 }
+.login-card .ant-input-affix-wrapper:focus-within,
+.login-card .ant-input-affix-wrapper-focused {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.14);
+}
+.login-card .ant-input:focus {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.14);
+}
+/* 主按钮：紫蓝渐变，hover 微亮上浮，active 回落 */
 .login-card .ant-btn-primary {
-  height: 42px;
+  height: 44px;
   font-size: 15px;
   letter-spacing: 4px;
-  border-radius: 8px;
-  box-shadow: 0 6px 16px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.3);
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  box-shadow: 0 8px 18px rgba(99, 102, 241, 0.30);
 }
-/* 深色模式下的登录页变量（左侧品牌区保持深蓝渐变不变） */
+.login-card .ant-btn.ant-btn-primary:hover {
+  background: linear-gradient(135deg, #6f70f4 0%, #9666f8 100%);
+  box-shadow: 0 10px 24px rgba(99, 102, 241, 0.42);
+  transform: translateY(-1px);
+}
+.login-card .ant-btn.ant-btn-primary:active {
+  background: linear-gradient(135deg, #5759e6 0%, #7c4fe0 100%);
+  box-shadow: 0 6px 14px rgba(99, 102, 241, 0.28);
+  transform: translateY(0);
+}
+/* 深色模式下的登录页变量（渐变背景换成暗色系，卡片随主题） */
 [data-theme='dark'] {
-  --login-form-bg: #0f1116;
+  --login-bg-start: #0e1016;
+  --login-bg-mid: #141020;
+  --login-bg-end: #101418;
   --login-card-bg: #181b23;
   --login-title-color: #e2e8f0;
   --login-subtitle-color: #94a3b8;
+  --login-forgot-color: rgba(148, 163, 184, 0.55);
   --login-version-color: #64748b;
   --login-copyright-color: #64748b;
 }
-/* 窄屏（<992px）收起品牌区，仅保留表单卡片 */
-@media (max-width: 991px) {
-  .login-panel--brand {
+[data-theme='dark'] .login-card {
+  border-color: rgba(255, 255, 255, 0.06);
+}
+/* 暗色下书脊稍提亮（颜色本身够深）；书架板换暗色板 */
+[data-theme='dark'] .login-book--spine {
+  filter: brightness(1.4) saturate(1.15);
+}
+[data-theme='dark'] .login-shelf-board {
+  background: rgba(148, 163, 184, 0.22);
+  border-top-color: rgba(255, 255, 255, 0.12);
+  box-shadow: none;
+}
+/* 小屏（<768px）：隐藏书籍装饰，避免拥挤 */
+@media (max-width: 768px) {
+  .login-bookshelf {
     display: none;
   }
-  .login-panel--form {
-    background: linear-gradient(160deg, #0f1e4d 0%, #1e3a8a 55%, #2563eb 100%);
-    padding: 48px 20px;
-  }
-  [data-theme='dark'] .login-panel--form {
-    background: #0f1116;
+}
+/* 小屏：卡片内边距收窄 */
+@media (max-width: 480px) {
+  .login-card {
+    padding: 32px 22px 26px;
   }
 }
 

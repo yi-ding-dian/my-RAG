@@ -1,13 +1,6 @@
 import React, { useState } from 'react';
 import { Alert, App as AntApp, Button, Checkbox, Form, Input } from 'antd';
-import {
-  BookOutlined,
-  LockOutlined,
-  SafetyCertificateOutlined,
-  TeamOutlined,
-  ThunderboltOutlined,
-  UserOutlined,
-} from '@ant-design/icons';
+import { BookOutlined, LockOutlined, UserOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { APP_VERSION } from '../constants';
@@ -19,6 +12,33 @@ interface LoginFormValues {
 
 /** 记住账号的 localStorage 键（仅存用户名） */
 const REMEMBER_KEY = 'myrag.remembered_username';
+
+/**
+ * 登录页书籍装饰数据（纯 CSS 绘制，无图片）。
+ * 每本 = 一个完整圆角长条书脊，饱满不透明彩色；h 为书脊高度(px)，
+ * fg 为书名前景色（按书脊明度选白/深）。height 总和需 ≤ 书架容器高度（见 index.css）。
+ */
+const SPINE_BOOKS_LEFT = [
+  { name: '员工手册', color: '#4f46e5', fg: '#ffffff', h: 92 },
+  { name: '工程文档', color: '#0284c7', fg: '#ffffff', h: 55 },
+  { name: '技术规范', color: '#059669', fg: '#ffffff', h: 78 },
+  { name: '产品手册', color: '#e11d48', fg: '#ffffff', h: 55 },
+  { name: '部门文档', color: '#7c3aed', fg: '#ffffff', h: 66 },
+  { name: '行业标准', color: '#0d9488', fg: '#ffffff', h: 88 },
+  { name: '操作指南', color: '#f59e0b', fg: '#451a03', h: 56 },
+  { name: '研发日志', color: '#9333ea', fg: '#ffffff', h: 72 },
+  { name: '安全规程', color: '#dc2626', fg: '#ffffff', h: 60 },
+];
+const SPINE_BOOKS_RIGHT = [
+  { name: '质量手册', color: '#2563eb', fg: '#ffffff', h: 96 },
+  { name: '企业制度', color: '#475569', fg: '#ffffff', h: 60 },
+  { name: '培训教程', color: '#c026d3', fg: '#ffffff', h: 80 },
+  { name: '项目资料', color: '#0891b2', fg: '#ffffff', h: 56 },
+  { name: '测试用例', color: '#db2777', fg: '#ffffff', h: 68 },
+  { name: '运维手册', color: '#65a30d', fg: '#ffffff', h: 92 },
+  { name: '会议纪要', color: '#ea580c', fg: '#ffffff', h: 62 },
+  { name: '数据安全手册', color: '#4f46e5', fg: '#ffffff', h: 84 },
+];
 
 /** 登录页：左侧品牌区（渐变背景 + 装饰 + 价值主张）+ 右侧登录表单卡片 */
 const LoginPage: React.FC = () => {
@@ -71,118 +91,109 @@ const LoginPage: React.FC = () => {
 
   return (
     <div className="login-page">
-      {/* 左侧：品牌区 */}
-      <div className="login-panel login-panel--brand">
-        <div className="login-deco login-deco--1" />
-        <div className="login-deco login-deco--2" />
-        <div className="login-deco login-deco--3" />
+      {/* 氛围装饰：柔和光晕 + 散点（纯视觉，pointer-events: none） */}
+      <div className="login-aurora login-aurora--1" />
+      <div className="login-aurora login-aurora--2" />
+      <div className="login-dots" />
+
+      {/* 书籍/书架装饰（知识库意象，纯 CSS，pointer-events: none；小屏隐藏） */}
+      <div className="login-bookshelf login-bookshelf--left" aria-hidden="true">
+        {SPINE_BOOKS_LEFT.map((b, i) => (
+          <span
+            key={i}
+            className="login-book login-book--spine login-book--titled"
+            style={
+              {
+                height: b.h,
+                background: b.color,
+                '--book-fg': b.fg,
+                '--book-t': `"${b.name}"`,
+              } as React.CSSProperties
+            }
+          />
+        ))}
+        <span className="login-shelf-board" />
+      </div>
+      <div className="login-bookshelf login-bookshelf--right" aria-hidden="true">
+        {SPINE_BOOKS_RIGHT.map((b, i) => (
+          <span
+            key={i}
+            className="login-book login-book--spine login-book--titled"
+            style={
+              {
+                height: b.h,
+                background: b.color,
+                '--book-fg': b.fg,
+                '--book-t': `"${b.name}"`,
+              } as React.CSSProperties
+            }
+          />
+        ))}
+        <span className="login-shelf-board" />
+      </div>
+
+      {/* 中央登录卡片：顶部品牌区（logo + 名称 + slogan）+ 表单区 */}
+      <div className="login-card">
         <div className="login-brand">
           <div className="login-logo">
             <BookOutlined />
           </div>
           <h1 className="login-title">my-RAG</h1>
           <p className="login-slogan">企业知识库 · 智能问答 · 数据安全</p>
-          <p className="login-desc">
-            让企业文档沉淀为可检索的智能资产，
-            <br />
-            基于自有大模型私有化部署，回答全程可溯源。
-          </p>
-          <ul className="login-features">
-            <li>
-              <SafetyCertificateOutlined className="login-feature-icon" />
-              <span>
-                <b>数据安全可控</b>
-                <em>私有化部署，文档与模型全内网运行</em>
-              </span>
-            </li>
-            <li>
-              <ThunderboltOutlined className="login-feature-icon" />
-              <span>
-                <b>秒级检索问答</b>
-                <em>混合检索 + 重排，答案标注引用来源</em>
-              </span>
-            </li>
-            <li>
-              <TeamOutlined className="login-feature-icon" />
-              <span>
-                <b>多角色协作</b>
-                <em>部门级知识隔离，权限精细可控</em>
-              </span>
-            </li>
-          </ul>
         </div>
+
+        <h2 className="login-card-title">欢迎登录</h2>
+        <p className="login-subtitle">请输入账号密码进入系统</p>
+
+        {error && (
+          <Alert
+            type="error"
+            showIcon
+            message={error}
+            closable
+            onClose={() => setError(null)}
+            style={{ marginBottom: 18 }}
+          />
+        )}
+
+        <Form
+          layout="vertical"
+          onFinish={handleSubmit}
+          size="large"
+          initialValues={{ username: rememberedName }}
+        >
+          <Form.Item
+            name="username"
+            rules={[{ required: true, message: '请输入用户名' }]}
+            style={{ marginBottom: 18 }}
+          >
+            <Input prefix={<UserOutlined />} placeholder="用户名" autoFocus autoComplete="username" />
+          </Form.Item>
+          <Form.Item
+            name="password"
+            rules={[{ required: true, message: '请输入密码' }]}
+            style={{ marginBottom: 10 }}
+          >
+            <Input.Password
+              prefix={<LockOutlined />}
+              placeholder="密码"
+              autoComplete="current-password"
+            />
+          </Form.Item>
+          <div className="login-form-row">
+            <Checkbox checked={remember} onChange={e => setRemember(e.target.checked)}>
+              记住账号
+            </Checkbox>
+          </div>
+          <Button type="primary" htmlType="submit" block loading={loading}>
+            登 录
+          </Button>
+          {/* 忘记密码指引（L3）：仅引导文案，无实际跳转 */}
+          <div className="login-forgot">忘记密码？请联系系统管理员重置</div>
+        </Form>
       </div>
 
-      {/* 右侧：登录表单 */}
-      <div className="login-panel login-panel--form">
-        <div className="login-form-wrap">
-          <div className="login-card">
-            <h2 className="login-card-title">欢迎登录</h2>
-            <p className="login-subtitle">请输入账号密码进入系统</p>
-
-            {error && (
-              <Alert
-                type="error"
-                showIcon
-                message={error}
-                closable
-                onClose={() => setError(null)}
-                style={{ marginBottom: 18 }}
-              />
-            )}
-
-            <Form
-              layout="vertical"
-              onFinish={handleSubmit}
-              size="large"
-              initialValues={{ username: rememberedName }}
-            >
-              <Form.Item
-                name="username"
-                rules={[{ required: true, message: '请输入用户名' }]}
-                style={{ marginBottom: 18 }}
-              >
-                <Input prefix={<UserOutlined />} placeholder="用户名" autoFocus autoComplete="username" />
-              </Form.Item>
-              <Form.Item
-                name="password"
-                rules={[{ required: true, message: '请输入密码' }]}
-                style={{ marginBottom: 10 }}
-              >
-                <Input.Password
-                  prefix={<LockOutlined />}
-                  placeholder="密码"
-                  autoComplete="current-password"
-                />
-              </Form.Item>
-              <div className="login-form-row">
-                <Checkbox checked={remember} onChange={e => setRemember(e.target.checked)}>
-                  记住账号
-                </Checkbox>
-              </div>
-              <Button type="primary" htmlType="submit" block loading={loading}>
-                登 录
-              </Button>
-              {/* 忘记密码指引（L3）：仅引导文案，无实际跳转 */}
-              <div
-                style={{
-                  textAlign: 'center',
-                  marginTop: 16,
-                  fontSize: 12,
-                  color: 'rgba(15, 23, 42, 0.45)',
-                }}
-              >
-                忘记密码？请联系系统管理员重置
-              </div>
-            </Form>
-          </div>
-
-          <div className="login-version">
-            my-RAG {APP_VERSION} · 企业知识库智能问答系统
-          </div>
-        </div>
-      </div>
-
+      <div className="login-version">my-RAG {APP_VERSION} · 企业知识库智能问答系统</div>
       <div className="login-footer">© 2026 my-RAG 企业知识库智能问答系统 · 保留所有权利</div>
     </div>
   );
