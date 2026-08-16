@@ -32,7 +32,9 @@ import {
   ReloadOutlined,
   RestOutlined,
   RollbackOutlined,
+  StopOutlined,
   ThunderboltOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -43,10 +45,14 @@ import {
   DocumentStatus,
   KnowledgeBase,
   KnowledgeGraph,
+  ParserLlmModelItem,
+  buildDocumentGraph,
+  cancelDocumentGraphBuild,
   deleteDocument,
   emptyTrash,
   getDocument,
   getKnowledgeGraph,
+  getLlmModelList,
   ingestDocument,
   listDocuments,
   listKbs,
@@ -55,6 +61,7 @@ import {
   methodLabel,
   purgeDocument,
   restoreDocument,
+  testLlmModelByName,
   uploadDocument,
 } from '../api/client';
 import AppEmpty from '../components/AppEmpty';
@@ -289,10 +296,13 @@ const DocumentsPage: React.FC = () => {
     void load(false, 1, pageSize);
   }, [kbId, load, pageSize]);
 
-  // 状态轮询：仅存在 parsing 时每 2s 静默刷新，全终态自动停止（uploaded=待解析不会自动流转，无需轮询）
+  // 状态轮询：存在 parsing（入库中）或 graph_status=building（图谱构建中）时
+  // 每 2s 静默刷新，全终态自动停止（uploaded=待解析不会自动流转，无需轮询）
   useEffect(() => {
     if (!kbId) return;
-    const hasPending = docs.some(d => d.status === 'parsing');
+    const hasPending = docs.some(
+      d => d.status === 'parsing' || d.graph_status === 'building',
+    );
     if (!hasPending) return;
     const timer = window.setInterval(() => {
       // P2-10: 轮询保持当前分页，避免覆盖用户所在页数据
@@ -492,6 +502,106 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
+  // ---------- 图谱补建/重建（LLM 模型选择弹窗） ----------
+
+  // 图谱构建弹窗状态：当前文档 / 模型列表 / 激活索引 / 选中模型 /
+  // 连接测试中 / 已通过连接测试（通过才可确认构建）/ 确认构建中
+  const [graphDoc, setGraphDoc] = useState<DocumentItem | null>(null);
+  const [graphModels, setGraphModels] = useState<ParserLlmModelItem[]>([]);
+  const [graphActiveIdx, setGraphActiveIdx] = useState(0);
+  const [graphSelected, setGraphSelected] = useState<string>();
+  const [graphTesting, setGraphTesting] = useState(false);
+  const [graphTestedOk, setGraphTestedOk] = useState(false);
+  const [graphConfirmLoading, setGraphConfirmLoading] = useState(false);
+
+  /** 测试指定模型连接（通过 → 可确认构建；失败 → 提示重选，确认保持禁用） */
+  const testGraphModel = useCallback(
+    async (name: string) => {
+      setGraphTesting(true);
+      setGraphTestedOk(false);
+      try {
+        const res = await testLlmModelByName(name);
+        if (res.data.ok) {
+          message.success(`「${name}」连接正常（${res.data.latency_ms}ms）`);
+          setGraphTestedOk(true);
+        } else {
+          message.error(`模型连接失败：${res.data.reason}，请重新选择`);
+        }
+      } catch (e: any) {
+        message.error(
+          `模型连接失败：${e.response?.data?.detail || '网络请求失败'}，请重新选择`,
+        );
+      } finally {
+        setGraphTesting(false);
+      }
+    },
+    [message],
+  );
+
+  /** 打开图谱构建弹窗：加载模型列表，默认文档已配置模型（标"当前使用"），
+   * 否则默认当前激活模型；默认选中项同样先测连接，通过才可确认 */
+  const openGraphModal = async (doc: DocumentItem) => {
+    setGraphDoc(doc);
+    setGraphSelected(undefined);
+    setGraphTestedOk(false);
+    setGraphTesting(true);
+    try {
+      const res = await getLlmModelList();
+      const models = res.data.models ?? [];
+      const activeIdx = res.data.active ?? 0;
+      setGraphModels(models);
+      setGraphActiveIdx(activeIdx);
+      const docCfg = doc.parser_config?.parse_llm_model;
+      const initial =
+        typeof docCfg === 'string' && docCfg && models.some(m => m.name === docCfg)
+          ? docCfg
+          : models[activeIdx]?.name;
+      setGraphSelected(initial);
+      if (initial) {
+        await testGraphModel(initial);
+      }
+    } catch {
+      message.error('加载 LLM 模型列表失败');
+    } finally {
+      setGraphTesting(false);
+    }
+  };
+
+  /** 切换模型：先测连接，通过才标记可确认（失败保持选中但确认禁用） */
+  const handleGraphModelChange = (name: string) => {
+    setGraphSelected(name);
+    void testGraphModel(name);
+  };
+
+  /** 确认构建：以所选模型触发补建/重建（本次构建生效，不写回文档配置） */
+  const handleGraphBuildConfirm = async () => {
+    if (!kbId || !graphDoc) return;
+    const isRebuild =
+      graphDoc.graph_status === 'ready' || graphDoc.graph_status === 'failed';
+    setGraphConfirmLoading(true);
+    try {
+      await buildDocumentGraph(kbId, graphDoc.id, { llm_model: graphSelected });
+      message.success(`图谱${isRebuild ? '重建' : '补建'}任务已启动，完成后列表自动刷新`);
+      setGraphDoc(null);
+      void reloadFirstPage();
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || `图谱${isRebuild ? '重建' : '补建'}失败`);
+    } finally {
+      setGraphConfirmLoading(false);
+    }
+  };
+
+  /** 中断进行中的图谱构建（任务停止、恢复构建前状态、旧图谱保留） */
+  const handleCancelGraphBuild = async (doc: DocumentItem) => {
+    try {
+      await cancelDocumentGraphBuild(kbId!, doc.id);
+      message.success('已发送中断请求，列表将自动刷新');
+      void reloadFirstPage();
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '中断请求失败');
+    }
+  };
+
   // ---------- 回收站 ----------
 
   const loadTrash = useCallback(
@@ -637,12 +747,25 @@ const DocumentsPage: React.FC = () => {
       title: '解析方式',
       dataIndex: 'parser_id',
       key: 'parser_id',
-      width: 130,
+      width: 200,
       render: (v: string | undefined, row) => {
         if (!v) return <Text type="secondary">-</Text>;
         const tag = <Tag color={methodColor(v)}>{methodLabel(v)}</Tag>;
         const summary = parserConfigSummary(row.parser_config, v);
-        return summary ? <Tooltip title={summary}>{tag}</Tooltip> : tag;
+        const parseTag = summary ? <Tooltip title={summary}>{tag}</Tooltip> : tag;
+        // 已构建知识图谱的文档：解析方式后追加紫色"图谱"标签（tooltip 说明）
+        const graphTag =
+          row.graph_status === 'ready' ? (
+            <Tooltip title="已构建知识图谱">
+              <Tag color="purple">图谱</Tag>
+            </Tooltip>
+          ) : null;
+        return (
+          <Space size={4}>
+            {parseTag}
+            {graphTag}
+          </Space>
+        );
       },
     },
     {
@@ -655,7 +778,7 @@ const DocumentsPage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 320,
+      width: 400,
       render: (_, row) => (
         <Space size="small">
           {canManage && parseableStatuses.includes(row.status) &&
@@ -690,6 +813,43 @@ const DocumentsPage: React.FC = () => {
               >
                 解析
               </Button>
+            ))}
+          {canManage && row.status === 'ingested' &&
+            (row.graph_status === 'building' ? (
+              <Popconfirm
+                key="graph-cancel"
+                title="中断图谱构建？"
+                description="将停止本次构建，图谱保持中断前状态，可稍后重新构建"
+                onConfirm={() => handleCancelGraphBuild(row)}
+                okText="中断"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+              >
+                <Button size="small" danger icon={<StopOutlined />}>
+                  中断
+                </Button>
+              </Popconfirm>
+            ) : (
+              <Tooltip
+                key="graph-build"
+                title={
+                  row.graph_status === 'failed'
+                    ? `上次构建失败：${row.graph_error || '未知原因'}，点击重新构建`
+                    : row.graph_status === 'ready'
+                      ? '重新抽取实体-关系，覆盖旧图谱'
+                      : '用现有切块抽取实体-关系构建图谱'
+                }
+              >
+                <Button
+                  size="small"
+                  icon={<ApartmentOutlined />}
+                  onClick={() => void openGraphModal(row)}
+                >
+                  {row.graph_status === 'ready' || row.graph_status === 'failed'
+                    ? '重建图谱'
+                    : '补建图谱'}
+                </Button>
+              </Tooltip>
             ))}
           <Button size="small" icon={<EyeOutlined />} onClick={() => handleDetail(row)}>
             切块详情
@@ -1035,6 +1195,64 @@ const DocumentsPage: React.FC = () => {
         onCancel={() => setRenameDoc(null)}
         onSuccess={() => { void reloadFirstPage(); }}
       />
+
+      {/* 图谱构建弹窗：选择 LLM 模型（默认文档配置或激活模型），
+          切换即测连接，通过才可确认构建（本次构建生效，对话模型不受影响） */}
+      <Modal
+        title="构建知识图谱"
+        open={!!graphDoc}
+        onCancel={() => setGraphDoc(null)}
+        onOk={() => void handleGraphBuildConfirm()}
+        confirmLoading={graphConfirmLoading}
+        okText="确认构建"
+        okButtonProps={{ disabled: !graphTestedOk || graphTesting }}
+        cancelText="取消"
+      >
+        {graphDoc && (
+          <>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`将使用所选模型构建知识图谱（复用「${graphDoc.original_name}」现有切块），对话模型不受影响`}
+            />
+            <div style={{ marginBottom: 8 }}>
+              <Text strong>图谱构建模型</Text>
+            </div>
+            <Select
+              value={graphSelected}
+              onChange={handleGraphModelChange}
+              style={{ width: '100%' }}
+              loading={graphTesting && !graphModels.length}
+              disabled={graphConfirmLoading}
+              options={graphModels.map((m, i) => {
+                // 默认选中项（文档已配置模型或激活模型）标注"当前使用"
+                const docCfg = graphDoc.parser_config?.parse_llm_model;
+                const useDocCfg =
+                  typeof docCfg === 'string' &&
+                  docCfg &&
+                  graphModels.some(x => x.name === docCfg);
+                const isCurrent = useDocCfg ? m.name === docCfg : i === graphActiveIdx;
+                return {
+                  value: m.name,
+                  label: `${m.name}${m.model && m.model !== m.name ? `（${m.model}）` : ''}${isCurrent ? ' — 当前使用' : ''}`,
+                };
+              })}
+              placeholder="选择模型"
+            />
+            <div style={{ marginTop: 8, minHeight: 24 }}>
+              {graphTesting ? (
+                <Space size={4}>
+                  <Spin size="small" />
+                  <Text type="secondary">正在测试连接…</Text>
+                </Space>
+              ) : graphSelected && !graphTestedOk ? (
+                <Text type="danger">模型连接未通过，请重新选择模型</Text>
+              ) : null}
+            </div>
+          </>
+        )}
+      </Modal>
 
       {/* URL 网页导入弹窗 */}
       <UrlImportModal

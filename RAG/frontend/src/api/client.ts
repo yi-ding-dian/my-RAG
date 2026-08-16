@@ -166,9 +166,13 @@ export interface DocumentItem {
   deleted?: boolean;
   /** 移入回收站时间（恢复后清空） */
   deleted_at?: string | null;
+  /** 知识图谱状态：none=未构建/building=构建中/ready=已构建/failed=构建失败 */
+  graph_status?: 'none' | 'building' | 'ready' | 'failed';
+  /** 图谱构建失败原因（graph_status=failed 时返回） */
+  graph_error?: string;
 }
 
-/** 解析方式友好名（契约：naive→通用切块 / title→按标题切块 / regex→正则切块 / parent_child→父子分块 / qa→QA 问答） */
+/** 解析方式友好名（契约：naive→通用切块 / title→按标题切块 / regex→正则切块 / parent_child→父子分块 / qa→QA 问答 / agentic→Agentic 智能分块） */
 export const methodLabel = (method: string): string => {
   switch (method) {
     case 'naive':
@@ -576,6 +580,7 @@ export const renameDocument = (kbId: string, docId: string, name: string) =>
 
 // ========== 知识图谱 API ==========
 
+/** 实体/关系在文档中的引用位置（chunk_index 为 chunks_meta 下标；偏移相对文档解析全文，与 chunks_meta 契约一致） */
 export interface GraphChunkRef {
   doc_id: string;
   chunk_index: number;
@@ -583,25 +588,32 @@ export interface GraphChunkRef {
   char_end: number;
 }
 
+/** 知识图谱实体（入库时 LLM 从切块抽取，按 name+type 规范化合并） */
 export interface GraphEntity {
   id: string;
   name: string;
+  /** 人物/机构/技术/概念/事件/成果 */
   type: string;
   description: string;
+  /** 出现次数（关联块数） */
   count: number;
   chunk_refs: GraphChunkRef[];
 }
 
+/** 知识图谱关系（source/target 为实体 ID） */
 export interface GraphRelation {
   id: string;
   source: string;
   target: string;
+  /** 提出/开发/发明/启动/导致/影响/属于/相关 */
   type: string;
   description: string;
+  /** 关系强度（关联块数） */
   weight: number;
   chunk_refs: GraphChunkRef[];
 }
 
+/** 知识图谱查询响应（GET /api/kbs/{kb_id}/graph，doc_id 可选过滤单文档） */
 export interface KnowledgeGraph {
   kb_id: string;
   updated_at: string;
@@ -610,21 +622,36 @@ export interface KnowledgeGraph {
   relations: GraphRelation[];
 }
 
+/** 查询知识库知识图谱（可选按文档过滤）；图谱不存在 → 404"该知识库暂无知识图谱" */
 export const getKnowledgeGraph = (kbId: string, docId?: string) =>
   api.get<KnowledgeGraph>(`/kbs/${kbId}/graph`, {
     params: docId ? { doc_id: docId } : {},
   });
 
+/** 触发文档图谱补建/重建（后台任务，复用现有切块不重新解析入库）
+ * - 未入库 → 400"请先入库后再构建图谱"；构建中 → 409"图谱正在构建中"
+ * - 已构建文档调用即重建（先清旧引用再抽取合并，实体不翻倍）
+ * - body.llm_model（可选）：本次构建专用模型（「本次构建生效」：只在本次
  *   任务内覆盖抽取模型，不写回文档配置；不传用文档原配置/激活模型）
+ * 返回后轮询文档 graph_status：building → ready/failed
+ */
+export const buildDocumentGraph = (
   kbId: string,
   docId: string,
   body?: { llm_model?: string },
 ) =>
   api.post<{ message: string; doc_id: string }>(
+    `/kbs/${kbId}/documents/${docId}/graph-build`,
     body,
   );
 
+/** 中断进行中的文档图谱构建（仅 building 可中断 → 200；
+ * 非构建中 → 409"当前不在图谱构建中，无法中断"）
+ * 中断后任务停止、状态恢复构建前值（旧图谱保留），可再次构建
+ */
+export const cancelDocumentGraphBuild = (kbId: string, docId: string) =>
   api.post<{ message: string; doc_id: string }>(
+    `/kbs/${kbId}/documents/${docId}/graph-build/cancel`,
   );
 
 // ========== 超管全局文档管理 API（仅 super_admin） ==========

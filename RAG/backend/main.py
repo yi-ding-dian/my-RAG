@@ -70,6 +70,12 @@ async def lifespan(app: FastAPI):
     if recovered:
         logger.warning("启动恢复: %d 个解析中断文档已标记失败（可重新解析）",
                        len(recovered))
+    # 图谱构建中断恢复：graph_status=building 的文档拨回 failed（可重新构建），
+    # 防止进程重启后永久卡"正在构建中"（409 无法再触发）
+    graph_stuck = get_document_service().recover_stuck_graph_building()
+    if graph_stuck:
+        logger.warning("启动恢复: %d 个图谱构建中断文档已标记失败（可重新构建）",
+                       len(graph_stuck))
     logger.info("=" * 50)
     yield
     logger.info("my-RAG 服务关闭")

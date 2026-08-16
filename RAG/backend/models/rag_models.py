@@ -76,6 +76,8 @@ class DocumentItem(BaseModel):
     updated_at: str = Field("", description="更新时间")
     deleted: bool = Field(False, description="是否已移入回收站（软删除标记，检索自动排除；缺失视为 false）")
     deleted_at: Optional[str] = Field(None, description="移入回收站时间（恢复后清空）")
+    graph_status: str = Field("none", description="知识图谱状态: none=未构建/building=构建中/ready=已构建/failed=构建失败")
+    graph_error: Optional[str] = Field(None, description="知识图谱构建失败原因（graph_status=failed 时）")
 
 
 class RenameDocumentRequest(BaseModel):
@@ -135,13 +137,17 @@ class IngestRequest(BaseModel):
     qa_force_continue: Optional[bool] = Field(None, description="QA 问答切块规范性强制继续（仅 method=qa 生效）：False/缺省=解析后检测问答对占比（问答对/总段落），低于 50% 任务失败并带检测详情；True=跳过规范性检测直接入库（前端确认继续入库时提交）")
 
 
+class GraphBuildRequest(BaseModel):
     """补建/重建文档知识图谱请求（全部可选）
 
+    - llm_model: 本次构建使用的 LLM 模型（激活档案模型列表的 name）。
+      「本次构建生效」语义：只在本次构建任务内覆盖图谱抽取模型，不写回
       文档 parser_config（文档持久化配置不变，再次构建不带该字段时仍用
       文档原配置/激活模型）；空/不传 → 沿用文档 parser_config.parse_llm_model
       （文档也未配置 → 激活模型）；模型不在激活档案 → 回退文档配置/激活
       模型（warning 日志，不失败）
     """
+    llm_model: Optional[str] = Field(None, description="本次构建使用的 LLM 模型 name（激活档案模型列表内；本次生效，不写回文档配置）")
 
 
 class Source(BaseModel):

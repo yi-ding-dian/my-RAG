@@ -178,6 +178,49 @@ class DocumentService:
     def mark_failed(self, doc_id: str, error: str) -> Optional[DocumentItem]:
         return self.transition(doc_id, "failed", error=str(error)[:1000])
 
+    # ---------- 知识图谱状态 ----------
+
+    def update_graph_status(self, doc_id: str, status: str,
+                            error: Optional[str] = None) -> Optional[DocumentItem]:
+        """更新知识图谱构建状态（graph_status，独立于文档状态机）
+
+        - status 合法值: none=未构建/building=构建中/ready=已构建/failed=构建失败
+        - status != failed 时清除 graph_error（构建成功/重试时不留旧错误）
+        - 文档不存在/文档在回收站 → 返回 None（图谱构建任务对删除文档静默退出）
+        """
+        if status not in ("none", "building", "ready", "failed"):
+            raise ValueError(f"非法图谱状态: {status}")
+        with self._lock:
+            doc = self._docs.get(doc_id)
+            if not doc or doc.deleted:
+                return None
+            doc.graph_status = status
+            doc.graph_error = error if status == "failed" else None
+            doc.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._save_meta(doc)
+        return doc
+
+    def recover_stuck_graph_building(self) -> List[str]:
+        """启动恢复：把图谱构建中断（graph_status=building）的文档拨回 failed
+
+        图谱构建任务与入库任务同为 asyncio.create_task（无持久化），进程重启后
+        building 状态文档将永久卡 409"正在构建中"；启动时（lifespan）统一拨回
+        failed + 明确原因，用户点击"重建图谱"直接重试。返回被恢复的文档 ID。
+        """
+        with self._lock:
+            stuck = [d for d in self._docs.values()
+                     if d.graph_status == "building"]
+            for doc in stuck:
+                doc.graph_status = "failed"
+                doc.graph_error = "服务重启，图谱构建中断，请重新构建"
+                doc.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for doc in stuck:
+            self._save_meta(doc)
+        if stuck:
+            logger.warning("启动恢复: %d 个图谱构建中断文档已标记失败（可重新构建）",
+                           len(stuck))
+        return [d.id for d in stuck]
+
     def recover_stuck_parsing(self) -> List[str]:
         """启动恢复：把解析中断（status=parsing）的文档拨回 failed，可重新解析
 
