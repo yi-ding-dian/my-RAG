@@ -1271,6 +1271,87 @@ export interface AuditActionOption {
 export const listAuditActions = () =>
   api.get<{ actions: AuditActionOption[] }>('/audit/actions');
 
+// ========== 系统运行日志 tail API（仅 super_admin） ==========
+
+/** 单行运行日志（后端解析自 data/logs/kb.log；非标准行 level/ts 为 null） */
+export interface LogLine {
+  /** 原始整行 */
+  line: string;
+  /** 日志级别（INFO/WARNING/ERROR/DEBUG，解析失败为 null） */
+  level: string | null;
+  /** 时间戳（YYYY-MM-DD HH:mm:ss,SSS，解析失败为 null） */
+  ts: string | null;
+  /** 可读消息（module: message） */
+  message: string;
+}
+
+export interface LogTailResult {
+  lines: LogLine[];
+  /** 新字节位置（下次轮询传入） */
+  offset: number;
+  /** 是否已读到文件尾 */
+  eof: boolean;
+}
+
+/**
+ * 读系统运行日志（按天 + 字节游标增量）：date 缺省=今天（YYYY-MM-DD）；
+ * offset < 0 = 尾部模式取最近 limit 行（首次加载/切换日期用）；
+ * offset 超文件大小后端自动归位尾部；文件不存在返回空。
+ */
+export const tailSystemLogs = (date?: string, offset = 0, limit = 200) =>
+  api.get<LogTailResult>('/logs/tail', { params: { date, offset, limit } });
+
+/** 运行日志文件条目（data/logs/kb-YYYY-MM-DD.log，按日期倒序） */
+export interface LogFileInfo {
+  date: string;
+  filename: string;
+  size_bytes: number;
+  mtime: string;
+}
+
+export const listLogFiles = () => api.get<{ files: LogFileInfo[] }>('/logs/files');
+
+/** 删除指定天日志文件（不存在静默成功） */
+export const deleteLogFile = (date: string) =>
+  api.delete<{ message: string; deleted: number }>('/logs/files', { params: { date } });
+
+/** 清空所有运行日志（今天文件截断继续写入，其余天删除） */
+export const deleteAllLogFiles = () =>
+  api.delete<{ message: string; deleted: number }>('/logs/files');
+
+/**
+ * 下载指定天日志文件（仅 super_admin）：fetch 带鉴权头取字节流返回 Blob，
+ * 调用方拼文件名（kb-YYYY-MM-DD.log）触发下载；非 2xx 抛后端中文错误。
+ */
+export const downloadLogFile = async (date: string): Promise<Blob> => {
+  const res = await fetch(`/api/logs/files/download?date=${encodeURIComponent(date)}`, {
+    headers: authHeader(),
+  });
+  if (res.status === 401) {
+    // 与 axios 拦截器一致：登录过期统一跳转
+    clearAuth();
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.href = '/login';
+    }
+    throw new Error('登录已过期，请重新登录');
+  }
+  if (!res.ok) {
+    let detail = `下载失败（HTTP ${res.status}）`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = j.detail;
+    } catch {
+      // 非 JSON 响应体，保留默认提示
+    }
+    throw new Error(detail);
+  }
+  return res.blob();
+};
+
+/** 按天删除审计记录（created_at 前缀匹配，删除前二次确认） */
+export const deleteAuditLogsByDate = (date: string) =>
+  api.delete<{ message: string; deleted: number }>('/audit/logs', { params: { date } });
+
 export const listProfiles = () => api.get<ServiceProfile[]>('/settings/profiles');
 
 export const getActiveProfile = () => api.get<ServiceProfile>('/settings/profiles/active');

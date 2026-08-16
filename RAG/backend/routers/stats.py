@@ -25,7 +25,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,7 +33,7 @@ from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
 from backend.models.user_models import UserORM, UserPublic
-from backend.services import ragas_sampling
+from backend.services import audit_service, ragas_sampling
 from backend.services.chat_service import get_chat_service
 from backend.services.document_service import get_document_service
 from backend.services.kb_service import get_kb_service
@@ -284,6 +284,7 @@ async def _sample_questions(kb_id: str, sample_source: str,
 
 @router.post("/ragas/evaluations")
 async def start_ragas_evaluation(body: RagasEvaluationRequest,
+                                 request: Request,
                                  db: AsyncSession = Depends(get_db),
                                  user: UserPublic = Depends(get_current_user)):
     """从知识库发起 RAGAS 评估（super_admin 全量 / dept_admin 本部门库）
@@ -385,6 +386,14 @@ async def start_ragas_evaluation(body: RagasEvaluationRequest,
     })
     logger.info("RAGAS 评估发起: task=%s kb=%s source=%s samples=%d metrics=%s",
                 task_id, kb.name, source, len(samples), metrics)
+    # 审计埋点（preview 模式已提前返回，不落评估记录）
+    await audit_service.record_action(
+        user, action="ragas.evaluate", target_type="kb",
+        target_id=kb.id, target_name=kb.name,
+        detail={"task_id": task_id, "kb_name": kb.name,
+                "sample_count": len(samples), "source": source,
+                "metrics": metrics, "top_k": body.top_k},
+        request=request)
     return {
         "task_id": task_id,
         "kb_id": kb.id,

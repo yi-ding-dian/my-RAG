@@ -2,14 +2,16 @@
 
 - GET /api/audit/logs    分页查询（倒序）+ 过滤（action/target_type/username/时间范围）
 - GET /api/audit/actions  可选操作类型列表（前端筛选下拉数据源）
+- DELETE /api/audit/logs?date=YYYY-MM-DD  按天删除审计记录（created_at 前缀匹配）
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db import get_db
@@ -81,3 +83,23 @@ async def list_audit_actions():
     return {"actions": [
         {"action": a, "label": label} for a, label in AUDIT_ACTION_LABELS.items()
     ]}
+
+
+@router.delete("/logs")
+async def delete_audit_logs_by_date(
+    date: str = Query(..., description="删除该天（YYYY-MM-DD）全部审计记录"),
+    db: AsyncSession = Depends(get_db),
+):
+    """按天删除审计记录（删除前前端二次确认）
+
+    created_at 为 '%Y-%m-%d %H:%M:%S' 字符串，按前缀 LIKE 'YYYY-MM-DD%' 匹配
+    （sqlite/MySQL 均稳定）。返回 {message, deleted}。
+    """
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式须为 YYYY-MM-DD")
+    result = await db.execute(
+        delete(AuditLogORM).where(AuditLogORM.created_at.like(f"{date}%")))
+    await db.commit()
+    return {"message": f"已删除 {date} 的审计记录", "deleted": result.rowcount}

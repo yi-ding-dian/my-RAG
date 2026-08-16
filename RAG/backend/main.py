@@ -24,13 +24,92 @@ from backend.config import (BASE_DIR, CHAT_DIR, CHROMA_DIR, DATA_DIR,
 from backend.db import init_db
 # 注意: routers.settings 模块名与 config.settings 同名，必须用别名避免遮蔽
 from backend.routers import (admin_documents, audit, auth, chat, departments,
-                             documents, ext_query, files, knowledge_bases,
-                             settings, stats, users)
+                             documents, ext_query, files, graphs,
+                             knowledge_bases, logs, settings, stats, users)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+
+
+class DailyRotatingFileHandler(logging.Handler):
+    """运行日志按天落盘 handler：data/logs/kb-YYYY-MM-DD.log
+
+    当天文件即 kb-今天.log（与 /api/logs/tail 按天契约一致）；跨天时切换新文件；
+    每次写入顺带清理超过 backup_days 天的旧文件。线程安全由 logging 上层保证
+    （emit 由 root logger 加锁调用）。
+    """
+
+    def __init__(self, log_dir: Path, backup_days: int = 14, encoding: str = "utf-8"):
+        super().__init__()
+        self.log_dir = log_dir
+        self.backup_days = backup_days
+        self.encoding = encoding
+        self._current_date = ""
+        self._stream: TextIO | None = None
+        self._file_re = re.compile(r"^kb-(\d{4}-\d{2}-\d{2})\.log$")
+
+    def _ensure_stream(self) -> None:
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._stream is None or today != self._current_date:
+            if self._stream is not None:
+                try:
+                    self._stream.close()
+                except OSError:
+                    pass
+            self._stream = open(self.log_dir / f"kb-{today}.log", "a",
+                                encoding=self.encoding)
+            self._current_date = today
+
+    def _cleanup(self) -> None:
+        cutoff = (datetime.now() - timedelta(days=self.backup_days)).strftime("%Y-%m-%d")
+        for p in self.log_dir.glob("kb-*.log"):
+            m = self._file_re.match(p.name)
+            if m and m.group(1) < cutoff:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+    def emit(self, record) -> None:
+        try:
+            self._ensure_stream()
+            assert self._stream is not None
+            self._stream.write(self.format(record) + "\n")
+            self._stream.flush()
+            self._cleanup()
+        except Exception:  # noqa: BLE001
+            self.handleError(record)
+
+    def close(self) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.close()
+            except OSError:
+                pass
+            self._stream = None
+        super().close()
+
+
+def _setup_file_logging() -> None:
+    """运行日志按天落盘：data/logs/kb-YYYY-MM-DD.log（保留 14 天，格式同 stdout）
+
+    目录自动创建；重复调用幂等（测试进程内多次导入不会重复挂 handler）。
+    超管「日志查看」页通过 /api/logs/tail（按天）读取这些文件。
+    """
+    log_dir = DATA_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger()
+    if any(isinstance(h, DailyRotatingFileHandler) for h in root.handlers):
+        return
+    _file_handler = DailyRotatingFileHandler(log_dir, backup_days=14)
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    root.addHandler(_file_handler)
+
+
+_setup_file_logging()
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
@@ -110,6 +189,8 @@ app.include_router(users.router)
 app.include_router(users.avatar_router)
 app.include_router(departments.router)
 app.include_router(audit.router)
+# 超管系统运行日志查看（tail 读取 data/logs/kb.log，仅 super_admin）
+app.include_router(logs.router)
 # 超管全局文档管理（跨部门文档查询，仅 super_admin）
 app.include_router(admin_documents.router)
 # 外部查询（知识库对外开放）：管理 API 仅 super_admin，外部 API 公开 token 鉴权

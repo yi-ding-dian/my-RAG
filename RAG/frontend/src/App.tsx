@@ -13,6 +13,7 @@ import {
   theme,
 } from 'antd';
 import {
+  AuditOutlined,
   BarChartOutlined,
   BookOutlined,
   CheckOutlined,
@@ -48,6 +49,7 @@ const UsersPage = lazy(() => import('./pages/Users'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
 const LoginPage = lazy(() => import('./pages/Login'));
 const ExtQueriesPage = lazy(() => import('./pages/ExtQueries'));
+const LogsPage = lazy(() => import('./pages/Logs'));
 /* 外部查询公开页（无登录，独立于布局） */
 const ExtQueryPage = lazy(() => import('./pages/ExtQueryPage'));
 
@@ -82,6 +84,8 @@ const menuItems = [
   { key: '/ext-queries', icon: <LinkOutlined />, label: '外部查询' },
   /* 超管专属：跨部门全局文档管理（与部门内 /documents 文档管理区分） */
   { key: '/global-documents', icon: <FileSearchOutlined />, label: '文档管理（全部）' },
+  /* 超管专属：操作审计 + 系统运行日志实时查看 */
+  { key: '/logs', icon: <AuditOutlined />, label: '日志查看' },
 ];
 
 const roleMeta: Record<User['role'], { color: string; text: string }> = {
@@ -96,7 +100,8 @@ const filterMenu = (user: User | null) => {
   const isAdmin = user?.role === 'super_admin' || user?.role === 'dept_admin';
   return menuItems.filter(item => {
     if (item.key === '/settings' || item.key === '/users') return isAdmin;
-    if (item.key === '/ext-queries' || item.key === '/global-documents') {
+    if (item.key === '/ext-queries' || item.key === '/global-documents'
+        || item.key === '/logs') {
       return user?.role === 'super_admin';
     }
     return true;
@@ -407,6 +412,15 @@ const AppLayout: React.FC = () => {
                   element={
                     <ProtectedRoute roles={['super_admin']}>
                       <GlobalDocumentsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                {/* 日志查看（仅 super_admin）：操作审计 + 系统运行日志实时查看 */}
+                <Route
+                  path="/logs"
+                  element={
+                    <ProtectedRoute roles={['super_admin']}>
+                      <LogsPage />
                     </ProtectedRoute>
                   }
                 />
