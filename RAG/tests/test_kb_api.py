@@ -100,6 +100,63 @@ class TestUpload:
         )
         assert resp.status_code == 404
 
+    def test_upload_duplicate_name_409(self, client, admin_headers):
+        """同知识库同名文档（未删）→ 第二次上传 409 + detail 提示"""
+        kb = create_kb(client)
+        upload_doc(client, kb["id"], filename="同名.txt")
+        resp = client.post(
+            f"/api/kbs/{kb['id']}/documents/upload",
+            files={"file": ("同名.txt", b"other", "text/plain")},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 409, resp.text
+        assert "同名" in resp.json()["detail"]
+        # 列表仍只有 1 份（409 未创建元数据）
+        docs = client.get(f"/api/kbs/{kb['id']}/documents",
+                          headers=admin_headers).json()
+        assert len(docs) == 1
+
+    def test_upload_duplicate_name_force_ok(self, client, admin_headers):
+        """force=true 跳过同名检测 → 200，允许同名共存（列表两份）"""
+        kb = create_kb(client)
+        upload_doc(client, kb["id"], filename="同名.txt")
+        resp = client.post(
+            f"/api/kbs/{kb['id']}/documents/upload?force=true",
+            files={"file": ("同名.txt", b"other", "text/plain")},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        docs = client.get(f"/api/kbs/{kb['id']}/documents",
+                          headers=admin_headers).json()
+        assert len(docs) == 2
+        assert all(d["original_name"] == "同名.txt" for d in docs)
+
+    def test_upload_duplicate_name_in_trash_ok(self, client, admin_headers):
+        """回收站（软删）中的同名不算：软删后重传同名 → 200"""
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"], filename="同名.txt")
+        resp = client.delete(f"/api/kbs/{kb['id']}/documents/{doc['id']}",
+                             headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        resp = client.post(
+            f"/api/kbs/{kb['id']}/documents/upload",
+            files={"file": ("同名.txt", b"re-upload", "text/plain")},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_upload_duplicate_name_cross_kb_ok(self, client, admin_headers):
+        """不同知识库同名文档互不冲突 → 均 200"""
+        kb1 = create_kb(client, name="库A")
+        kb2 = create_kb(client, name="库B")
+        upload_doc(client, kb1["id"], filename="同名.txt")
+        resp = client.post(
+            f"/api/kbs/{kb2['id']}/documents/upload",
+            files={"file": ("同名.txt", b"other", "text/plain")},
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200, resp.text
+
 
 class TestIngest:
     """入库状态机"""

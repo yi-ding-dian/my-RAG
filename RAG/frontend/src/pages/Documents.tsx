@@ -404,7 +404,35 @@ const DocumentsPage: React.FC = () => {
       try {
         await uploadDocument(kbId!, file);
       } catch (e: any) {
-        failed.push(`${file.name}（${e.response?.data?.detail || '上传失败'}）`);
+        // 同名文档检测：409 + detail 含"同名" → 确认后带 force=true 重传
+        const detail = e.response?.data?.detail;
+        if (e.response?.status === 409 && typeof detail === 'string' && detail.includes('同名')) {
+          await new Promise<void>(resolve => {
+            modal.confirm({
+              title: '知识库中已存在同名文档',
+              content: `知识库中已存在同名文档「${file.name}」，是否继续上传？`,
+              okText: '继续上传',
+              cancelText: '取消',
+              onOk: async () => {
+                try {
+                  await uploadDocument(kbId!, file, true);
+                  message.success(`已继续上传「${file.name}」`);
+                } catch (e2: any) {
+                  failed.push(`${file.name}（${e2.response?.data?.detail || '重传失败'}）`);
+                  message.error(`继续上传「${file.name}」失败`);
+                }
+              },
+              onCancel: () => {
+                failed.push(`${file.name}（已取消：知识库已存在同名文档）`);
+                message.info(`已取消上传「${file.name}」`);
+              },
+              afterClose: resolve,
+            });
+          });
+          setUploadState(s => ({ ...s, done: s.done + 1 }));
+          return;
+        }
+        failed.push(`${file.name}（${detail || '上传失败'}）`);
       }
       setUploadState(s => ({ ...s, done: s.done + 1 }));
     });

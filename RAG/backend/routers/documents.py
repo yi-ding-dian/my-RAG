@@ -77,9 +77,15 @@ async def _refresh_kb_stats(db: AsyncSession, kb_id: str):
 @router.post("/upload", response_model=DocumentItem)
 async def upload_document(request: Request, kb_id: str,
                           file: UploadFile = File(...),
+                          force: bool = False,
                           db: AsyncSession = Depends(get_db),
                           user: UserPublic = Depends(get_current_user)):
-    """上传文档（txt/md/pdf/docx），初始状态 uploaded（can_manage_kb）"""
+    """上传文档（txt/md/pdf/docx），初始状态 uploaded（can_manage_kb）
+
+    force: 默认 False——同知识库存在同名（未软删）文档时返回 409 提示；
+    用户确认后带 force=true 重传可跳过同名检测（允许同名共存）。
+    软删除（回收站）中的同名文档不算（可恢复，未删除外）。
+    """
     await kb_or_404(db, kb_id, user, manage=True)
     original_name = file.filename or "unnamed"
     ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
@@ -87,6 +93,15 @@ async def upload_document(request: Request, kb_id: str,
         raise HTTPException(
             status_code=400,
             detail=f"不支持的文件类型: .{ext}（支持 {sorted(SUPPORTED_EXTS)}）")
+
+    # 同名检测（读文件前尽早返回；list_by_kb 默认 include_deleted=False，
+    # 回收站中的同名文档不参与，跨知识库互不影响）
+    if not force and any(
+            d.original_name == original_name
+            for d in get_document_service().list_by_kb(kb_id)):
+        raise HTTPException(
+            status_code=409,
+            detail=f"知识库中已存在同名文档：{original_name}，如需覆盖请确认后重传")
 
     # 分块读取，限制大小
     content = b""

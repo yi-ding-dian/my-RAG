@@ -424,12 +424,14 @@ export const getEmbeddingDim = () =>
 
 // ========== 文档 API ==========
 
-export const uploadDocument = (kbId: string, file: File) => {
+export const uploadDocument = (kbId: string, file: File, force = false) => {
   const form = new FormData();
   form.append('file', file);
-  return api.post<DocumentItem>(`/kbs/${kbId}/documents/upload`, form, {
-    timeout: 120000,
-  });
+  return api.post<DocumentItem>(
+    `/kbs/${kbId}/documents/upload?force=${force}`,
+    form,
+    { timeout: 120000 },
+  );
 };
 
 /** 触发入库响应：degrade 为解析前探测到的自动降级提示（所选解析器不可用），可选 */
