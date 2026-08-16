@@ -14,7 +14,7 @@ import {
   Space,
   Tooltip,
 } from 'antd';
-import type { DocumentItem, IngestConfig, LayoutRecognize, MinerUBackend, ParseLang, ParseMethod, ParserEngine, ParserStatus, ParserStatusEntry, ParserLlmModelItem } from '../api/client';
+import type { DocumentItem, IngestConfig, LayoutRecognize, MinerUBackend, ParseLang, ParseMethod, ParserEngine, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../api/client';
 import { getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../api/client';
 import LayoutRecognizeField from './parse-fields/LayoutRecognizeField';
 import MinerUBackendField from './parse-fields/MinerUBackendField';
@@ -47,6 +47,8 @@ interface ParseConfigFormValues {
   enable_heading_in_content: boolean;
   contextual_retrieval: boolean;
   knowledge_graph: boolean;
+  /** 思考模式（DeepSeek thinking 控制）：disabled=关闭（推荐，更快）| enabled_low/high/max=开启+强度 */
+  thinking_mode: ThinkingMode;
   /** 解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为模型列表的 name；空=用当前激活模型） */
   parse_llm_model?: string;
   lang_list: ParseLang;
@@ -210,6 +212,12 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           typeof cfg.contextual_retrieval === 'boolean' ? cfg.contextual_retrieval : false,
         knowledge_graph:
           typeof cfg.knowledge_graph === 'boolean' ? cfg.knowledge_graph : false,
+        // 思考模式：重解析沿用上次持久化值；缺失/非法回退默认"关闭思考"
+        thinking_mode: (
+          ['disabled', 'enabled_low', 'enabled_high', 'enabled_max'] as const
+        ).includes(cfg.thinking_mode as ThinkingMode)
+          ? (cfg.thinking_mode as ThinkingMode)
+          : 'disabled',
         // 解析 LLM 模型：重解析沿用上次持久化值；缺失/空 → 由下方 useEffect
         // 在模型列表加载后兜底为当前激活模型（"当前使用"）
         parse_llm_model:
@@ -232,6 +240,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       form.setFieldValue('parse_llm_model', activeName);
     }
   }, [open, llmModels, activeLlmIdx, form]);
+
   // 切换解析 LLM 模型：先测试连接（POST /api/settings/llm/test-model，后端按
   // name 查完整配置探测）→ 通过才更新本地值；失败提示并保持原模型（绝不静默切换）
   const handleParseLlmChange = async (name: string) => {
@@ -360,6 +369,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     config.enable_heading_in_content = values.enable_heading_in_content;
     config.contextual_retrieval = values.contextual_retrieval;
     config.knowledge_graph = values.knowledge_graph;
+    config.thinking_mode = values.thinking_mode;
     // 解析 LLM 模型（摘要/图谱抽取专用）：空/未选不发 → 后端默认用激活模型
     if (values.parse_llm_model) config.parse_llm_model = values.parse_llm_model;
     config.lang_list = values.lang_list;
@@ -530,6 +540,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     label="知识图谱"
                     desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）"
                     defaultValue={false}
+                    disabled={isAgentic}
+                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
                   />
                   {knowledgeGraph && (
                     <Alert
@@ -542,11 +554,11 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                   {/* 解析 LLM 模型：上下文检索增强/知识图谱任一开启时显示（下拉数据源=
                       系统配置模型列表，仅名称+model 无敏感字段；默认=当前激活模型，
                       切换前自动测试连接，通过才生效） */}
-                  {(contextualRetrieval || knowledgeGraph) && (
+                  {(contextualRetrieval || knowledgeGraph || isAgentic) && (
                     <Form.Item
                       name="parse_llm_model"
                       label="解析 LLM 模型"
-                      extra="使用模型仅影响上下文摘要/知识图谱抽取，对话仍用当前激活模型；切换前自动测试连接，通过才生效"
+                      extra="使用模型仅影响上下文摘要/知识图谱抽取/Agentic 分块，对话仍用当前激活模型；切换前自动测试连接，通过才生效"
                     >
                       <Select
                         loading={testingLlm}
@@ -559,6 +571,24 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       />
                     </Form.Item>
                   )}
+                  {/* 思考模式（DeepSeek thinking 控制）：图谱抽取/上下文摘要调用的
+                      extra_body 组装；默认关闭——图谱抽取/摘要属简单延迟敏感任务，
+                      关闭思考可加快解析速度并节省 token（DeepSeek 推理模型
+                      reasoning 会大量消耗 token 拖慢响应） */}
+                  <Form.Item
+                    name="thinking_mode"
+                    label="思考模式"
+                    extra="控制图谱抽取/上下文摘要调用的 DeepSeek 思考（reasoning）。关闭思考可加快解析速度并节省 token（推荐）"
+                  >
+                    <Select
+                      options={[
+                        { value: 'disabled', label: '关闭思考（推荐，更快）' },
+                        { value: 'enabled_low', label: '开启-低' },
+                        { value: 'enabled_high', label: '开启-高' },
+                        { value: 'enabled_max', label: '开启-最大' },
+                      ]}
+                    />
+                  </Form.Item>
                   <LangSelectField />
                 </>
               ),

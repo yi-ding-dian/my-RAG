@@ -43,11 +43,14 @@ class _FakeContextClient:
         self.call_count = 0
         self.active = 0
         self.peak = 0
+        # 每次调用透传的 extra_body 记录（thinking 模式透传断言用）
+        self.extra_bodies: list = []
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(create=self._create))
 
     async def _create(self, **kwargs):
         self.call_count += 1
+        self.extra_bodies.append(kwargs.get("extra_body"))
         self.active += 1
         self.peak = max(self.peak, self.active)
         try:
@@ -70,6 +73,24 @@ def _patch_ctx_client(monkeypatch, fake: _FakeContextClient):
         "backend.services.contextual_retriever._get_client",
         lambda llm_cfg=None: fake)
     return fake
+
+
+def _patch_active_llm_online(monkeypatch):
+    """激活 LLM 配置改为在线 base_url（DeepSeek 路径：ExtraBody 策略生效）
+
+    测试默认激活配置 base_url=http://127.0.0.1:1234（本地 LM Studio）→
+    thinking disabled 时思考关闭走 QwenPrefill（messages 注入 prefill、
+    无 extra_body）；本 helper 用于需要断言"在线 DeepSeek 行为不变"
+    （extra_body 透传）的用例。
+    """
+    from backend.config import LLMConfig
+    online = SimpleNamespace(
+        llm=LLMConfig(base_url="https://api.deepseek.com/v1",
+                      api_key="test-key", model="deepseek-chat",
+                      temperature=0.3, max_tokens=8192, timeout=60.0))
+    monkeypatch.setattr(
+        "backend.services.contextual_retriever.get_active_config",
+        lambda: online)
 
 
 class _RecordingEmbedding:
@@ -195,6 +216,28 @@ class TestEnrichChunks:
             [], _SAMPLE_DOC, {"contextual_retrieval": True}))
         assert result == []
         assert fake.call_count == 0
+
+    def test_thinking_extra_body_default_disabled(self, monkeypatch):
+        """cfg 不带 thinking_mode → 在线模型（DeepSeek）默认关闭思考
+        extra_body 透传（摘要提速；本地 LM Studio 走 QwenPrefill prefill
+        注入，见 test_thinking_strategy）"""
+        _patch_active_llm_online(monkeypatch)
+        fake = _patch_ctx_client(monkeypatch, _FakeContextClient())
+        result = asyncio.run(enrich_chunks(
+            _mk_chunks(["片段"]), _SAMPLE_DOC,
+            {"contextual_retrieval": True}))
+        assert len(result) == 1
+        assert fake.extra_bodies == [{"thinking": {"type": "disabled"}}]
+
+    def test_thinking_extra_body_enabled_low(self, monkeypatch):
+        """cfg.thinking_mode=enabled_low → thinking.enabled + reasoning_effort=low"""
+        fake = _patch_ctx_client(monkeypatch, _FakeContextClient())
+        result = asyncio.run(enrich_chunks(
+            _mk_chunks(["片段"]), _SAMPLE_DOC,
+            {"contextual_retrieval": True, "thinking_mode": "enabled_low"}))
+        assert len(result) == 1
+        assert fake.extra_bodies == [{"thinking": {"type": "enabled"},
+                                      "reasoning_effort": "low"}]
 
 
 # ==================== ingestion 集成测试 ====================

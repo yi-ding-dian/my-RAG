@@ -29,6 +29,7 @@ from openai import AsyncOpenAI
 from backend.config import get_active_config
 from backend.services.chat_service import _llm_to_dict
 from backend.services.settings_service import llm_cfg_for_parser
+from backend.services.thinking_strategy import get_thinking_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,17 @@ _DOC_BACKGROUND_CHARS = 1500
 _CHUNK_INPUT_CHARS = 1000
 # 摘要输出长度兜底截断（字符；prompt 要求 ≤80 字，模型可能超长）
 _CONTEXT_MAX_CHARS = 100
+# 单次调用 max_tokens：原 _CONTEXT_MAX_CHARS*2=200 在推理模型（DeepSeek/
+# Qwen3 等带 thinking）上会被 reasoning 部分大量消耗（实测 DeepSeek 单块
+# 摘要 reasoning≈85+content≈120，200 已捉襟见肘；512 时个别复杂块
+# reasoning 仍超 512 被吃光 → 提升到 1024，实测 1.6s/块、空摘要基本消除；
+# 本地 Qwen3 思考锁死时 200/1024 全被吃光 content 恒空，需换模型）。
+_MAX_TOKENS = 1024
 # 并发调用上限（asyncio.Semaphore）
 _CONCURRENCY = 3
-# 单次 LLM 调用超时（秒）
-_TIMEOUT = 20.0
+# 单次 LLM 调用超时（秒）：实测在线 LLM 单块摘要 2s 内完成，20s 过长
+# （思考锁死模型会白等 20s 才超时）；15s 兼顾偶发慢响应与快速失败
+_TIMEOUT = 15.0
 
 _CTX_PROMPT = (
     "你是文档分析助手。以下是文档背景和其中一个片段，"
@@ -72,22 +80,33 @@ def _get_client(llm_cfg: Optional[dict] = None) -> AsyncOpenAI:
 
 
 async def _enrich_one(sem: asyncio.Semaphore, index: int, chunk_text: str,
-                      doc_bg: str, llm_cfg: dict,
+                      doc_bg: str, llm_cfg: dict, strategy=None,
                       timeout: float = _TIMEOUT) -> Optional[dict]:
-    """单个块的摘要生成：成功返回 {index, context}；失败/超时/空摘要 → None"""
+    """单个块的摘要生成：成功返回 {index, context}；失败/超时/空摘要 → None
+
+    strategy: 思考关闭策略（thinking_strategy 模块产物）——apply(payload)
+    统一处理 extra_body（在线 API）与 messages prefill 注入（本地 Qwen），
+    关闭思考可显著加快摘要生成并节省 token
+    """
     async with sem:
         try:
             client = _get_client(llm_cfg)
+            payload = {
+                "messages": [
+                    {"role": "system", "content": "你是文档分析助手。"},
+                    {"role": "user", "content": _CTX_PROMPT.format(
+                        doc=doc_bg, chunk=chunk_text)},
+                ],
+            }
+            if strategy is not None:
+                strategy.apply(payload)
             resp = await asyncio.wait_for(
                 client.chat.completions.create(
                     model=llm_cfg.get("model") or "",
-                    messages=[
-                        {"role": "system", "content": "你是文档分析助手。"},
-                        {"role": "user", "content": _CTX_PROMPT.format(
-                            doc=doc_bg, chunk=chunk_text)},
-                    ],
-                    max_tokens=_CONTEXT_MAX_CHARS * 2,
+                    messages=payload["messages"],
+                    max_tokens=_MAX_TOKENS,
                     temperature=0.3,
+                    extra_body=payload.get("extra_body"),
                 ),
                 timeout=timeout,
             )
@@ -96,7 +115,25 @@ async def _enrich_one(sem: asyncio.Semaphore, index: int, chunk_text: str,
             except Exception:
                 content = ""
             if not content:
-                logger.warning("上下文摘要为空，跳过: chunk#%d", index)
+                # 空摘要诊断：区分"模型思考锁死/思考过长吃光 token"与普通空输出
+                # （推理模型 usage.completion_tokens_details.reasoning_tokens
+                # 非零且接近 completion_tokens 时，说明 max_tokens 全部被
+                # thinking 消耗，content 永远为空——如本地 Qwen3 思考锁死）
+                reasoning_note = ""
+                try:
+                    usage = resp.usage
+                    if usage is not None:
+                        detail = getattr(usage, "completion_tokens_details", None)
+                        rt = getattr(detail, "reasoning_tokens", None)
+                        if rt:
+                            reasoning_note = (
+                                f"（reasoning 消耗 {rt}/{usage.completion_tokens} "
+                                f"token——模型思考过长吃光 max_tokens，"
+                                f"建议更换非思考锁死模型或调大 max_tokens）")
+                except Exception:
+                    pass
+                logger.warning("上下文摘要为空，跳过: chunk#%d%s", index,
+                               reasoning_note)
                 return None
             # 摘要截断兜底（模型可能输出超长，避免污染向量化文本与 metadata）
             if len(content) > _CONTEXT_MAX_CHARS:
@@ -129,9 +166,9 @@ async def enrich_chunks(chunks, doc_text: str, cfg: Optional[dict] = None,
         return []
     if not chunks:
         return []
-    llm_cfg = _llm_to_dict(get_active_config().llm)
     # 解析 LLM 模型：parser_config.parse_llm_model 指定（上下文摘要专用模型，
     # 从激活档案模型列表查完整配置）→ 覆盖；未指定/查不到 → 激活模型
+    llm_cfg = _llm_to_dict(get_active_config().llm)
     override = llm_cfg_for_parser(cfg.get("parse_llm_model"))
     if override:
         llm_cfg = {**llm_cfg, **override}
@@ -140,11 +177,15 @@ async def enrich_chunks(chunks, doc_text: str, cfg: Optional[dict] = None,
         return []
     head = f"文档名称：{doc_name or ''}"
     doc_bg = f"{head}\n{(doc_text or '')[:_DOC_BACKGROUND_CHARS]}"
+    # 思考关闭策略：按模型服务商/部署方式选择（在线 DeepSeek → extra_body
+    # 关闭思考；本地 LM Studio Qwen → messages 末尾注入空 <think> 块跳过思考，
+    # 见 thinking_strategy）
+    strategy = get_thinking_strategy(llm_cfg, cfg.get("thinking_mode"))
     sem = asyncio.Semaphore(_CONCURRENCY)
     tasks = [
         asyncio.create_task(
             _enrich_one(sem, i, c.text[:_CHUNK_INPUT_CHARS], doc_bg,
-                        llm_cfg, timeout=timeout))
+                        llm_cfg, strategy, timeout=timeout))
         for i, c in enumerate(chunks)
     ]
     results = await asyncio.gather(*tasks)

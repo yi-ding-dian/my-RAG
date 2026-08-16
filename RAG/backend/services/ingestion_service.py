@@ -147,6 +147,11 @@ _VALID_LAYOUT_RECOGNIZE = ("MinerU", "DeepDOC", "PlainText")
 _VALID_LANG_LIST = ("ch", "en")
 _MIN_TASK_PAGE_SIZE = 1
 _MAX_TASK_PAGE_SIZE = 128
+# DeepSeek 思考模式（LLM thinking 控制，图谱抽取/上下文摘要共用）：
+# disabled=关闭思考（默认：图谱抽取/摘要属简单延迟敏感任务，关闭加速并节省
+# token）| enabled_low/enabled_high/enabled_max=开启思考并指定强度
+# （extra_body 组装见 knowledge_graph_service.build_thinking_extra_body）
+_VALID_THINKING_MODES = ("disabled", "enabled_low", "enabled_high", "enabled_max")
 _DEFAULT_PARSER_CONFIG = {
     "layout_recognize": "MinerU",        # 版面识别（MinerU=默认/DeepDOC=表格输出可检索 HTML/PlainText=纯文本直提，均已生效）
     "pages": [[1, 1000000]],             # 页码范围 [[from,to],...]（默认全量）
@@ -158,6 +163,7 @@ _DEFAULT_PARSER_CONFIG = {
     "enable_heading_in_content": False,  # 包含父标题（切块后为不含标题的块拼接前缀标题路径）
     "contextual_retrieval": False,       # 上下文检索增强（切块后为每个块调用 LLM 生成上下文摘要，产生额外 token 费用）
     "knowledge_graph": False,            # 知识图谱（切块后为每个块调用 LLM 抽取实体与关系，产生额外 token 费用）
+    "thinking_mode": "disabled",         # 思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要共用；默认关闭加速省 token）
     "parse_llm_model": "",               # 解析 LLM 模型（上下文摘要/图谱抽取专用，值为激活档案模型列表的 name；空=用当前激活模型，对话不受影响）
 }
 # 布尔字段名（类型校验；注意 bool 是 int 子类，需单独判型）
@@ -332,8 +338,10 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
                     f"（需 {_MIN_TASK_PAGE_SIZE}~{_MAX_TASK_PAGE_SIZE}）")
         elif key == "pages":
             value = _validate_pages(value)
+        elif key == "thinking_mode":
             if value not in _VALID_THINKING_MODES:
                 raise ValueError(
+                    f"thinking_mode 非法: {value}"
                     f"（支持: {'/'.join(_VALID_THINKING_MODES)}）")
         elif key in _PARSER_BOOL_FIELDS:
             if not isinstance(value, bool):

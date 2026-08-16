@@ -95,6 +95,11 @@ export type LayoutRecognize = 'MinerU' | 'DeepDOC' | 'PlainText';
 /** 解析语言：ch=中文 | en=英文 */
 export type ParseLang = 'ch' | 'en';
 
+/** 思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要 LLM 调用共用）：
+ * disabled=关闭思考（推荐，简单延迟敏感任务更快更省 token）| enabled_low/
+ * enabled_high/enabled_max=开启思考并指定强度（low/high/max） */
+export type ThinkingMode = 'disabled' | 'enabled_low' | 'enabled_high' | 'enabled_max';
+
 /**
  * 解析配置：naive=通用切块 | title=按标题切块 | regex=正则切块 | parent_child=父子分块
  * parent_* 字段仅在 method=parent_child 时使用（其他方式后端忽略，前端也不发送）
@@ -141,6 +146,7 @@ export interface IngestConfig {
   /** 知识图谱：开启后入库时用 LLM 对每个切块抽取实体与关系，合并构建知识图谱（存储 data/storage/graphs/{kb_id}.json，产生额外 token 费用，失败/超时跳过不阻塞入库，默认关） */
   knowledge_graph?: boolean;
   /** 思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要调用共用）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度 */
+  thinking_mode?: ThinkingMode;
   /** 解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为系统配置 LLM 模型列表的 name；空=默认用当前激活对话模型，对话不受影响） */
   parse_llm_model?: string;
   /** QA 问答切块规范性强制继续（仅 method=qa）：true=跳过问答对占比检测直接入库（入库失败确认"继续入库"时提交） */

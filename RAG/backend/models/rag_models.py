@@ -133,6 +133,7 @@ class IngestRequest(BaseModel):
     enable_heading_in_content: Optional[bool] = Field(None, description="包含父标题（切块后为不含标题的块拼接前缀标题路径，默认 False）")
     contextual_retrieval: Optional[bool] = Field(None, description="上下文检索增强：开启后切块时对每个块调用 LLM 生成上下文摘要（向量化/检索文本加【上下文】前缀，产生额外 token 费用；失败/超时跳过不阻塞入库；默认 False）")
     knowledge_graph: Optional[bool] = Field(None, description="知识图谱：开启后入库时用激活 LLM 对每个切块抽取实体与关系，合并构建知识图谱（存储 data/storage/graphs/{kb_id}.json，产生额外 token 费用；失败/超时跳过不阻塞入库；默认 False）")
+    thinking_mode: Optional[str] = Field(None, description="思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要调用共用）：disabled=关闭思考（默认，简单延迟敏感任务加速并节省 token）/enabled_low/enabled_high/enabled_max=开启思考并指定强度（low/high/max）")
     parse_llm_model: Optional[str] = Field(None, description="解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为激活档案 LLM 模型列表的 name；空/缺省=用当前激活对话模型，查不到回退激活模型；对话不受影响；随 parser_config 持久化，重跑沿用）")
     qa_force_continue: Optional[bool] = Field(None, description="QA 问答切块规范性强制继续（仅 method=qa 生效）：False/缺省=解析后检测问答对占比（问答对/总段落），低于 50% 任务失败并带检测详情；True=跳过规范性检测直接入库（前端确认继续入库时提交）")
 
