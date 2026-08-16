@@ -43,6 +43,15 @@ parsed 为历史中间态，仅兼容保留）
 - parent_child 父子分块：子块入向量库（metadata 带 char_start/char_end/
   parent_chunk_index/parent_text/retrieval_mode），父块全文随子块存储供检索上下文；
   其他方式 metadata 仅 document_id/document_name/chunk_index/char_start/char_end
+- agentic（Agentic 智能分块，第六种方式）：LLM 读全文（≤1 万字）自主判断
+  完整逻辑段落切割，每块附类型标签（论述类/事实类/操作类/数据类/其他，
+  实现见 backend/services/agentic_chunker.py）。超 1 万字 → ValueError
+  （"成本太高"提示，任务失败，前端换切块方式）；LLM 失败/超时/对齐全失败
+  → 回退 title 切块（warning 注明原因，不阻塞入库）。标签存
+  chunks_meta.label（可选字段，仅 agentic 成功块带）。思考关闭策略复用
+  thinking_strategy（在线 extra_body / 本地 Qwen prefill）。与上下文检索
+  增强/知识图谱三选一互斥：前端互斥逻辑 + 后端 resolve_parser_config 强制
+  关闭（防 API 直调/重跑旧配置组合）
 - 防重复触发：任务执行中用内存集合标记，状态机迁移双保险
 - 入库前先清旧向量（对任何切块方式都执行，幂等）
 - 原始文件从对象存储（MinIO/local）下载到 data/uploads/ 供解析；
@@ -64,6 +73,8 @@ from backend.chunking.splitter import (VALID_METHODS, Chunk, QaStats,
                                        ParentChildChunkResult)
 from backend.config import get_active_config
 from backend.models.rag_models import DocumentItem
+from backend.services.agentic_chunker import (AgenticChunkError,
+                                              agentic_chunk)
 from backend.services.contextual_retriever import enrich_chunks
 from backend.services.document_service import get_document_service
 from backend.services.embedding_service import get_embedding_service
@@ -321,15 +332,27 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
                     f"（需 {_MIN_TASK_PAGE_SIZE}~{_MAX_TASK_PAGE_SIZE}）")
         elif key == "pages":
             value = _validate_pages(value)
+            if value not in _VALID_THINKING_MODES:
+                raise ValueError(
+                    f"（支持: {'/'.join(_VALID_THINKING_MODES)}）")
         elif key in _PARSER_BOOL_FIELDS:
             if not isinstance(value, bool):
                 raise ValueError(f"{key} 必须是布尔值（true/false）")
         cfg[key] = value
+    # agentic 与上下文检索增强/知识图谱三选一互斥（用户约束：三个大模型
+    # 功能只能选一个）：强制关闭后两者——前端互斥逻辑 + 后端双保险，
+    # 防 API 直调/重跑沿用文档旧配置产生组合
+    if method == "agentic":
+        cfg["contextual_retrieval"] = False
+        cfg["knowledge_graph"] = False
     return method, cfg
 
 # 切块预览上限
 _PREVIEW_LIMIT = 20
 _PREVIEW_CHAR = 500
+# Agentic 智能分块文本长度上限（用户约束：超过 1 万字 LLM 全量读取成本
+# 太高 → 提示换方式；校验在解析出文本后、切块前，失败写回 failed）
+_MAX_AGENTIC_TEXT_CHARS = 10000
 
 
 class IngestionService:
@@ -507,22 +530,51 @@ class IngestionService:
                         f"（qa_force_continue=true）")
 
             # 4) 切块（按用户选择的切块方式与参数；用替换后文本保证图片引用可加载）
-            splitter = get_chunker(parser_id, parser_config)
             chunk_objects: List[Chunk] = []
             parent_chunks: List[Chunk] = []
             child_parent_map: Dict[int, int] = {}
-            if parser_id == "parent_child":
+            # Agentic 分块标签（仅 method=agentic 成功时填充；无标签的块不带
+            # 该字段，chunks_meta.label 可选）
+            agentic_labels: Dict[int, str] = {}
+            if parser_id == "agentic":
+                # Agentic 智能分块：LLM 读全文（≤1 万字）自主切逻辑段落并打
+                # 标签（论述类/事实类/操作类/数据类/其他，实现与失败语义见
+                # agentic_chunker）。超限 → ValueError（任务失败，前端提示换
+                # 方式）；LLM 失败/超时/对齐全失败 → 回退 title 切块
+                # （warning 注明原因，不阻塞入库）；思考关闭策略复用
+                # thinking_strategy（cfg.thinking_mode）
+                if len(text) > _MAX_AGENTIC_TEXT_CHARS:
+                    raise ValueError(
+                        "文档超过 1 万字，Agentic 分块成本太高，"
+                        "请换用其他切块方式")
+                try:
+                    agentic_chunks, labels = await agentic_chunk(
+                        text, parser_config)
+                    agentic_labels = {i: labels[i]
+                                      for i in range(len(labels))}
+                    chunk_objects = agentic_chunks
+                except AgenticChunkError as e:
+                    logger.warning(
+                        "Agentic 切块失败，回退标题切块: %s (%s) 原因=%s",
+                        doc.original_name, doc_id, str(e))
+                    chunk_objects = get_chunker("title",
+                                                parser_config).chunk(text)
+            elif parser_id == "parent_child":
                 # 父子分块：子块入库，父块作上下文写进 metadata
+                splitter = get_chunker(parser_id, parser_config)
                 result: ParentChildChunkResult = splitter.chunk_parent_child(text)
                 chunk_objects = result.children
                 parent_chunks = result.parents
                 child_parent_map = result.child_parent_map
             else:
-                chunk_objects = splitter.chunk(text)
+                chunk_objects = get_chunker(parser_id, parser_config).chunk(text)
 
             # 4.5) 父标题前缀（enable_heading_in_content）：为不含标题的块拼接
             # 其前最近的标题链（如 "第一章 > 1.1"），块文本自带标题行则跳过；
             # 仅改块文本，char_start/char_end 保持原文偏移（归属/定位不受影响）
+            # 原始块文本在加前缀前保留：父标题只用于展示，知识图谱实体偏移
+            # 以原文为准（与 chunks_meta 偏移契约一致）
+            raw_chunk_texts: List[str] = [c.text for c in chunk_objects]
             if parser_config.get("enable_heading_in_content"):
                 chunk_objects = add_heading_paths(chunk_objects, text)
 
@@ -638,6 +690,8 @@ class IngestionService:
                     {"text": c.text, "char_start": c.char_start,
                      "char_end": c.char_end,
                      **({"context": contexts[i]} if i in contexts else {}),
+                     **({"label": agentic_labels[i]}
+                        if i in agentic_labels else {})}
                     for i, c in enumerate(chunk_objects)],
                 "parser_id": parser_id,
                 "parser_config": parser_config,

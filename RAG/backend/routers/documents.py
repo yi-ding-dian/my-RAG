@@ -459,7 +459,8 @@ async def get_document(kb_id: str, doc_id: str,
         chunks = [ChunkInfo(text=c.get("text", ""), index=i,
                             char_start=c.get("char_start", -1),
                             char_end=c.get("char_end", -1),
-                            context=c.get("context"))
+                            context=c.get("context"),
+                            label=c.get("label"))
                   for i, c in enumerate(doc.chunks_meta)]
     else:
         # 历史数据（无 chunks_meta）：chunk_preview 兜底，偏移未知（-1）

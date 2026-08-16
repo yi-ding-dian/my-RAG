@@ -240,6 +240,7 @@ class ChunkInfo(BaseModel):
     char_start: int = Field(-1, description="字符起始偏移（相对 full_text；-1=历史数据无偏移）")
     char_end: int = Field(-1, description="字符结束偏移（开区间，相对 full_text；-1=历史数据无偏移）")
     context: Optional[str] = Field(None, description="上下文摘要（上下文检索增强开启时生成；text 保持原文，偏移契约不受影响；无摘要为 None）")
+    label: Optional[str] = Field(None, description="块类型标签（仅 Agentic 智能分块成功时生成：论述类/事实类/操作类/数据类/其他；无标签为 None）")
 
 
 class DocumentDetail(DocumentItem):

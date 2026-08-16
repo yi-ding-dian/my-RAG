@@ -81,7 +81,7 @@ flowchart LR
     ↓
 解析：MinerU 高质量解析（含图片提取）→ 不可用自动降级 pypdf / python-docx
     ↓
-切块：通用 / 按标题 / 正则 / 父子分块（chunk_size / chunk_overlap 可配）
+切块：通用 / 按标题 / 正则 / 父子分块 / QA 问答 / Agentic 智能分块（chunk_size / chunk_overlap 可配；Agentic 为 LLM 读全文语义切块，≤1 万字，原理见 docs/agentic-chunking.md）
     ↓
 向量化：bge-m3（批量 32、超长截断 8000 字符）+ 维度检测
     ↓
@@ -129,7 +129,7 @@ flowchart LR
 | `services/auth_service.py` `user_service.py` `department_service.py` | 多租户认证与账号体系 |
 | `services/web_importer.py` | URL 网页导入 |
 | `services/deepdoc_client.py` `probes.py` | DeepDoc/探测客户端（可选解析链路） |
-| `chunking/splitter.py` | 切块引擎（通用/按标题/正则/父子分块） |
+| `chunking/splitter.py` | 切块引擎（通用/按标题/正则/父子分块/QA 问答；Agentic 为 services/agentic_chunker.py 异步 LLM 分块） |
 
 ### 2.2 前端（frontend/src/pages/）
 

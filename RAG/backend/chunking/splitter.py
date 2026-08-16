@@ -21,7 +21,9 @@
 - QaChunker: QA 问答切块（问/答标记识别，问答对整块，答案跨多段保留，
   文档头杂项兜底普通块；analyze_qa_format/is_qa_format_valid 为规范性
   检测纯函数，入库前按占比 >=50% 判定合格，与切块器统计口径一致）
-- get_chunker: 切块器工厂（naive/title/regex/parent_child/qa 五种方式，入库参数驱动）
+- get_chunker: 切块器工厂（naive/title/regex/parent_child/qa 五种同步方式，
+  入库参数驱动；agentic 为 LLM 异步切块，不走本工厂——ingestion_service
+  特殊分支调用 backend/services/agentic_chunker.py，失败回退 title）
 - Chunker 协议: 预留语义切块等扩展
 """
 from __future__ import annotations
@@ -32,8 +34,10 @@ from typing import Dict, List, Protocol, Tuple
 
 from backend.config import get_active_config
 
-# 支持的切块方式（ingest 请求 method / 文档 parser_id 取值范围）
-VALID_METHODS = ("naive", "title", "regex", "parent_child", "qa")
+# 支持的切块方式（ingest 请求 method / 文档 parser_id 取值范围；
+# agentic=Agentic 智能分块（LLM 读全文切逻辑段落+标签），异步实现见
+# backend/services/agentic_chunker.py，get_chunker 不支持（ingestion 特殊分支））
+VALID_METHODS = ("naive", "title", "regex", "parent_child", "qa", "agentic")
 
 _TITLE_RE = re.compile(r"^#{1,3}\s+\S.*$", re.MULTILINE)
 

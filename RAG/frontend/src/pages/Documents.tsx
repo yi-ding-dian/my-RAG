@@ -175,6 +175,7 @@ const DocumentsPage: React.FC = () => {
   const qaPromptedRef = useRef<Set<string>>(new Set());
   // Agentic 分块超限提示：已提示过的 doc_id 集合（防列表轮询重复弹窗；
   // 重新发起解析时清除该条目，再次失败可再次提示）
+  const agenticPromptedRef = useRef<Set<string>>(new Set());
   // 重命名弹窗（当前待重命名文档）
   const [renameDoc, setRenameDoc] = useState<DocumentItem | null>(null);
   // URL 网页导入弹窗
@@ -348,6 +349,21 @@ const DocumentsPage: React.FC = () => {
     }
   }, [docs, kbId, modal, message, reloadFirstPage]);
 
+  // Agentic 分块超限提示：Agentic 方式入库时后端校验解析文本 >1 万字 →
+  // 任务失败，error 带"超过 1 万字"提示（成本太高，提交前无法预知文本
+  // 长度，由后端校验后经 doc.error 传递）；此处弹错误提示引导换切块方式
+  useEffect(() => {
+    if (!kbId) return;
+    for (const doc of docs) {
+      if (doc.status !== 'failed' || !doc.error) continue;
+      if (!doc.error.includes('超过 1 万字') || agenticPromptedRef.current.has(doc.id)) continue;
+      agenticPromptedRef.current.add(doc.id);
+      message.error(
+        `「${doc.original_name}」文档超过 1 万字，Agentic 分块成本太高，请换用其他切块方式`,
+      );
+    }
+  }, [docs, kbId, message]);
+
   // ---------- 操作 ----------
 
   /** 并发池：以 concurrency 上限执行 fn（fn 内部已捕获异常，不会中断整池） */
@@ -463,8 +479,9 @@ const DocumentsPage: React.FC = () => {
     for (let i = 0; i < targets.length; i++) {
       const doc = targets[i];
       // 批量重新解析（可能沿用已入库的 qa 配置）：清除 QA 失败提示记录，
-      // 再次失败可再次弹确认框
+      // 再次失败可再次弹确认框；Agentic 超限提示记录同清（再次失败可再提示）
       qaPromptedRef.current.delete(doc.id);
+      agenticPromptedRef.current.delete(doc.id);
       try {
         // 不传配置 = 按文档已有 parser_config 解析，无配置的用后端默认
         await ingestDocument(kbId, doc.id);
@@ -1342,6 +1359,7 @@ const DocumentsPage: React.FC = () => {
                         char_start: c.char_start,
                         char_end: c.char_end,
                         context: c.context,
+                        label: c.label,
                       })) ??
                       detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
                       []

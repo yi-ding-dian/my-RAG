@@ -90,13 +90,26 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   const [form] = Form.useForm<ParseConfigFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [parserStatus, setParserStatus] = useState<ParserStatus | null>(null);
-  const method = Form.useWatch('method', form) ?? 'naive';
   // 解析 LLM 模型列表（GET /api/settings/llm/models，登录即可读）：上下文检索
   // 增强/知识图谱开关开启时显示"解析 LLM 模型"下拉，切换前先测试连接
   const [llmModels, setLlmModels] = useState<ParserLlmModelItem[]>([]);
   const [activeLlmIdx, setActiveLlmIdx] = useState(0);
   // 切换模型时正在测试连接的标记（防重复点击）
   const [testingLlm, setTestingLlm] = useState(false);
+  const method = Form.useWatch('method', form) ?? 'naive';
+  // Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签。与上下文检索增强/
+  // 知识图谱三选一互斥（用户约束：三个大模型功能只能选一个）——选 agentic
+  // 自动关闭并禁用这两个开关（后端 resolve_parser_config 同样强制关闭双保险）
+  const isAgentic = method === 'agentic';
+  useEffect(() => {
+    if (!open || !isAgentic) return;
+    if (form.getFieldValue('contextual_retrieval')) {
+      form.setFieldValue('contextual_retrieval', false);
+    }
+    if (form.getFieldValue('knowledge_graph')) {
+      form.setFieldValue('knowledge_graph', false);
+    }
+  }, [isAgentic, open, form]);
 
   // 打开时探测解析器可用性（GET /kbs/parsers/status，并行 ≤8s）：显示状态徽标；
   // 探测失败静默（徽标不显示，不阻塞弹窗使用）
@@ -150,7 +163,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       };
       const isParentChild = doc.parser_id === 'parent_child';
       const initMethod: ParseMethod =
-        doc.parser_id === 'parent_child' || doc.parser_id === 'title' || doc.parser_id === 'regex'
+        doc.parser_id === 'parent_child' || doc.parser_id === 'title' ||
+        doc.parser_id === 'regex' || doc.parser_id === 'agentic'
           ? (doc.parser_id as ParseMethod)
           : 'naive';
       // PDF 解析配置回填：parser_config 有对应字段时沿用（含页码范围），缺失用默认值
@@ -251,7 +265,25 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 版面识别=DeepDOC 时解析引擎强制 deepdoc、=PlainText 时强制 plain
   // （与后端规则一致：auto+DeepDOC→deepdoc / auto+PlainText→plain；前端
   // 直接强制，避免出现 layout=DeepDOC + engine=mineru 之类的冲突组合）
-  const layoutRecognize = Form.useWatch('layout_recognize', form);
+  const layoutRecognize = Form.useWatch('layout_recognize', form) ?? 'MinerU';
+
+  // ===== 版面识别联动显隐（设置不了的就不显示；依据后端实际生效范围）=====
+  // 后端 resolve_parser_config 后 _PARSER_PARSE_OPTS 透传解析器：
+  //   engine=deepdoc 时 parse_opts={}（表格/公式/图片/页码/任务页大小/语言全部不透传）；
+  //   engine=plain 时 parser_client._extract_plain 不消费 parse_opts（纯文本直提无这些链路）；
+  //   parse_opts 仅对 MinerU（API 请求体）有意义；plain 无需解析器探测。
+  // 显隐对照表：
+  //   配置项                  MinerU   DeepDOC   PlainText
+  //   解析器状态               显示     显示      隐藏（plain 无需探测）
+  //   页码范围 pages           显示     隐藏      隐藏（非 MinerU 不透传）
+  //   任务页面大小             显示     隐藏      隐藏（同上）
+  //   表格识别                 显示     隐藏      隐藏（同上；MinerU 下服务端固定开启暂不生效）
+  //   公式识别                 显示     隐藏      隐藏（同上；取决于 MinerU 服务端）
+  //   图片提取                 显示     隐藏      隐藏（同上；DeepDOC 无图片链路）
+  //   包含父标题               显示     显示      隐藏（切块后处理与引擎无关，仅 UI 隐藏、提交保留）
+  //   上下文检索/知识图谱/思考模式/语言/切块  均显示（与版面识别无关）
+  const isMinerU = layoutRecognize === 'MinerU';
+  const isPlainText = layoutRecognize === 'PlainText';
   useEffect(() => {
     if (open && layoutRecognize === 'DeepDOC') {
       form.setFieldValue('parser_engine', 'deepdoc');
@@ -302,20 +334,29 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       config.parent_split_level = values.parent_split_level;
       config.retrieval_mode = values.retrieval_mode;
     }
-    // PDF 解析配置：页码范围转 [[from,to]] 数组；空时发默认全篇 [[1, 1000000]]
-    const pages: number[][] = (values.pages ?? [])
-      .filter(p => p && typeof p.from === 'number' && typeof p.to === 'number')
-      .map(p => [p.from as number, p.to as number]);
-    config.pages = pages.length > 0 ? pages : [[1, 1000000]];
     config.layout_recognize = values.layout_recognize;
     // MinerU 解析后端：仅解析引擎=mineru 时发送；选"自动"（auto）不传（跟随服务端默认）
     if (values.parser_engine === 'mineru' && values.backend && values.backend !== 'auto') {
       config.backend = values.backend;
     }
-    config.task_page_size = values.task_page_size;
-    config.table_enable = values.table_enable;
-    config.formula_enable = values.formula_enable;
-    config.return_images = values.return_images;
+    // 版面识别联动提交（隐藏即不提交）：非 MinerU 时后端不读
+    // pages/task_page_size/table_enable/formula_enable/return_images
+    // （engine=deepdoc 时 parse_opts={}；plain 分支不消费 parse_opts），
+    // 剔除避免持久化无关配置；缺省由后端 _DEFAULT_PARSER_CONFIG 兜底，
+    // 重跑回填（前端缺省默认值）兼容
+    if (values.layout_recognize === 'MinerU') {
+      // 页码范围转 [[from,to]] 数组；空时发默认全篇 [[1, 1000000]]
+      const pages: number[][] = (values.pages ?? [])
+        .filter(p => p && typeof p.from === 'number' && typeof p.to === 'number')
+        .map(p => [p.from as number, p.to as number]);
+      config.pages = pages.length > 0 ? pages : [[1, 1000000]];
+      config.task_page_size = values.task_page_size;
+      config.table_enable = values.table_enable;
+      config.formula_enable = values.formula_enable;
+      config.return_images = values.return_images;
+    }
+    // 包含父标题：切块后处理（不依赖解析引擎，PlainText 下同样生效），
+    // 始终提交（仅 UI 隐藏，不影响实际行为）
     config.enable_heading_in_content = values.enable_heading_in_content;
     config.contextual_retrieval = values.contextual_retrieval;
     config.knowledge_graph = values.knowledge_graph;
@@ -416,8 +457,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                   {/* MinerU 解析后端：仅解析引擎=mineru 时显示（auto/其他引擎不传，
                       跟随 MinerU 服务端默认 hybrid-auto-engine） */}
                   {parserEngine === 'mineru' && <MinerUBackendField />}
-                  {/* 解析器可用性徽标（弹窗打开时探测；不可用红色，Tooltip 显示原因） */}
-                  {parserStatus && (
+                  {/* 解析器可用性徽标（弹窗打开时探测；不可用红色，Tooltip 显示原因）；
+                      PlainText 无需解析器探测（后端 plain 分支直接 pypdf/python-docx 提取），不显示 */}
+                  {parserStatus && !isPlainText && (
                     <Form.Item label="解析器状态" style={{ marginBottom: 16 }}>
                       <Space size="large">
                         <ParserStatusBadge name="MinerU" entry={parserStatus.mineru} />
@@ -425,32 +467,44 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       </Space>
                     </Form.Item>
                   )}
-                  <PagesRangeField />
-                  <TaskPageSizeField />
-                  <SwitchField
-                    name="table_enable"
-                    label="表格识别"
-                    desc="当前 MinerU 服务端固定开启表格识别（以图片输出），此开关暂不生效"
-                    defaultValue
-                  />
-                  <SwitchField
-                    name="formula_enable"
-                    label="公式识别"
-                    desc="此开关暂不生效，取决于 MinerU 服务端配置"
-                    defaultValue
-                  />
-                  <SwitchField
-                    name="return_images"
-                    label="图片提取"
-                    desc="提取文档图片并保存（存 MinIO）"
-                    defaultValue
-                  />
-                  <SwitchField
-                    name="enable_heading_in_content"
-                    label="包含父标题"
-                    desc="切块时在块前补标题路径"
-                    defaultValue={false}
-                  />
+                  {/* 页码范围/任务页面大小/表格/公式/图片：仅 MinerU 生效（非 MinerU 时
+                      后端 parse_opts={} 或 plain 分支不消费），隐藏即不提交 */}
+                  {isMinerU && <PagesRangeField />}
+                  {isMinerU && <TaskPageSizeField />}
+                  {isMinerU && (
+                    <SwitchField
+                      name="table_enable"
+                      label="表格识别"
+                      desc="当前 MinerU 服务端固定开启表格识别（以图片输出），此开关暂不生效"
+                      defaultValue
+                    />
+                  )}
+                  {isMinerU && (
+                    <SwitchField
+                      name="formula_enable"
+                      label="公式识别"
+                      desc="此开关暂不生效，取决于 MinerU 服务端配置"
+                      defaultValue
+                    />
+                  )}
+                  {isMinerU && (
+                    <SwitchField
+                      name="return_images"
+                      label="图片提取"
+                      desc="提取文档图片并保存（存 MinIO）"
+                      defaultValue
+                    />
+                  )}
+                  {/* 包含父标题是切块后处理（不依赖解析引擎，PlainText 下同样生效），
+                      仅 UI 隐藏以精简表单，提交值保留（见 handleOk） */}
+                  {!isPlainText && (
+                    <SwitchField
+                      name="enable_heading_in_content"
+                      label="包含父标题"
+                      desc="切块时在块前补标题路径"
+                      defaultValue={false}
+                    />
+                  )}
                   {/* 上下文检索增强：对所有文档类型生效（切块后处理，不依赖解析器）；
                       开关开启时 Alert 提示额外 token 费用（用户确认的提示文案） */}
                   <SwitchField
@@ -458,6 +512,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     label="上下文检索增强"
                     desc="切块后用 LLM 为每个块生成简短上下文摘要附在块头部，解决孤立分块缺乏全局背景的问题，提升检索质量"
                     defaultValue={false}
+                    disabled={isAgentic}
+                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
                   />
                   {contextualRetrieval && (
                     <Alert
@@ -518,9 +574,21 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
               { value: 'regex', label: '正则切块' },
               { value: 'parent_child', label: '父子分块' },
               { value: 'qa', label: 'QA 问答' },
+              { value: 'agentic', label: 'Agentic 智能分块' },
             ]}
           />
         </Form.Item>
+
+        {/* Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签（说明与互斥提示） */}
+        {method === 'agentic' && (
+          <Alert
+            message="Agentic 智能分块说明"
+            description="LLM 自主判断完整逻辑段落切割并打标签（论述类/事实类/操作类/数据类/其他），仅支持 ≤1 万字文档（超过将提示换用其他切块方式）。与上下文检索增强、知识图谱互斥（只能选一个）。LLM 调用失败时自动回退按标题切块，不阻塞入库。"
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+        )}
 
         {/* 父子分块：子块/父块双 Card 配置（参考 KnowFlow chunking-config 布局） */}
         {isParentChild && (

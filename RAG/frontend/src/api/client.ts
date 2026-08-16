@@ -81,7 +81,7 @@ export interface RebuildTaskStatus {
 
 export type DocumentStatus = 'uploaded' | 'parsing' | 'parsed' | 'ingested' | 'failed';
 
-export type ParseMethod = 'naive' | 'title' | 'regex' | 'parent_child' | 'qa';
+export type ParseMethod = 'naive' | 'title' | 'regex' | 'parent_child' | 'qa' | 'agentic';
 
 /** 解析引擎：auto=自动（MinerU 优先，不可用自动降级；layout=DeepDOC 时走 DeepDoc）| mineru=强制 MinerU 高精度（PDF 混排）| deepdoc=强制 DeepDoc（RAGFlow，表格输出可检索 HTML，仅 PDF）| plain=纯文本提取 */
 export type ParserEngine = 'auto' | 'mineru' | 'deepdoc' | 'plain';
@@ -185,12 +185,14 @@ export const methodLabel = (method: string): string => {
       return '父子分块';
     case 'qa':
       return 'QA 问答';
+    case 'agentic':
+      return 'Agentic 智能分块';
     default:
       return method;
   }
 };
 
-/** 解析方式对应 Tag 颜色（契约：通用=blue / 按标题=geekblue / 正则=purple / 父子分块=magenta / QA 问答=cyan） */
+/** 解析方式对应 Tag 颜色（契约：通用=blue / 按标题=geekblue / 正则=purple / 父子分块=magenta / QA 问答=cyan / Agentic=gold） */
 export const methodColor = (method: string): string => {
   switch (method) {
     case 'naive':
@@ -203,6 +205,8 @@ export const methodColor = (method: string): string => {
       return 'magenta';
     case 'qa':
       return 'cyan';
+    case 'agentic':
+      return 'gold';
     default:
       return 'default';
   }
@@ -216,7 +220,7 @@ export interface DocumentDetail {
   id: string;
   name: string;
   status: DocumentStatus;
-  chunks?: Array<{ index: number; text: string; char_start?: number; char_end?: number; context?: string | null; [k: string]: unknown }>;
+  chunks?: Array<{ index: number; text: string; char_start?: number; char_end?: number; context?: string | null; label?: string | null; [k: string]: unknown }>;
   /** 文档全文（切块对比视图用），可选兼容 */
   full_text?: string;
   chunk_preview?: string[];
