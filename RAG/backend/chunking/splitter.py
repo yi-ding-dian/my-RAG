@@ -4,8 +4,9 @@
   所有切块器的 chunk() 统一返回 List[Chunk]（偏移支持详情展示/子父块归属计算）
 - RecursiveChunker: 递归字符切（分隔符 ["\\n\\n","\\n","。","；","，"," ",""]，
   size=800 字符 / overlap=100，env 可配；可选自定义 delimiter 优先切）
-- MarkdownSplitter: 按 Markdown 标题切（默认 #/##/###，可用 split_level 限层级，
-  标题保留块首），超长段再递归切
+- MarkdownSplitter: 按标题切（默认 #/##/### + 纯文本常见标题样式：setext
+  下划线式/单行包裹式/前导符号式，可用 split_level 限层级，标题保留块首），
+  超长段再递归切
 - RegexChunker: 按正则匹配位置切（匹配片段与片段间文本都成块，文本不丢），
   超长段再递归切（参考 KnowFlow regex.py 思路，finditer 避免 re.split 空匹配）
 - ParentChildChunker: 父子分块（对齐 KnowFlow parent_child 语义）：
@@ -45,6 +46,129 @@ _TITLE_RE = re.compile(r"^#{1,3}\s+\S.*$", re.MULTILINE)
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 # 块文本是否已含标题行（含则不再拼接父标题）
 _CHUNK_HEADING_RE = re.compile(r"^#{1,6}\s+\S", re.MULTILINE)
+
+# ---- 纯文本标题样式识别（title 切块增强，MarkdownSplitter 标题边界使用）----
+# 标题内容行最大字符数：超长行（如整段正文）不是标题
+_HEADING_MAX_LEN = 50
+# setext 下划线行：整行（去首尾空白）只含 = 或 - 且 >=4 个（markdown Setext 标题）
+_SETEXT_EQ_RE = re.compile(r"^[ \t]*={4,}[ \t]*$")
+_SETEXT_DASH_RE = re.compile(r"^[ \t]*-{4,}[ \t]*$")
+# 单行包裹式首尾符号：半角 = - *（各 >=3 个）与全角装饰线 ━ ─（各 >=2 个）
+_WRAP_SYMBOLS = "=-*━─"
+# 前导符号式行首标记（■◆●※▶▍，后跟空格或直接接文字）
+_LEADING_MARK_RE = re.compile(r"^[ \t]*([■◆●※▶▍])\s*(.+?)\s*$")
+# 纯符号字符集：仅含这些字符的行是装饰线/分隔线（如 ========、------），
+# 不是标题内容（防误判：单独一行 = 装饰线不当作 setext 内容行）
+_PURE_SYMBOL_CHARS = set("-=*~_#|+━─—·•●○■◆※▶▍")
+
+
+def _is_pure_symbol_line(line: str) -> bool:
+    """纯符号/纯空白行（如单独一行 ========、------、━━）→ True
+
+    装饰线、分隔线不是标题内容（防误判：'====\\n====' 的上一行不是标题）。
+    """
+    s = line.strip()
+    return not s or all(ch in _PURE_SYMBOL_CHARS for ch in s)
+
+
+def _is_heading_text_candidate(line: str) -> bool:
+    """标题内容候选：非空、非纯符号、长度 <= 50（setext 内容行/包裹内容共用）"""
+    s = line.strip()
+    return bool(s) and len(s) <= _HEADING_MAX_LEN and not _is_pure_symbol_line(s)
+
+
+def _unwrap_wrapped_heading(line: str) -> str | None:
+    """单行包裹式标题解析：命中返回标题内容（去掉首尾包裹符号），否则 None
+
+    - 符号包裹：首尾同一符号（= - * 或全角装饰 ━ ─），前缀/后缀各 >=3 个
+      （━ ─ 为 >=2 个），左右可不等长；中间内容非空、<=50 字符、非纯符号；
+      示例：'===== 6.3.2 变电站模型 ====='、'--- 备注 ---'、'*** 说明 ***'、
+      '━━ 标题 ━━'；
+    - 全角方括号包裹：整行就是【内容】（如 '【设备容器模型】'）；
+    - 纯符号行（如单独一行 '=========='）无内容 → 不命中（装饰线不是标题）
+    """
+    s = line.strip()
+    if not s:
+        return None
+    if len(s) >= 3 and s[0] == "【" and s[-1] == "】":
+        inner = s[1:-1].strip()
+        return inner if _is_heading_text_candidate(inner) else None
+    first, last = s[0], s[-1]
+    if first != last or first not in _WRAP_SYMBOLS:
+        return None
+    head = 0
+    while head < len(s) and s[head] == first:
+        head += 1
+    tail = 0
+    while tail < len(s) and s[len(s) - 1 - tail] == first:
+        tail += 1
+    min_wrap = 2 if first in "━─" else 3
+    if head < min_wrap or tail < min_wrap or head + tail >= len(s):
+        return None  # 包裹符号不足 或 整行都是符号（无内容）
+    inner = s[head:len(s) - tail].strip()
+    return inner if _is_heading_text_candidate(inner) else None
+
+
+def _iter_headings(text: str,
+                   protected: List[Tuple[int, int]] | None = None) -> List[Tuple[int, int, str]]:
+    """统一标题识别（title 切块）：ATX # 标题 + 纯文本常见标题样式
+
+    返回 [(标题行起始偏移, 级别, 标题文本)]，按位置升序。级别映射
+    （供 split_level 过滤，'识别 <=N 级标题' 语义与 # 标题统一）：
+    - ATX '# 标题'（# 后空白 + 非空内容）→ 级别 = # 数量（1~6）
+    - Setext '标题\\n========'（下划线整行 >=4 个 =）→ 级别 1
+             '标题\\n--------'（下划线整行 >=4 个 -）→ 级别 2
+      （setext 标题边界在标题文字行起点，下划线行并入该标题块）
+    - 单行包裹式 '===== 标题 =====' / '--- 备注 ---' / '*** 说明 ***' /
+      '【标题】' / '━━ 标题 ━━' → 级别 2
+    - 前导符号式 '■ 第一章 概述'（■◆●※▶▍ 开头，后跟空格或直接接文字，
+      整行 <=50 字符）→ 级别 2
+
+    防误判：
+    - 纯符号行（单独一行 ======== / ------ 装饰线）不是标题内容；
+    - 表格/代码块保护区间内的行不是标题（protected 过滤）；
+    - setext 内容行不以 < 开头（XML/HTML 标签行，如 '<Breaker::湖北>'）、
+      不以 | 开头（表格行）、不以 :/：结尾（字段定义/程序输出标签行，
+      如 'E文件导出实例：'）、非纯符号、<=50 字符；
+    - 一行已按 ATX/包裹式/前导符号式识别为标题时，不再重复识别为 setext
+      内容行（避免 '【标题】\\n====' 双重识别）；
+    - 连续标题（直接相邻标题行不各自成块）由调用方 _filter_continuous_headings
+      负责，本函数不处理。
+    """
+    lines = text.split("\n")
+    result: List[Tuple[int, int, str]] = []
+    pos = 0
+    for i, line in enumerate(lines):
+        start = pos
+        pos += len(line) + 1  # 换行符偏移（末行多余 +1 无害，不参与产出）
+        s = line.strip()
+        if not s:
+            continue
+        title, level = "", 0
+        m = _HEADING_RE.match(line)
+        if m:  # ATX：'# 标题'
+            title, level = m.group(2).strip(), len(m.group(1))
+        else:
+            inner = _unwrap_wrapped_heading(line)
+            if inner is not None:
+                title, level = inner, 2  # 单行包裹式
+            else:
+                lm = _LEADING_MARK_RE.match(line)
+                if lm is not None and len(s) <= _HEADING_MAX_LEN:
+                    title, level = lm.group(2).strip(), 2  # 前导符号式
+                elif (i + 1 < len(lines)
+                        and _is_heading_text_candidate(line)
+                        and not s.startswith(("<", "|"))
+                        and not s.endswith((":", "："))):
+                    # setext：内容行 + 下一行是整行下划线
+                    if _SETEXT_EQ_RE.match(lines[i + 1]):
+                        title, level = s, 1
+                    elif _SETEXT_DASH_RE.match(lines[i + 1]):
+                        title, level = s, 2
+        if title and (not protected
+                      or not any(ps < start < pe for ps, pe in protected)):
+            result.append((start, level, title))
+    return result
 
 # ---- 表格/代码块保护区间（切分边界不得落在区间内部，保证块级完整性）----
 # markdown 表格行：以 | 开头且以 | 结尾（仅允许空格/制表缩进，不含换行）
@@ -401,10 +525,14 @@ class RecursiveChunker:
 
 
 class MarkdownSplitter:
-    """按 Markdown 标题切块，标题保留在块首；超长段递归 RecursiveChunker
+    """按标题切块（Markdown # 标题 + 纯文本常见标题样式），标题保留在块首；
+    超长段递归 RecursiveChunker
 
-    split_level: 参与切分的最大标题层级 1-6（默认 3，即 #/##/### 都切；
-    如传 2 则仅 #/## 切分，### 归入上层块；6 级为父子分块父块聚合预留）。
+    split_level: 参与切分的最大标题层级 1-6（默认 3）。ATX '# 标题' 按 #
+    数量计级；纯文本样式级别映射（见 _iter_headings）：setext = 下划线 → 1 级、
+    - 下划线 → 2 级；单行包裹式（===== 标题 ===== 等）与前导符号式（■ 标题 等）
+    → 2 级。如传 2 则仅 1~2 级标题切分，### 归入上层块；6 级为父子分块父块
+    聚合预留。
 
     增强（对齐 KnowFlow title 方式）：
     - 表格/代码块完整性：切分边界避开表格（连续 | 行）与 ``` 围栏代码块
@@ -426,9 +554,11 @@ class MarkdownSplitter:
     @staticmethod
     def _heading_bounds(text: str, level: int,
                         protected: List[Tuple[int, int]]) -> List[int]:
-        """level 级内标题切分边界（升序）：过滤保护区内标题 + 连续标题不切"""
-        bounds = [m.start() for m in _HEADING_RE.finditer(text)
-                  if len(m.group(1)) <= level]
+        """level 级内标题切分边界（升序）：ATX # 与纯文本标题样式统一识别
+        （setext 下划线式/单行包裹式/前导符号式，级别映射见 _iter_headings），
+        过滤保护区内标题 + 连续标题不切"""
+        bounds = [start for start, lvl, _ in _iter_headings(text, protected)
+                  if lvl <= level]
         bounds = _bounds_outside_protected(bounds, protected)
         return _filter_continuous_headings(text, bounds)
 
@@ -442,6 +572,23 @@ class MarkdownSplitter:
             cursor = b
         parts.append((text[cursor:], cursor))
         return parts
+
+    @staticmethod
+    def _clamp_chunk(chunk: Chunk, lo: int, hi: int, full: str) -> Chunk | None:
+        """递归切块区间夹回章节段边界 [lo, hi)
+
+        段首块长度 < overlap 时，RecursiveChunker 的 overlap 续接会把起点
+        回移到段起点之前（吞掉段前空白甚至上一节内容），且该块文本与
+        偏移不一致——按原文切片重建，保证块完整落在段内且
+        text == full[char_start:char_end]；夹空（段前内容整块被吞）返回 None
+        """
+        cs, ce = chunk.char_start, chunk.char_end
+        if cs >= lo and ce <= hi:
+            return chunk
+        cs2, ce2 = max(cs, lo), min(ce, hi)
+        if cs2 >= ce2:
+            return None
+        return Chunk(full[cs2:ce2], cs2, ce2)
 
     def chunk(self, text: str) -> List[Chunk]:
         if not text or not text.strip():
@@ -479,7 +626,12 @@ class MarkdownSplitter:
             if len(stripped) <= self._recursive.chunk_size:
                 chunks.append(Chunk(stripped, start, start + len(stripped)))
             else:
-                chunks.extend(recursive._split_text(stripped, start))
+                # clamp：段首块过短时 overlap 续接起点会越过段起点（甚至
+                # 吞掉上一节内容），夹回段内保证块不跨标题边界
+                for c in recursive._split_text(stripped, start):
+                    clamped = self._clamp_chunk(c, start, start + len(stripped), text)
+                    if clamped and clamped.text and clamped.text.strip():
+                        chunks.append(clamped)
         return chunks
 
 

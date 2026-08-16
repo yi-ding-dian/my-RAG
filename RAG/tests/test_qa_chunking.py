@@ -348,6 +348,35 @@ class TestQaIngestChain:
         assert final["chunk_preview"][0].startswith("普通段落甲。")
         assert "问：唯一的问题？" in final["chunk_preview"][1]
 
+    def test_non_qa_method_no_detection(self, client, mock_embedding,
+                                        admin_headers):
+        """非 qa 方式不触发 QA 规范性检测：QA 检测仅 method=qa 时执行，
+        其他切块方式（title/naive/parent_child/regex）即使文档问答对占比
+        不足 50% 也直接入库，不报 QA 错误（防切块方式误触发 QA 检测回归）"""
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"], content=QA_WEAK_TEXT)
+        resp = _ingest(client, kb["id"], doc["id"],
+                       body={"method": "title"}, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        final = wait_for_status(client, kb["id"], doc["id"])
+        assert final["status"] == "ingested"  # 不报 QA 问答格式检测未通过
+        assert final["parser_id"] == "title"
+        assert not (final["error"] or "").startswith("QA 问答格式检测未通过")
+        # method 缺省（不传）时沿用文档已有配置/默认 naive，同样不触发 QA 检测
+        # （同库同名共存：force=true 跳过同名检测，本用例关注 QA 检测非同名）
+        resp2 = client.post(
+            f"/api/kbs/{kb['id']}/documents/upload?force=true",
+            files={"file": ("测试文档.txt", QA_WEAK_TEXT.encode("utf-8"),
+                            "text/plain")},
+            headers=admin_headers)
+        assert resp2.status_code == 200, resp2.text
+        doc2 = resp2.json()
+        resp = _ingest(client, kb["id"], doc2["id"], headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        final2 = wait_for_status(client, kb["id"], doc2["id"])
+        assert final2["status"] == "ingested"
+        assert final2["parser_id"] == "naive"
+
     def test_qa_good_doc_ingests_directly(self, client, mock_embedding,
                                           admin_headers):
         """问答对占比 >=50% 的合格文档直接入库（无强制标记）"""
