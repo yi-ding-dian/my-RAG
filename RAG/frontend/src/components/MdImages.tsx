@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { getToken } from '../auth/token';
 import Lightbox from './Lightbox';
+import { splitByHighlights, type HighlightRange } from '../utils/sourceHighlight';
 
 /** 图片代理前缀（与后端 /api/files/images/{doc_id}/{name} 一致） */
 const IMAGE_PROXY_PREFIX = '/api/files/images/';
@@ -28,6 +29,12 @@ interface MdImagesProps {
   maxHeight?: number | string;
   /** 每张图片加载完成时回调（外层限高容器可用它重测溢出——图片加载前高度为 0 会漏判） */
   onImageLoad?: () => void;
+  /**
+   * 相关文本高亮区间（相对 text 原始坐标的半开区间，可选）：
+   * 普通文本段内命中的部分渲染为 .citation-highlight（品牌色 10% 背景 + 加粗），
+   * 图片标签不受影响（区间计算侧已保证不覆盖图片）。缺省/空数组行为与原先完全一致。
+   */
+  highlights?: HighlightRange[];
 }
 
 /**
@@ -47,7 +54,7 @@ interface ZoomTarget {
   alt: string;
 }
 
-const MdImages: React.FC<MdImagesProps> = ({ text, maxWidth = '100%', maxHeight, onImageLoad }) => {
+const MdImages: React.FC<MdImagesProps> = ({ text, maxWidth = '100%', maxHeight, onImageLoad, highlights }) => {
   // 图片点击放大（方案 A：组件内 state 管理当前放大目标，无全局 Provider/context）：
   // Lightbox 是纯展示组件，state 只存"当前放大哪张图"，条件渲染单个遮罩实例，
   // 关闭即卸载。MdImages 保持纯函数式渲染——流式增量（图片未闭合先文本后补全）
@@ -60,14 +67,29 @@ const MdImages: React.FC<MdImagesProps> = ({ text, maxWidth = '100%', maxHeight,
   // 并发渲染/重入（React 18 并发特性、StrictMode 双调用、热更新）下多实例
   // 交错 exec 会互相改写 lastIndex，导致匹配位置错乱、部分图片随机不显示。
   const re = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  // 普通文本段（图片标签之间）渲染：按高亮区间切分，命中的部分包 .citation-highlight；
+  // highlights 坐标相对整体 text，切分时换算成相对本段（区间落在图片内的部分被 clamp 丢弃）
+  const renderPlain = (seg: string, offset: number): React.ReactNode[] => {
+    const segs = splitByHighlights(
+      seg,
+      highlights?.map(([s, e]) => [s - offset, e - offset] as HighlightRange),
+    );
+    return segs.map((s) =>
+      s.highlighted ? (
+        <mark key={`h${key++}`} className="citation-highlight">
+          {s.text}
+        </mark>
+      ) : (
+        <React.Fragment key={`t${key++}`}>{s.text}</React.Fragment>
+      ),
+    );
+  };
   let last = 0;
   let key = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) {
-      parts.push(
-        <React.Fragment key={`t${key++}`}>{text.slice(last, m.index)}</React.Fragment>,
-      );
+      parts.push(...renderPlain(text.slice(last, m.index), last));
     }
     const src = withImageToken(m[2].trim());
     const alt = m[1];
@@ -86,9 +108,7 @@ const MdImages: React.FC<MdImagesProps> = ({ text, maxWidth = '100%', maxHeight,
     last = m.index + m[0].length;
   }
   if (last < text.length) {
-    parts.push(
-      <React.Fragment key={`t${key++}`}>{text.slice(last)}</React.Fragment>,
-    );
+    parts.push(...renderPlain(text.slice(last), last));
   }
   return (
     <>

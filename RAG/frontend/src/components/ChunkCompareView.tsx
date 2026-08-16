@@ -4,6 +4,11 @@ import { ArrowDownOutlined, ArrowUpOutlined, SearchOutlined } from '@ant-design/
 import { useTheme } from '../theme';
 import MdImages from './MdImages';
 import { safeTruncateWithImages } from '../utils/safeTruncate';
+import {
+  computeHighlightRanges,
+  splitByHighlights,
+  type HighlightRange,
+} from '../utils/sourceHighlight';
 
 const { Text } = Typography;
 
@@ -24,6 +29,8 @@ export interface ChunkViewChunk {
   char_end?: number | null;
   /** 上下文摘要（上下文检索增强开启时生成；仅展示，不影响偏移与原文对比） */
   context?: string | null;
+  /** 块类型标签（Agentic 智能分块生成：论述类/事实类/操作类/数据类/其他；仅展示） */
+  label?: string | null;
 }
 
 interface ChunkCompareViewProps {
@@ -35,6 +42,12 @@ interface ChunkCompareViewProps {
   initialIndex?: number;
   /** 撑满父容器高度（放大态弹窗使用；默认固定高度） */
   fillHeight?: boolean;
+  /**
+   * 回答文本（引用溯源原文回答-对齐高亮的匹配基准，可选）：
+   * 提供时对左栏切块文本与右栏原文叠加 .citation-highlight 高亮（与引用面板同源算法），
+   * 无命中/缺省原样显示；与全文搜索高亮并存（搜索匹配优先，重叠处不嵌套 mark）
+   */
+  answerText?: string;
 }
 
 interface RawChunk {
@@ -148,7 +161,13 @@ const buildSegments = (chunks: ChunkViewChunk[], fullText: string): Segment[] =>
  * 当前匹配主色高亮、其余浅色高亮，定位时左右栏同步跳转（跨页自动切页后统一定位）。
  * full_text 为空或 chunks 无偏移时降级为纯列表 + "暂无原文预览"。
  */
-const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({ chunks, fullText, initialIndex, fillHeight }) => {
+const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
+  chunks,
+  fullText,
+  initialIndex,
+  fillHeight,
+  answerText,
+}) => {
   const { token } = theme.useToken();
   // 当前主题主色：块/区间高亮跟随预设（原硬编码 #2563eb）
   const { preset } = useTheme();
@@ -257,6 +276,26 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({ chunks, fullText, i
   const segments = useMemo(
     () => (fullText ? buildSegments(pageChunks, fullText) : []),
     [pageChunks, fullText],
+  );
+
+  // 左栏当前页切块的展示文本（安全截断，截断点避开图片引用）+ 回答-对齐高亮区间
+  // （坐标相对截断后的展示文本；无回答文本/无命中为空数组）
+  const chunkDispByIndex = useMemo(() => {
+    const map = new Map<number, { text: string; highlights: HighlightRange[] }>();
+    for (const c of pageChunks) {
+      const disp = c.text ? safeTruncateWithImages(c.text, MAX_TEXT_LEN) : '';
+      map.set(c.index, {
+        text: disp,
+        highlights: answerText && disp ? computeHighlightRanges(answerText, disp) : [],
+      });
+    }
+    return map;
+  }, [pageChunks, answerText]);
+
+  // 右栏全文的回答-对齐高亮区间（坐标相对 fullText；对全文一次性计算，各段换算后叠加渲染）
+  const answerRanges = useMemo(
+    () => (answerText && fullText ? computeHighlightRanges(answerText, fullText) : []),
+    [answerText, fullText],
   );
 
   /**
@@ -570,19 +609,40 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({ chunks, fullText, i
     const nodes: React.ReactNode[] = [];
     let cursor = 0;
     let n = 0;
-    // 文本区间（不含图片引用）：按匹配包 <mark>（当前匹配主色底白字，其余浅色底）
+    // 回答-对齐高亮文本段：按 answerRanges（相对全文坐标，base 为该段在全文中的起始偏移）
+    // 换算后切分，命中部分包 .citation-highlight（与引用面板同款样式）。无区间/无命中原样返回。
+    const renderAnswerPiece = (piece: string, baseInFull: number): React.ReactNode[] => {
+      if (!piece) return [];
+      if (answerRanges.length === 0) {
+        return [<React.Fragment key={`t${n++}`}>{piece}</React.Fragment>];
+      }
+      const rel = answerRanges.map(
+        ([s, e]) => [s - baseInFull, e - baseInFull] as HighlightRange,
+      );
+      return splitByHighlights(piece, rel).map(seg =>
+        seg.highlighted ? (
+          <mark key={`ah${n++}`} className="citation-highlight">
+            {seg.text}
+          </mark>
+        ) : (
+          <React.Fragment key={`at${n++}`}>{seg.text}</React.Fragment>
+        ),
+      );
+    };
+    // 文本区间（不含图片引用）：搜索匹配包 <mark>（当前匹配主色底白字，其余浅色底），
+    // 匹配之外的正文叠加回答-对齐高亮（搜索高亮优先，重叠处不嵌套 mark）
     const pushPiece = (piece: string, lo: number) => {
       if (!piece) return;
       const matches = matchesInRange(lo, lo + piece.length);
       if (matches.length === 0) {
-        nodes.push(<React.Fragment key={`t${n++}`}>{piece}</React.Fragment>);
+        nodes.push(...renderAnswerPiece(piece, lo));
         return;
       }
       let c2 = 0;
       for (const m of matches) {
         const ls = m.start - lo;
         const le = m.end - lo;
-        if (ls > c2) nodes.push(<React.Fragment key={`t${n++}`}>{piece.slice(c2, ls)}</React.Fragment>);
+        if (ls > c2) nodes.push(...renderAnswerPiece(piece.slice(c2, ls), lo + c2));
         const isCurrent = currentMatch != null && m.start === currentMatch.start;
         nodes.push(
           <mark
@@ -599,7 +659,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({ chunks, fullText, i
         );
         c2 = le;
       }
-      if (c2 < piece.length) nodes.push(<React.Fragment key={`t${n++}`}>{piece.slice(c2)}</React.Fragment>);
+      if (c2 < piece.length) nodes.push(...renderAnswerPiece(piece.slice(c2), lo + c2));
     };
     // 图片引用区间交给 MdImages（图片优先），两侧文本区间做搜索高亮
     for (const sp of imgSpans) {
@@ -799,6 +859,13 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({ chunks, fullText, i
                     <Tag color={selected ? 'blue' : 'default'} style={{ flexShrink: 0, marginTop: 2 }}>
                       #{c.index}
                     </Tag>
+                    {/* Agentic 分块类型标签（金色小 Tag 与解析方式列 Agentic 金色呼应；
+                        仅 Agentic 成功分块的块带 label，其他方式块无此字段） */}
+                    {c.label && (
+                      <Tag color="gold" style={{ flexShrink: 0, marginTop: 2 }}>
+                        {c.label}
+                      </Tag>
+                    )}
                     <div style={{ minWidth: 0, flex: 1 }}>
                       {/* 上下文摘要标签（上下文检索增强开启时生成；向量化/检索文本含【上下文】前缀，
                           此处仅展示摘要本体，原文对比仍以 full_text + 偏移为准） */}
@@ -833,11 +900,13 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({ chunks, fullText, i
                       >
                         {/* 左栏同样渲染图片（与右栏同一显示规则：max-width 100% + 统一高度上限，
                             保证同一张图左右显示尺寸一致），用户无需点开即可确认块内图片；
-                            安全截断：截断点切在图片引用内时后移到引用闭合后，避免引用不完整导致图片失配显示为文本 */}
+                            安全截断：截断点切在图片引用内时后移到引用闭合后，避免引用不完整导致图片失配显示为文本；
+                            展示文本上叠加回答-对齐高亮（.citation-highlight，区间相对截断文本，由 MdImages 渲染） */}
                         <MdImages
-                          text={c.text ? safeTruncateWithImages(c.text, MAX_TEXT_LEN) : c.text}
+                          text={chunkDispByIndex.get(c.index)?.text ?? ''}
                           maxWidth="100%"
                           maxHeight={MAX_IMG_HEIGHT}
+                          highlights={chunkDispByIndex.get(c.index)?.highlights}
                         />
                       </Text>
                     </div>

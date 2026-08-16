@@ -17,6 +17,7 @@ import {
   streamChat,
 } from '../api/client';
 import MessageList from '../components/MessageList';
+import { cleanAnswerText } from '../utils/cleanMarkdown';
 import ChatInput from '../components/ChatInput';
 import ChatSettingsModal from '../components/ChatSettingsModal';
 import CitationTraceModal from '../components/CitationTraceModal';
@@ -47,6 +48,8 @@ const ChatPage: React.FC = () => {
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false);
   // 引用溯源：点击 [n] 引用标或引用面板"查看原文"时打开弹窗
   const [traceSource, setTraceSource] = useState<Source | null>(null);
+  // 引用溯源弹窗的回答文本（该引用所属回答消息的 content；原文回答-对齐高亮匹配基准）
+  const [traceAnswerText, setTraceAnswerText] = useState('');
   // 会话重命名：弹窗编辑标题（默认值当前标题）
   const [renameTarget, setRenameTarget] = useState<ChatSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -465,7 +468,13 @@ const ChatPage: React.FC = () => {
               key={activeSessionId}
               messages={messages}
               waiting={streaming}
-              onCitationClick={setTraceSource}
+              onCitationClick={(s) => {
+                setTraceSource(s);
+                // 记录该引用所属的回答文本（按 source.id 匹配消息，供溯源弹窗原文回答-对齐高亮）
+                const msg = messages.find(m => (m.sources ?? []).some(sr => sr.id === s.id));
+                // 高亮基准用清洗后文本（与气泡渲染一致，所见即所算）
+                setTraceAnswerText(cleanAnswerText(msg?.content ?? ''));
+              }}
             />
           ) : (
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -509,6 +518,7 @@ const ChatPage: React.FC = () => {
         kbId={kbId}
         source={traceSource}
         onClose={() => setTraceSource(null)}
+        answerText={traceAnswerText}
       />
     </div>
   );

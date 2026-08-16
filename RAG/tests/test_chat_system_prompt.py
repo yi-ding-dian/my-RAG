@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 from backend.config import get_active_config
 from backend.models.rag_models import Source
-from backend.services.chat_service import (ChatService,
+from backend.services.chat_service import (ChatService, _CITATION_RULE,
                                            _SYSTEM_PROMPT_TEMPLATE)
 from conftest import _FakeStream, create_kb, upload_and_ingest
 
@@ -48,6 +48,19 @@ class TestBuildSystemContent:
         assert ChatService._build_system_content("", REFS) == \
             _SYSTEM_PROMPT_TEMPLATE.format(refs=REFS)
 
+    def test_default_template_contains_inline_citation_rules(self):
+        """内置模板含行内引用标注完整指令（行内 [n] 功能依赖）"""
+        tpl = _SYSTEM_PROMPT_TEMPLATE.format(refs=REFS)
+        # 句尾标注指令 + 编号一致约束 + 不确定不标注 + 定位来源意图
+        assert "句末" in tpl and "[n]" in tpl
+        assert "编号必须与 [引用] 中的编号一致" in tpl
+        assert "不确定是否来自引用的内容不要标注" in tpl
+        assert "定位来源" in tpl
+        # 知识图谱条目也可被标注（图谱增强引用在前端显示为"知识图谱"来源）
+        assert "知识图谱" in tpl
+        # 引用编号与 [引用] 区展示顺序一致（enumerate 从 1 起）
+        assert "[引用 1]" in REFS and "[引用 2]" in REFS
+
     def test_custom_with_refs_placeholder(self):
         """自定义含 {refs} → 替换为引用内容，模板其余原样"""
         prompt = "你是我的专属助手。\n{refs}\n请直接回答。"
@@ -55,9 +68,19 @@ class TestBuildSystemContent:
         assert result == "你是我的专属助手。\n" + REFS + "\n请直接回答。"
 
     def test_custom_without_refs_appends_ref_section(self):
-        """自定义不含 {refs} → 末尾自动追加引用段"""
+        """自定义不含 {refs} → 末尾自动追加引用段与行内标注规则"""
         result = ChatService._build_system_content("你是我的专属助手。", REFS)
-        assert result == "你是我的专属助手。\n\n[引用]\n" + REFS
+        assert result == ("你是我的专属助手。\n\n" + _CITATION_RULE
+                          + "\n[引用]\n" + REFS)
+        # 追加的标注规则含行内 [n] 指令（自定义模板覆盖内置规则，靠此保证送达）
+        assert "标注规则" in _CITATION_RULE and "[n]" in _CITATION_RULE
+
+    def test_citation_rule_content(self):
+        """行内标注规则：编号一致/不确定不标注/知识图谱可标注/不改变原文"""
+        assert "编号" in _CITATION_RULE
+        assert "不确定是否来自" in _CITATION_RULE and "不要标注" in _CITATION_RULE
+        assert "知识图谱" in _CITATION_RULE
+        assert "不改变引用原文内容" in _CITATION_RULE
 
     def test_blank_system_prompt_falls_back_to_default(self):
         """空白 / 纯空格 → 视为默认"""
@@ -132,9 +155,10 @@ class TestBuildSystemContentKnowledge:
         assert result == "模板："
 
     def test_no_placeholder_appends_refs(self):
-        """{knowledge} 与 {refs} 都不含 → 末尾自动追加（现有行为不变）"""
+        """{knowledge} 与 {refs} 都不含 → 末尾自动追加引用段与标注规则"""
         result = ChatService._build_system_content("你是助手。", REFS, KNOWLEDGE)
-        assert result == "你是助手。\n\n[引用]\n" + REFS
+        assert result == ("你是助手。\n\n" + _CITATION_RULE
+                          + "\n[引用]\n" + REFS)
 
     def test_default_template_unchanged(self):
         """空 system_prompt → 内置默认模板（knowledge 参数不影响）"""

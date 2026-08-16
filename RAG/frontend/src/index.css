@@ -731,6 +731,39 @@ body {
 }
 
 /* ============================================================
+   日志查看页 Tabs（Logs.tsx）：页面固定撑满视口后，Tabs 链
+   （.ant-tabs → content-holder → content → tabpane）flex 撑满，
+   让 Tab 内容区（筛选栏 flexShrink:0 + 表格/列表 flex:1）有确定
+   高度，滚动条落在内容区内部而非整个页面。
+   注意：只对 .ant-tabs-tabpane-active 生效——非激活 tabpane 的
+   display:none（antd 隐藏逻辑）不能被覆盖，否则两个 Tab 同时渲染
+   ============================================================ */
+.logs-page-tabs.ant-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logs-page-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logs-page-tabs .ant-tabs-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logs-page-tabs .ant-tabs-tabpane-active {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ============================================================
    暗色模式适配（[data-theme='dark']，覆盖自绘区域硬编码颜色）
    AntD 组件本身由 darkAlgorithm 自动适配，仅以下自绘样式需要覆盖
    ============================================================ */
@@ -1095,4 +1128,43 @@ body {
   .ragas-row-highlight > td {
     animation: none !important;
   }
+}
+
+/* 引用面板相关文本高亮：回答与引用文本重叠的部分（引用来源面板/Modal、
+   行内 [n] Tooltip 摘要、原文详情 ChunkCompareView——全局一处生效，三处共用）。
+   样式（用户指定：取消背景色，只保留绿色下划线）：
+   - 无背景（background: transparent，覆盖 <mark> UA 黄底）
+   - color: inherit 覆盖 <mark> UA color:black（不写会继承 UA 黑字，暗色
+     主题下不可读），文字色跟随所在容器正文色，保证可读
+   - 2px 绿色下划线（border-bottom 实现：偏移可控、不与汉字笔画粘连），
+     浅色 #16a34a / 暗色 #22c55e 提亮，两主题均醒目不刺眼
+   - 字重 500：下划线已足够区分，600 加粗在正文中偏重 */
+mark.citation-highlight {
+  background: transparent;
+  color: inherit;
+  font-weight: 500;
+  padding: 0;
+  border-bottom: 2px solid #16a34a;
+}
+[data-theme='dark'] mark.citation-highlight {
+  border-bottom-color: #22c55e;
+}
+
+/* 行内引用上标 [n]：醒目但克制——浅色用品牌深色（正文中可辨识），
+   暗色用品牌提亮色（暗背景上更亮）；字号 12 + 字重 700（原 11/600 偏小偏浅） */
+.citation-mark {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+[data-theme='dark'] .citation-mark {
+  color: var(--brand-primary-soft, #60a5fa);
+}
+
+/* 兜底防"荧光 mark"：antd Tooltip/任意容器内出现未带 .citation-highlight
+   类的 <mark>（UA 样式黄底黑字，暗色下刺眼）一律还原为普通文本，
+   高亮只能由 .citation-highlight 提供，杜绝第三方/UA 样式串扰 */
+.ant-tooltip mark:not(.citation-highlight),
+mark:not(.citation-highlight) {
+  background: transparent;
+  color: inherit;
+  padding: 0;
 }

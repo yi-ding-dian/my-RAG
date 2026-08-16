@@ -280,7 +280,9 @@ class TestExtChat:
         self._chat(client, item["id"], item["token"], "Python 是什么？")
         sys_content = state.instances[0].last_kwargs["messages"][0]["content"]
         assert "[引用" in sys_content, "默认模板应注入 [引用] 内容"
-        assert "句末用 [n] 标注" in sys_content
+        # 行内引用标注指令（内置模板规则 2：句末紧贴句尾标注 [n]，编号与引用一致）
+        assert "句末" in sys_content and "[n]" in sys_content
+        assert "编号必须与 [引用] 中的编号一致" in sys_content
 
     def test_generation_params_override(self, client, admin_headers,
                                         mock_embedding, mock_llm):

@@ -37,10 +37,32 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT_TEMPLATE = (
     "你是一个严谨的知识库问答助手，回答用户问题时必须严格遵循以下规则：\n"
     "1. 只依据下方 [引用] 中的内容回答，禁止编造引用之外的信息；\n"
-    "2. 回答中每个事实性陈述的句末用 [n] 标注其来源引用编号（n 为引用序号，如 [1]）；\n"
+    "2. 回答中如需引用某条 [引用] 内容，请在该句句末紧贴句尾标注对应编号 [n]"
+    "（n 为引用序号，如 [1]，标在句末标点前）；编号必须与 [引用] 中的编号一致，"
+    "不要自造或改写编号；仅对确实来自 [引用] 的内容标注，不确定是否来自引用的内容"
+    "不要标注；标注意图是让用户快速定位来源，[引用] 中的每一条（含“知识图谱”条目）"
+    "都可被标注；\n"
     "3. 如果 [引用] 中没有与问题相关的信息，请直接说明“未检索到相关内容”，不要猜测或编造；\n"
     "4. 使用简洁、准确的中文回答。\n\n"
     "{refs}"
+)
+
+# 自定义 system_prompt（无占位符）自动追加引用段时一并追加的行内标注规则：
+# 自定义模板覆盖内置规则，不追加标注指令则模型无 [n] 标注依据（行内引用功能失效）。
+# 标注仅添加编号不改变引用原文，与"原样输出"类模板语义兼容。
+# 引用文本单条长度上限（进 prompt 的 [引用] 段，兼顾回答依据完整性与 token 成本：
+# 默认 naive 切块 800 字基本不触发，仅标题/父块等大块生效；5 源全满上限时
+# 约 3 万字 ≈ 2.2 万 token 输入，qwen 长上下文可容纳；前端面板展示不受此限
+# ——meta 下发的 sources.text/parent_text 为完整文本，面板另有"展开全文"交互）
+_REF_TEXT_MAX_LEN = 6000
+
+
+_CITATION_RULE = (
+    "标注规则：回答中如需引用 [引用] 中的内容，请在引用句句尾紧贴句号前"
+    "标注对应编号 [n]（n 必须与 [引用] 中的编号一致，如\"……成为历史上"
+    "用户增长最快的消费级应用[2]。\"），禁止自造或改写编号；仅对确实来自"
+    " [引用] 的内容标注，不确定是否来自引用的内容不要标注；[引用] 含"
+    "\"知识图谱\"条目时同样可标注；标注只添加编号，不改变引用原文内容。"
 )
 
 
@@ -319,7 +341,25 @@ class ChatService:
                 history = session.messages[-(rounds * 2):]
                 messages.extend(
                     {"role": m.role, "content": m.content} for m in history)
-            messages.append({"role": "user", "content": message})
+            # 行内引用标注指令追加到 user 消息（system 指令部分模型遵循弱，
+            # user 侧紧邻问题遵循度高；完整示例 few-shot 强化；不含占位符，
+            # 不受自定义 system_prompt 影响——自定义模板用户自行负责标注规则）
+            cite_note = (
+                "【回答标注要求（最高优先级，覆盖其他输出要求）：\n"
+                "1. 回答中每个事实性陈述，若内容来自上方 [引用]，"
+                "必须在该句句尾紧贴句号前标注对应编号 [n]，编号与 [引用]"
+                "中的编号一致，禁止自造或改写编号；\n"
+                "2. 示例：\"2022年11月，OpenAI发布了基于GPT-3.5的ChatGPT[1]。"
+                "它成为历史上用户增长最快的消费级应用[2]。\"；连续多句引用"
+                "同一编号时合并标注为 [1,2] 形式；\n"
+                "3. 不确定是否来自 [引用] 的内容不要标注；[引用] 含"
+                "\"知识图谱\"条目时同样可标注；\n"
+                "4. 用简洁中文转述引用内容，不要原样复制 [引用] 中的"
+                "【知识图谱实体】等标记性原文；回答正文不要输出 Markdown"
+                "格式符号（#、*、- 等标题或列表符号）。】\n\n"
+                f"问题：{message}"
+            )
+            messages.append({"role": "user", "content": cite_note})
 
             # 5) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
             #    部门 llm 段字段级覆盖全局 LLM——地址/密钥/模型/生成参数，
@@ -408,7 +448,10 @@ class ChatService:
             raw = raw.replace("{refs}", refs)
         if has_knowledge or has_refs:
             return raw
-        return f"{raw}\n\n[引用]\n{refs}"
+        # 无占位符：末尾自动追加引用段 + 行内标注规则
+        # （保证检索引用必达，防止用户忘写占位符导致模型无引用可依据；
+        #   标注规则保证行内 [n] 指令送达——自定义模板已覆盖内置规则）
+        return f"{raw}\n\n{_CITATION_RULE}\n[引用]\n{refs}"
 
     @staticmethod
     def _build_knowledge(sources: List[Source]) -> str:
@@ -429,12 +472,18 @@ class ChatService:
 
     @staticmethod
     def _build_refs(sources: List[Source]) -> str:
+        # 引用编号规则：编号 = sources 列表位置（1..N 连续），与 meta 事件
+        # 下发的 sources 顺序完全一致（stream_chat 中 meta 与 _build_refs 都
+        # 以同一列表为源）；前端行内 [n] 按 sources[n-1] 映射、面板角标按
+        # index+1 渲染，全链路同序。列表顺序约定：普通检索引用按相关度降序
+        # （retrieval_service 内排好），图谱引用（score=0）追加在末尾。
+        # 调用方不得对 sources 重排/去重后传给本方法，否则编号与前端错位。
         parts = []
         for i, s in enumerate(sources, start=1):
             name = s.document_name or s.document_id
             head = f"[引用 {i}]（来源：{name}）"
             # 引用文本优先用父块全文（上下文更完整，parent_child 模式），无父块用子块
-            text = (s.parent_text or s.text)[:2000]  # 单块保护截断
+            text = (s.parent_text or s.text)[:_REF_TEXT_MAX_LEN]  # 单块保护截断
             # 上下文摘要：有 context 且文本未含摘要前缀时拼到引用头部——
             # 父块全文本身无摘要（摘要是对子块生成的），补前缀让引用也显示；
             # s.text 为向量化增强文本（已含【上下文】前缀）时不重复拼接

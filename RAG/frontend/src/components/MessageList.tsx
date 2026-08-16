@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Empty, Modal, theme } from 'antd';
+import { Button, Empty, Modal, Tooltip, theme } from 'antd';
 import { ArrowDownOutlined, PaperClipOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { avatarUrl, type ChatMessage, type Source } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import MdImages from './MdImages';
 import SourcePanel from './SourcePanel';
+import { computeHighlightRanges, splitByHighlights } from '../utils/sourceHighlight';
+import { cleanAnswerText } from '../utils/cleanMarkdown';
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -51,14 +53,109 @@ const AiAvatar: React.FC = () => (
 );
 
 /**
+ * 行内引用标记 [n]：悬浮显示引用摘要（Tooltip），点击打开引用详情弹窗。
+ * - 样式：小型上标（品牌色），区别于正文
+ * - 摘要：父块全文优先（与后端 _build_refs 一致），压缩空白后 ~200 字截断
+ * - 图谱引用（document_name="知识图谱"）：同样显示图谱内容摘要，点击进图谱内容视图
+ * - 摘要内"与回答重叠的部分"高亮（.citation-highlight，同引用面板），图谱引用跳过
+ */
+const CitationMark: React.FC<{
+  n: number;
+  source: Source;
+  answerText: string;
+  onClick: (source: Source) => void;
+}> = ({ n, source, answerText, onClick }) => {
+  const raw = (source.parent_text || source.text || '').replace(/\s+/g, ' ').trim();
+  const snippet = raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+  const isGraph = source.document_name === '知识图谱';
+  // 摘要内相关部分高亮区间（坐标相对 snippet；图谱引用/无命中 → 原样显示）
+  const snippetHighlights = !isGraph && answerText
+    ? computeHighlightRanges(answerText, snippet)
+    : [];
+  // Tooltip 弹层方向：引用标位于视口上部（顶部导航高度内）时改显示在下方，
+  // 防止弹层弹出后遮挡页面顶部导航栏（antd 避让只针对视口、不感知导航层）
+  const [placement, setPlacement] = useState<'top' | 'bottom'>('top');
+  const markRef = useRef<HTMLSpanElement>(null);
+  const handleOpenChange = (open: boolean) => {
+    if (open && markRef.current) {
+      const rect = markRef.current.getBoundingClientRect();
+      setPlacement(rect.top < 140 ? 'bottom' : 'top');
+    }
+  };
+  return (
+    <Tooltip
+      placement={placement}
+      onOpenChange={handleOpenChange}
+      mouseEnterDelay={0.15}
+      overlayStyle={{ maxWidth: 420 }}
+      title={
+        <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+          <div style={{ fontWeight: 600 }}>
+            {source.document_name || source.document_id || '未知来源'}
+          </div>
+          {snippet && (
+            <div
+              style={{
+                marginTop: 2,
+                fontWeight: 400,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {splitByHighlights(snippet, snippetHighlights).map((seg, i) =>
+                seg.highlighted ? (
+                  <mark key={i} className="citation-highlight">
+                    {seg.text}
+                  </mark>
+                ) : (
+                  <React.Fragment key={i}>{seg.text}</React.Fragment>
+                ),
+              )}
+            </div>
+          )}
+          <div style={{ marginTop: 4, fontWeight: 400, opacity: 0.75 }}>
+            点击查看{isGraph ? '图谱内容' : '引用详情'}
+          </div>
+        </div>
+      }
+    >
+      <span
+        ref={markRef}
+        className="citation-mark"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick(source);
+        }}
+        style={{
+          fontSize: 12,
+          fontWeight: 700,
+          lineHeight: 1,
+          verticalAlign: 'super',
+          cursor: 'pointer',
+          userSelect: 'none',
+          margin: '0 1px',
+        }}
+      >
+        [{n}]
+      </span>
+    </Tooltip>
+  );
+};
+
+/**
  * 把文本按 [n] 引用拆分为 ReactNode 数组：
- * - n 有效（sources[n-1] 存在）→ 渲染为可点击的蓝色引用标，点击回调对应来源
+ * - n 有效（sources[n-1] 存在）→ 渲染为行内引用标（CitationMark：上标 + Tooltip + 点击），
+ *   点击回调对应来源（Chat 页 → CitationTraceModal 引用详情弹窗）
  * - 编号不存在/越界（LLM 乱写）→ 原样渲染为普通文本，不报错
  * - 无 sources 或未注册回调 → 整段原样返回
  *
- * 边界要求（防正文误判）：
- * - [n] 前必须是行首或空白字符（"参考文献[3]"不匹配）
- * - [n] 后必须是行尾/空白/标点（"见[3]附录"不匹配）
+ * 边界规则（防正文误判，句尾标注语义）：
+ * - [n] 前不限——prompt 要求"句末紧贴句尾标注"，实际输出形如"…应用[2]。"，
+ *   [ 前是正文汉字，必须匹配（旧正则要求 [ 前空白，句尾紧贴形式全部漏匹配）
+ * - [n] 后必须是行尾/空白/标点（句尾特征）："见[3]附录"（后接汉字）不匹配；
+ *   "参考文献[3]"后接汉字同样不匹配
+ * - markdown 链接 [text](url)：text 非纯数字不匹配；[1](url) 极端情形先匹配 [1]，
+ *   剩余 (url) 原样输出（模型受句尾 [n] 指令约束不会生成，可接受）
  * - 流式增量中未闭合的 "[3"（无 ]）不匹配，输出过程中原样展示
  */
 const renderCitationContent = (
@@ -69,36 +166,27 @@ const renderCitationContent = (
   const parts: React.ReactNode[] = [];
   if (!content) return parts;
   if (!sources || sources.length === 0 || !onCitationClick) return [content];
-  const re = /(^|\s)\[(\d+)\](?=$|[\s,。；、])/g;
+  const re = /\[(\d+)\](?=$|[\s,.;:!?，。；：！？、%．％~～）)\]】」"'’])/g;
   let last = 0;
   let key = 0;
   for (;;) {
     const m = re.exec(content);
     if (!m) break;
     if (m.index > last) parts.push(content.slice(last, m.index));
-    const n = parseInt(m[2], 10);
+    const n = parseInt(m[1], 10);
     const source = sources[n - 1];
-    if (m[1]) parts.push(m[1]); // 保留引用标前置空白
     if (source) {
       parts.push(
-        <a
+        <CitationMark
           key={key++}
-          onClick={() => onCitationClick(source)}
-          title={`查看「${source.document_name || source.document_id}」原文`}
-          style={{
-            fontSize: 12,
-            color: 'var(--brand-primary, #2563eb)',
-            textDecoration: 'underline',
-            textUnderlineOffset: 2,
-            cursor: 'pointer',
-            margin: '0 1px',
-          }}
-        >
-          [{n}]
-        </a>,
+          n={n}
+          source={source}
+          answerText={content}
+          onClick={onCitationClick}
+        />,
       );
     } else {
-      parts.push(m[0].slice(m[1].length));
+      parts.push(m[0]);
     }
     last = m.index + m[0].length;
   }
@@ -124,7 +212,10 @@ const renderContent = (
   sources: Source[] | undefined,
   onCitationClick: ((source: Source) => void) | undefined,
 ): React.ReactNode[] => {
-  const parts = renderCitationContent(content, sources, onCitationClick);
+  // 先清洗行首 Markdown 结构符号（### 标题 / - 列表等），再拆分 [n] 引用标：
+  // 显示文本与高亮基准（answerText）都用清洗后文本，保证所见即所算
+  const cleaned = cleanAnswerText(content);
+  const parts = renderCitationContent(cleaned, sources, onCitationClick);
   return parts.map((p, i) =>
     typeof p === 'string'
       ? <MdImages key={`m${i}`} text={p} maxWidth={ANSWER_IMAGE_MAX_WIDTH} />
@@ -140,6 +231,8 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
   const { user } = useAuth();
   // 当前打开"引用来源"弹窗的消息来源（null 关闭）；直接存数组引用，会话切换/消息变动后自动失效
   const [modalSources, setModalSources] = useState<Source[] | null>(null);
+  // 引用来源 Modal 对应的回答文本（引用面板相关高亮的匹配基准）
+  const [modalAnswerText, setModalAnswerText] = useState('');
 
   // 是否位于消息列表底部附近（60px 容差）：在底部时新消息/流式增量自动跟随滚动；离开底部则显示"最新消息"按钮
   // ref 供 effect 读取即时值（避免闭包过期），state 驱动按钮显隐
@@ -177,6 +270,10 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
   const streamingLive = waiting && !!last && last.role === 'assistant' && !!last.content;
   // 尚未输出任何内容（等待首字）时展示思考动画
   const showThinking = waiting && !streamingLive;
+  // 该消息是否仍在生成中（waiting 期间的最后一条消息）：后端在 meta 事件即下发
+  // sources（供行内 [n] Tooltip 映射），但"引用来源"面板要等生成完成（done → waiting
+  // 结束）才显示，避免"正在思考…"时引用面板提前出现
+  const isPendingLast = (idx: number) => waiting && idx === messages.length - 1;
 
   if (messages.length === 0 && !waiting) {
     return (
@@ -234,7 +331,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
                     )}
                   </div>
                 )}
-                {m.sources && m.sources.length > 0 && (
+                {m.sources && m.sources.length > 0 && !isPendingLast(idx) && (
                   <div style={{ marginTop: 8 }}>
                     {/* 默认收起：一行小按钮，点击弹出来源详情 Modal */}
                     <Button
@@ -242,7 +339,11 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
                       size="small"
                       className="source-trigger"
                       icon={<PaperClipOutlined />}
-                      onClick={() => setModalSources(m.sources ?? null)}
+                      onClick={() => {
+                        setModalSources(m.sources ?? null);
+                        // 高亮基准用清洗后文本（与气泡渲染一致，所见即所算）
+                        setModalAnswerText(cleanAnswerText(m.content));
+                      }}
                     >
                       引用来源（{m.sources.length}）
                     </Button>
@@ -328,6 +429,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
           sources={modalSources}
           variant="modal"
           numbered
+          answerText={modalAnswerText}
           onViewOriginal={handleViewOriginal}
         />
       </Modal>

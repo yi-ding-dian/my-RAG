@@ -11,19 +11,40 @@ interface CitationTraceModalProps {
   /** 被点击的引用来源（null 时不加载） */
   source: Source | null;
   onClose: () => void;
+  /**
+   * 回答文本（引用溯源原文回答-对齐高亮的匹配基准，可选）：透传给 ChunkCompareView，
+   * 对文档 chunks/原文文本叠加与引用面板同源的 .citation-highlight 高亮
+   */
+  answerText?: string;
 }
 
 /**
- * 引用溯源弹窗：点击回答中 [n] 引用标或引用面板"查看原文"时打开，
- * 加载该文档详情（full_text + chunks），复用 ChunkCompareView 定位高亮到对应 chunk。
+ * 引用溯源弹窗：点击回答中 [n] 引用标或引用面板"查看原文"时打开。
+ * - 普通文档引用：加载文档详情（full_text + chunks），复用 ChunkCompareView
+ *   定位高亮到对应 chunk（跳原文入口），并按回答文本叠加回答-对齐高亮
+ * - 图谱引用（document_name="知识图谱"）：无对应文档（document_id 为空），
+ *   直接展示图谱上下文内容，不提供跳转原文
  */
-const CitationTraceModal: React.FC<CitationTraceModalProps> = ({ open, kbId, source, onClose }) => {
+const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
+  open,
+  kbId,
+  source,
+  onClose,
+  answerText,
+}) => {
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open || !source) return;
+    // 图谱引用：无文档实体，直接展示图谱内容（不请求 getDocument）
+    if (source.document_name === '知识图谱') {
+      setDetail(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setDetail(null);
     setError(null);
@@ -94,6 +115,18 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({ open, kbId, sou
           description={error}
           style={{ marginTop: 16 }}
         />
+      ) : source?.document_name === '知识图谱' ? (
+        /* 图谱引用：直接展示图谱上下文内容（无跳转原文入口） */
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.8,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {source.text || '（无图谱内容）'}
+        </div>
       ) : detail ? (
         <ChunkCompareView
           // 弹窗固定高度，内容区撑满剩余高度（头部/工具条固定，仅左右内容区内部滚动）
@@ -111,6 +144,7 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({ open, kbId, sou
           }
           fullText={detail.full_text}
           initialIndex={source?.chunk_index}
+          answerText={answerText}
         />
       ) : null}
     </Modal>
