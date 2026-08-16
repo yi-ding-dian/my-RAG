@@ -13,6 +13,12 @@
   基础设施段）：super_admin 写全局活跃档案（现状行为），dept_admin
   强制写入本部门 department_config（llm/chat/retrieval，不碰全局
   profile），对本部门所有成员生效
+- GET /api/settings/llm/models                  模型列表（解析配置弹窗数据源，
+  登录即可读）：当前激活档案 LLM 模型列表仅 {name, model}（不含 api_key 等
+  敏感字段）+ 激活索引 active；无激活档案 404
+- POST /api/settings/llm/test-model              按模型名测试连接（解析配置
+  弹窗切换模型前调用，登录即可，只测不写）：后端按 name 从激活档案查完整
+  条目（含 api_key）→ probe_llm；查不到 404；返回 {ok, reason, latency_ms}
 """
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ from backend.models.user_models import UserPublic
 from backend.services import audit_service, department_service
 from backend.services.settings_service import (LLM_TEST_TIMEOUT,
                                                SECTION_SCHEMA,
+                                               find_llm_item,
                                                get_settings_service,
                                                mask_api_key,
                                                merge_chat_config,
@@ -327,6 +334,56 @@ async def test_llm_connection(body: dict,
         except (TypeError, ValueError):
             pass
     result = await probe_llm(body, timeout=timeout)
+    return {"ok": result["ok"], "reason": result["reason"],
+            "latency_ms": result["latency_ms"]}
+
+
+@router.get("/llm/models")
+async def list_llm_models(user: UserPublic = Depends(get_current_user)):
+    """LLM 模型列表（解析配置弹窗数据源，登录即可读）
+
+    当前激活档案的 LLM 模型列表：仅 {name, model}（不含 api_key/base_url 等
+    敏感字段）+ 激活索引 active（前端标注"当前使用"）；无激活档案 → 404。
+    谁都能打开解析配置弹窗，故权限为登录即可（普通用户解析时也可见/可切换）。
+    """
+    svc = get_settings_service()
+    p = svc.get_active()
+    if not p:
+        raise HTTPException(status_code=404, detail="没有激活的配置档案")
+    llm = p.get("llm") or {}
+    models = llm.get("models")
+    items = []
+    if isinstance(models, list):
+        for m in models:
+            if isinstance(m, dict):
+                items.append({"name": m.get("name"), "model": m.get("model")})
+    return {"models": items, "active": int(llm.get("active") or 0)}
+
+
+@router.post("/llm/test-model")
+async def test_llm_model_by_name(body: dict,
+                                 user: UserPublic = Depends(get_current_user)):
+    """按模型名测试连接（解析配置弹窗切换模型前调用；只测不写，登录即可）
+
+    前端无明文 api_key 且 /llm/test 为管理员专用，故本接口按 name 从激活
+    档案查完整条目（含 api_key）→ probes.probe_llm（GET {base_url}/models，
+    ≤5s）；查不到模型 → 404；返回 {ok, reason, latency_ms}。
+    """
+    from backend.services.probes import probe_llm
+    name = (body or {}).get("name")
+    if not name or not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="缺少模型名称 name")
+    item = find_llm_item(name)
+    if not item:
+        raise HTTPException(status_code=404, detail=f"模型不存在: {name}")
+    timeout = LLM_TEST_TIMEOUT
+    try:
+        raw = item.get("timeout")
+        if raw:
+            timeout = min(LLM_TEST_TIMEOUT, float(raw))
+    except (TypeError, ValueError):
+        pass
+    result = await probe_llm(item, timeout=timeout)
     return {"ok": result["ok"], "reason": result["reason"],
             "latency_ms": result["latency_ms"]}
 

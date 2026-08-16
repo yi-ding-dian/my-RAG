@@ -14,6 +14,7 @@ import {
   Spin,
   Steps,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -41,9 +42,11 @@ import {
   DocumentItem,
   DocumentStatus,
   KnowledgeBase,
+  KnowledgeGraph,
   deleteDocument,
   emptyTrash,
   getDocument,
+  getKnowledgeGraph,
   ingestDocument,
   listDocuments,
   listKbs,
@@ -59,6 +62,7 @@ import DocumentPreviewModal from '../components/DocumentPreviewModal';
 import PageHeader from '../components/PageHeader';
 import ParseConfigModal from '../components/ParseConfigModal';
 import ChunkCompareView from '../components/ChunkCompareView';
+import KnowledgeGraphTab from '../components/KnowledgeGraphTab';
 import RenameDocumentModal from '../components/RenameDocumentModal';
 import UrlImportModal from '../components/UrlImportModal';
 import { useAuth } from '../auth/AuthContext';
@@ -153,12 +157,17 @@ const DocumentsPage: React.FC = () => {
   const [detailData, setDetailData] = useState<DocumentDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailFullscreen, setDetailFullscreen] = useState(false);
+  // 知识图谱 Tab 数据（null=未启用/加载失败/接口 404）
+  const [graphData, setGraphData] = useState<KnowledgeGraph | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
 
   // 解析配置弹窗
   const [parseDoc, setParseDoc] = useState<DocumentItem | null>(null);
   // QA 规范性检测失败确认框：已提示过的 doc_id 集合（防列表轮询重复弹窗；
   // 用户重新发起解析时清除该条目，再次失败可再次提示）
   const qaPromptedRef = useRef<Set<string>>(new Set());
+  // Agentic 分块超限提示：已提示过的 doc_id 集合（防列表轮询重复弹窗；
+  // 重新发起解析时清除该条目，再次失败可再次提示）
   // 重命名弹窗（当前待重命名文档）
   const [renameDoc, setRenameDoc] = useState<DocumentItem | null>(null);
   // URL 网页导入弹窗
@@ -555,6 +564,17 @@ const DocumentsPage: React.FC = () => {
       message.error(e.response?.data?.detail || '加载详情失败');
     } finally {
       setDetailLoading(false);
+    }
+    // 知识图谱 Tab 数据（按当前文档过滤；未启用 → 404 → graph=null 显示空状态引导）
+    setGraphData(null);
+    setGraphLoading(true);
+    try {
+      const res = await getKnowledgeGraph(kbId!, doc.id);
+      setGraphData(res.data);
+    } catch {
+      setGraphData(null); // 404（该知识库暂无知识图谱）/ 网络错误 → 空状态
+    } finally {
+      setGraphLoading(false);
     }
   };
 
@@ -1083,23 +1103,51 @@ const DocumentsPage: React.FC = () => {
         {detailLoading ? (
           <Skeleton active paragraph={{ rows: 10 }} />
         ) : (
-          <ChunkCompareView
-            // 弹窗固定高度，内容区撑满剩余高度（头部/工具条固定，仅左右内容区内部滚动）
-            fillHeight
-            // key 绑定文档 id：切换文档时重挂载，重置选中态
-            key={detailData?.id}
-            chunks={
-              detailData?.chunks?.map(c => ({
-                index: c.index,
-                text: c.text,
-                char_start: c.char_start,
-                char_end: c.char_end,
-                context: c.context,
-              })) ??
-              detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
-              []
-            }
-            fullText={detailData?.full_text}
+          <Tabs
+            // 与日志页同款撑满规则（index.css .logs-page-tabs 链式 flex 撑满）
+            className="logs-page-tabs"
+            defaultActiveKey="chunks"
+            items={[
+              {
+                key: 'chunks',
+                label: '切块',
+                children: (
+                  <ChunkCompareView
+                    // 弹窗固定高度，内容区撑满剩余高度（头部/工具条固定，仅左右内容区内部滚动）
+                    fillHeight
+                    // key 绑定文档 id：切换文档时重挂载，重置选中态
+                    key={detailData?.id}
+                    chunks={
+                      detailData?.chunks?.map(c => ({
+                        index: c.index,
+                        text: c.text,
+                        char_start: c.char_start,
+                        char_end: c.char_end,
+                        context: c.context,
+                      })) ??
+                      detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
+                      []
+                    }
+                    fullText={detailData?.full_text}
+                  />
+                ),
+              },
+              {
+                key: 'graph',
+                label: '知识图谱',
+                children: (
+                  <KnowledgeGraphTab
+                    graph={graphData}
+                    loading={graphLoading}
+                    chunks={
+                      detailData?.chunks?.map(c => ({ index: c.index, text: c.text })) ??
+                      detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
+                      []
+                    }
+                  />
+                ),
+              },
+            ]}
           />
         )}
       </Modal>

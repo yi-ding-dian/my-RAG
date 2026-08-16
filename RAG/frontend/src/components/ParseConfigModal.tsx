@@ -14,8 +14,8 @@ import {
   Space,
   Tooltip,
 } from 'antd';
-import type { DocumentItem, IngestConfig, LayoutRecognize, MinerUBackend, ParseLang, ParseMethod, ParserEngine, ParserStatus, ParserStatusEntry } from '../api/client';
-import { getParserStatus, ingestDocument } from '../api/client';
+import type { DocumentItem, IngestConfig, LayoutRecognize, MinerUBackend, ParseLang, ParseMethod, ParserEngine, ParserStatus, ParserStatusEntry, ParserLlmModelItem } from '../api/client';
+import { getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../api/client';
 import LayoutRecognizeField from './parse-fields/LayoutRecognizeField';
 import MinerUBackendField from './parse-fields/MinerUBackendField';
 import PagesRangeField from './parse-fields/PagesRangeField';
@@ -46,6 +46,9 @@ interface ParseConfigFormValues {
   return_images: boolean;
   enable_heading_in_content: boolean;
   contextual_retrieval: boolean;
+  knowledge_graph: boolean;
+  /** 解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为模型列表的 name；空=用当前激活模型） */
+  parse_llm_model?: string;
   lang_list: ParseLang;
 }
 
@@ -88,6 +91,12 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   const [submitting, setSubmitting] = useState(false);
   const [parserStatus, setParserStatus] = useState<ParserStatus | null>(null);
   const method = Form.useWatch('method', form) ?? 'naive';
+  // 解析 LLM 模型列表（GET /api/settings/llm/models，登录即可读）：上下文检索
+  // 增强/知识图谱开关开启时显示"解析 LLM 模型"下拉，切换前先测试连接
+  const [llmModels, setLlmModels] = useState<ParserLlmModelItem[]>([]);
+  const [activeLlmIdx, setActiveLlmIdx] = useState(0);
+  // 切换模型时正在测试连接的标记（防重复点击）
+  const [testingLlm, setTestingLlm] = useState(false);
 
   // 打开时探测解析器可用性（GET /kbs/parsers/status，并行 ≤8s）：显示状态徽标；
   // 探测失败静默（徽标不显示，不阻塞弹窗使用）
@@ -107,6 +116,28 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     }
     return undefined;
   }, [open, doc]);
+
+  // 打开时拉取 LLM 模型列表（GET /api/settings/llm/models，登录即可读）：
+  // "解析 LLM 模型"下拉数据源（仅名称+model，无敏感字段）；失败静默
+  // （下拉不显示模型，开关功能不受影响）
+  useEffect(() => {
+    if (open) {
+      let cancelled = false;
+      getLlmModelList()
+        .then(res => {
+          if (cancelled) return;
+          setLlmModels(res.data.models ?? []);
+          setActiveLlmIdx(res.data.active ?? 0);
+        })
+        .catch(() => {
+          if (!cancelled) setLlmModels([]);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    return undefined;
+  }, [open]);
 
   // 打开时预填：重解析（ingested）预填上次 parser_config，其余用默认值
   useEffect(() => {
@@ -163,15 +194,59 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           typeof cfg.enable_heading_in_content === 'boolean' ? cfg.enable_heading_in_content : false,
         contextual_retrieval:
           typeof cfg.contextual_retrieval === 'boolean' ? cfg.contextual_retrieval : false,
+        knowledge_graph:
+          typeof cfg.knowledge_graph === 'boolean' ? cfg.knowledge_graph : false,
+        // 解析 LLM 模型：重解析沿用上次持久化值；缺失/空 → 由下方 useEffect
+        // 在模型列表加载后兜底为当前激活模型（"当前使用"）
+        parse_llm_model:
+          typeof cfg.parse_llm_model === 'string' && cfg.parse_llm_model
+            ? cfg.parse_llm_model
+            : undefined,
         lang_list: cfg.lang_list === 'en' ? 'en' : 'ch',
       });
     }
   }, [open, doc, form]);
 
+  // 解析 LLM 模型默认值兜底：字段为空 → 回填当前激活模型；值已不在模型列表
+  // （模型被删除/改名）→ 同样回退激活模型，保证提交值始终合法
+  useEffect(() => {
+    if (!open) return;
+    const activeName = llmModels[activeLlmIdx]?.name;
+    if (!activeName) return; // 列表未加载/为空：不动（提交空值=后端用激活模型）
+    const val = form.getFieldValue('parse_llm_model');
+    if (!val || !llmModels.some(m => m.name === val)) {
+      form.setFieldValue('parse_llm_model', activeName);
+    }
+  }, [open, llmModels, activeLlmIdx, form]);
+  // 切换解析 LLM 模型：先测试连接（POST /api/settings/llm/test-model，后端按
+  // name 查完整配置探测）→ 通过才更新本地值；失败提示并保持原模型（绝不静默切换）
+  const handleParseLlmChange = async (name: string) => {
+    if (testingLlm) return;
+    const prev = form.getFieldValue('parse_llm_model');
+    if (!name || name === prev) return;
+    setTestingLlm(true);
+    try {
+      const res = await testLlmModelByName(name);
+      if (res.data.ok) {
+        message.success(`「${name}」连接成功（${res.data.latency_ms}ms），已切换解析模型`);
+        form.setFieldValue('parse_llm_model', name);
+      } else {
+        message.error(`「${name}」连接失败，保持原模型：${res.data.reason}`);
+        form.setFieldValue('parse_llm_model', prev);
+      }
+    } catch (e: any) {
+      message.error(`连接测试失败，保持原模型：${e.response?.data?.detail || '网络请求失败'}`);
+      form.setFieldValue('parse_llm_model', prev);
+    } finally {
+      setTestingLlm(false);
+    }
+  };
+
   // MinerU 解析后端仅解析引擎=mineru 时显示（auto/其他引擎不发送，跟随服务端默认）
   const parserEngine = Form.useWatch('parser_engine', form) ?? 'auto';
-  // 上下文检索增强开关状态（开启时显示额外 token 费用提示）
+  // 上下文检索增强/知识图谱开关状态（开启时显示额外 token 费用提示）
   const contextualRetrieval = Form.useWatch('contextual_retrieval', form);
+  const knowledgeGraph = Form.useWatch('knowledge_graph', form);
 
   // 版面识别=DeepDOC 时解析引擎强制 deepdoc、=PlainText 时强制 plain
   // （与后端规则一致：auto+DeepDOC→deepdoc / auto+PlainText→plain；前端
@@ -243,6 +318,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     config.return_images = values.return_images;
     config.enable_heading_in_content = values.enable_heading_in_content;
     config.contextual_retrieval = values.contextual_retrieval;
+    config.knowledge_graph = values.knowledge_graph;
+    // 解析 LLM 模型（摘要/图谱抽取专用）：空/未选不发 → 后端默认用激活模型
+    if (values.parse_llm_model) config.parse_llm_model = values.parse_llm_model;
     config.lang_list = values.lang_list;
     // 提交前检查所选解析器可用性（探测结果来自弹窗打开时的状态接口）：
     // 不可用 → warning 提示将自动降级（后端解析前检测会执行降级链，仍可继续）；
@@ -388,6 +466,42 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       showIcon
                       style={{ marginBottom: 12 }}
                     />
+                  )}
+                  {/* 知识图谱：对所有文档类型生效（切块后处理，不依赖解析器）；
+                      开启时 Alert 提示额外 token 费用（与上下文检索增强并列） */}
+                  <SwitchField
+                    name="knowledge_graph"
+                    label="知识图谱"
+                    desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）"
+                    defaultValue={false}
+                  />
+                  {knowledgeGraph && (
+                    <Alert
+                      message="开启后每次解析将对每个切块调用 LLM 抽取实体与关系，将产生额外 token 费用"
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                    />
+                  )}
+                  {/* 解析 LLM 模型：上下文检索增强/知识图谱任一开启时显示（下拉数据源=
+                      系统配置模型列表，仅名称+model 无敏感字段；默认=当前激活模型，
+                      切换前自动测试连接，通过才生效） */}
+                  {(contextualRetrieval || knowledgeGraph) && (
+                    <Form.Item
+                      name="parse_llm_model"
+                      label="解析 LLM 模型"
+                      extra="使用模型仅影响上下文摘要/知识图谱抽取，对话仍用当前激活模型；切换前自动测试连接，通过才生效"
+                    >
+                      <Select
+                        loading={testingLlm}
+                        placeholder="默认使用当前激活模型"
+                        options={llmModels.map((m, i) => ({
+                          value: m.name,
+                          label: `${m.name}${m.model && m.model !== m.name ? `（${m.model}）` : ''}${i === activeLlmIdx ? ' — 当前使用' : ''}`,
+                        }))}
+                        onChange={handleParseLlmChange}
+                      />
+                    </Form.Item>
                   )}
                   <LangSelectField />
                 </>

@@ -297,8 +297,29 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
     }
 
 
+def _purge_graph_refs(kb_id: str, doc_id: str) -> None:
+    """彻底删除文档时清理知识图谱中该文档的实体/关系引用（失败仅 warning 不阻塞）
+
+    - 引用移除（chunk_refs 清空、count 重算、无引用的实体/关系删除，复用
+      remove_doc_refs）+ docs 条目移除；无任何变化不落盘（不产生空文件）
+    - 软删除（回收站）不清——恢复免重建，与 MinIO 对象清理逻辑一致
+    - 图谱文件不存在时 load_graph 返回空结构、remove 0 条 → 不 save
+    """
+    try:
+        graph = load_graph(kb_id)
+        removed = remove_doc_refs(graph, doc_id)
+        had_doc = doc_id in graph.get("docs", {})
+        if removed or had_doc:
+            graph["docs"].pop(doc_id, None)
+            save_graph(kb_id, graph)
+    except Exception as e:
+        logger.warning("清理知识图谱文档引用失败（不阻塞删除）: %s err=%s",
+                       doc_id, str(e)[:150])
+
+
 def _purge_local(kb_id: str, doc_id: str) -> bool:
-    """purge 的纯同步部分（Chroma 向量删除 + BM25 失效 + 元数据/文件删除）
+    """purge 的纯同步部分（Chroma 向量删除 + BM25 失效 + 图谱引用清理
+    + 元数据/文件删除）
 
     放线程池执行（asyncio.to_thread）：空回收站批量 purge 时同步阻塞
     不占用事件循环，其他请求（列表/检索）不被卡住。
@@ -306,6 +327,8 @@ def _purge_local(kb_id: str, doc_id: str) -> bool:
     get_vector_store().delete_by_document(kb_id, doc_id)
     # 向量删除后 count 变化，BM25 自动重建（显式失效双保险）
     get_retrieval_service().invalidate_bm25(kb_id)
+    # 图谱引用清理（失败仅 warning，不阻塞删除主流程）
+    _purge_graph_refs(kb_id, doc_id)
     return get_document_service().delete(doc_id)
 
 

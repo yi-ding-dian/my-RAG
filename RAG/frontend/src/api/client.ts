@@ -138,6 +138,11 @@ export interface IngestConfig {
   lang_list?: ParseLang;
   /** 上下文检索增强：开启后切块时对每个块调用 LLM 生成上下文摘要（向量化/检索文本加【上下文】前缀，产生额外 token 费用，失败/超时跳过不阻塞入库，默认关） */
   contextual_retrieval?: boolean;
+  /** 知识图谱：开启后入库时用 LLM 对每个切块抽取实体与关系，合并构建知识图谱（存储 data/storage/graphs/{kb_id}.json，产生额外 token 费用，失败/超时跳过不阻塞入库，默认关） */
+  knowledge_graph?: boolean;
+  /** 思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要调用共用）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度 */
+  /** 解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为系统配置 LLM 模型列表的 name；空=默认用当前激活对话模型，对话不受影响） */
+  parse_llm_model?: string;
   /** QA 问答切块规范性强制继续（仅 method=qa）：true=跳过问答对占比检测直接入库（入库失败确认"继续入库"时提交） */
   qa_force_continue?: boolean;
 }
@@ -568,6 +573,59 @@ export const downloadDocumentRaw = async (kbId: string, docId: string): Promise<
 /** 重命名文档（只改展示名 original_name；扩展名须保留，无扩展名自动补全） */
 export const renameDocument = (kbId: string, docId: string, name: string) =>
   api.post<DocumentItem>(`/kbs/${kbId}/documents/${docId}/rename`, { name });
+
+// ========== 知识图谱 API ==========
+
+export interface GraphChunkRef {
+  doc_id: string;
+  chunk_index: number;
+  char_start: number;
+  char_end: number;
+}
+
+export interface GraphEntity {
+  id: string;
+  name: string;
+  type: string;
+  description: string;
+  count: number;
+  chunk_refs: GraphChunkRef[];
+}
+
+export interface GraphRelation {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  description: string;
+  weight: number;
+  chunk_refs: GraphChunkRef[];
+}
+
+export interface KnowledgeGraph {
+  kb_id: string;
+  updated_at: string;
+  docs: Record<string, { name: string; chunk_count: number }>;
+  entities: GraphEntity[];
+  relations: GraphRelation[];
+}
+
+export const getKnowledgeGraph = (kbId: string, docId?: string) =>
+  api.get<KnowledgeGraph>(`/kbs/${kbId}/graph`, {
+    params: docId ? { doc_id: docId } : {},
+  });
+
+ *   任务内覆盖抽取模型，不写回文档配置；不传用文档原配置/激活模型）
+  kbId: string,
+  docId: string,
+  body?: { llm_model?: string },
+) =>
+  api.post<{ message: string; doc_id: string }>(
+    body,
+  );
+
+  api.post<{ message: string; doc_id: string }>(
+  );
 
 // ========== 超管全局文档管理 API（仅 super_admin） ==========
 
@@ -1210,6 +1268,28 @@ export interface LlmTestResult {
 
 export const testLlmConnection = (item: Partial<LLMModelItem>) =>
   api.post<LlmTestResult>('/settings/llm/test', item);
+
+// ========== 解析配置 LLM 模型（GET 模型列表 / POST 按名测连接，登录即可） ==========
+
+/** 解析配置弹窗模型列表条目（仅名称+model，不含 api_key 等敏感字段） */
+export interface ParserLlmModelItem {
+  name: string;
+  model?: string;
+}
+
+/** GET /api/settings/llm/models 响应：模型列表 + 激活索引（前端标注"当前使用"） */
+export interface LlmModelList {
+  models: ParserLlmModelItem[];
+  active: number;
+}
+
+/** 解析配置弹窗数据源：当前激活档案的 LLM 模型列表（登录即可读） */
+export const getLlmModelList = () =>
+  api.get<LlmModelList>('/settings/llm/models');
+
+/** 按模型名测试连接（切换解析模型前调用；后端按 name 查完整配置后探测，只测不写） */
+export const testLlmModelByName = (name: string) =>
+  api.post<LlmTestResult>('/settings/llm/test-model', { name });
 
 // ========== 聊天设置 + 部门 LLM 配置（GET 登录可读，POST 需 super_admin/dept_admin） ==========
 

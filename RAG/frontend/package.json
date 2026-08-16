@@ -13,6 +13,7 @@
     "antd": "^5.24.0",
     "axios": "^1.7.0",
     "dayjs": "^1.11.0",
+    "echarts": "^6.1.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "react-router-dom": "^6.28.0",

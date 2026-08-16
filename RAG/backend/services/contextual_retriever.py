@@ -8,7 +8,9 @@
   - 文档背景 = 文档名 + 全文前 1500 字符截断（全局上下文）
   - 当前块文本（截断 1000）
   - 输出：一句话中文摘要（LLM 生成后按 100 字符兜底截断）
-- 用激活的 LLM 模型（get_active_config().llm，多模型管理的激活模型），
+- 用激活的 LLM 模型（get_active_config().llm，多模型管理的激活模型）；
+  parser_config.parse_llm_model 指定时改用该模型（从激活档案模型列表查完整
+  配置覆盖，仅影响摘要，对话仍用激活模型；查不到/未指定回退激活模型），
   独立 AsyncOpenAI 客户端实例（key 比对自动重建，与 chat_service 同款模式）
 - 并发限流 3（asyncio.Semaphore）；每调用超时 20s；
   失败/超时 → 该块 context 跳过（None），warning 日志，绝不阻塞入库
@@ -26,6 +28,7 @@ from openai import AsyncOpenAI
 
 from backend.config import get_active_config
 from backend.services.chat_service import _llm_to_dict
+from backend.services.settings_service import llm_cfg_for_parser
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +130,11 @@ async def enrich_chunks(chunks, doc_text: str, cfg: Optional[dict] = None,
     if not chunks:
         return []
     llm_cfg = _llm_to_dict(get_active_config().llm)
+    # 解析 LLM 模型：parser_config.parse_llm_model 指定（上下文摘要专用模型，
+    # 从激活档案模型列表查完整配置）→ 覆盖；未指定/查不到 → 激活模型
+    override = llm_cfg_for_parser(cfg.get("parse_llm_model"))
+    if override:
+        llm_cfg = {**llm_cfg, **override}
     if not (llm_cfg.get("base_url") and llm_cfg.get("model")):
         logger.warning("LLM 未配置（base_url/model 为空），跳过上下文摘要生成")
         return []

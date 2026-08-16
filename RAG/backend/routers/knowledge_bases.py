@@ -32,6 +32,7 @@ from backend.services.dim_check import (get_kb_vector_status,
                                         run_rebuild_task, start_rebuild_task)
 from backend.services.document_service import get_document_service
 from backend.services.kb_service import get_kb_service
+from backend.services.knowledge_graph_service import graph_path
 from backend.services.parser_probe import probe_parsers
 from backend.services.retrieval_service import get_retrieval_service
 from backend.services.storage_service import get_storage_service
@@ -207,6 +208,15 @@ async def delete_kb(request: Request, kb_id: str,
     #    复用同 id 的旧索引，或内存中残留已删 kb 的索引）
     get_vector_store().drop_collection(kb_id)
     get_retrieval_service().invalidate_bm25(kb_id)
+    # 3.5) 删除知识图谱文件 data/storage/graphs/{kb_id}.json（不存在静默；
+    #      失败仅 warning 不阻塞删除主流程）
+    try:
+        gp = graph_path(kb_id)
+        if gp.exists():
+            gp.unlink()
+    except Exception as e:
+        logger.warning("删除知识图谱文件失败（不阻塞删除）: %s err=%s",
+                       kb_id, str(e)[:150])
     # 4) 删除知识库元数据
     await get_kb_service().delete(db, kb_id)
     await audit_service.record_action(

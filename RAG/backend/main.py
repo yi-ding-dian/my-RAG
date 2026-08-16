@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TextIO
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -106,6 +109,8 @@ app.include_router(admin_documents.router)
 # 外部查询（知识库对外开放）：管理 API 仅 super_admin，外部 API 公开 token 鉴权
 app.include_router(ext_query.admin_router)
 app.include_router(ext_query.ext_router)
+# 知识图谱（入库时 LLM 抽取实体-关系构建，存储 data/storage/graphs/{kb_id}.json）
+app.include_router(graphs.router)
 
 
 @app.get("/api/health")

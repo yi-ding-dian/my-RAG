@@ -1,7 +1,7 @@
 """RAG 知识库数据模型（字段统一驼峰命名，与前端约定一致）"""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -103,8 +103,10 @@ class IngestRequest(BaseModel):
       DeepDOC 表格输出为可检索 HTML/PlainText 纯文本直提）；pages 为 [[from,to],...]
       （from/to>=1 且 from<=to）；task_page_size 限 1~128；
       lang_list 仅 ch/en；table_enable/formula_enable/return_images/
-      enable_heading_in_content/contextual_retrieval 为布尔
-      （contextual_retrieval=上下文检索增强，默认关，开启产生额外 token 费用）
+      enable_heading_in_content/contextual_retrieval/knowledge_graph 为布尔
+      （contextual_retrieval=上下文检索增强，默认关，开启产生额外 token 费用；
+      knowledge_graph=知识图谱，默认关，入库时用 LLM 抽取实体关系，开启产生
+      额外 token 费用）
     """
     method: Optional[str] = Field(None, description="切块方式: naive=通用切块/title=按标题切块/regex=正则切块/parent_child=父子分块/qa=QA 问答切块（按问/答标记聚合问答对为整块）")
     parser_engine: Optional[str] = Field(None, description="解析引擎: auto=自动（MinerU 优先、不可用降级；layout_recognize=DeepDOC 时走 DeepDoc）/mineru=强制 MinerU（不可用标 failed）/deepdoc=强制 DeepDoc（RAGFlow，表格输出为可检索 HTML，仅 PDF）/plain=纯文本提取（默认 auto）")
@@ -128,7 +130,18 @@ class IngestRequest(BaseModel):
     lang_list: Optional[str] = Field(None, description="解析语言 ch=中文/en=英文（MinerU lang_list，默认 ch）")
     enable_heading_in_content: Optional[bool] = Field(None, description="包含父标题（切块后为不含标题的块拼接前缀标题路径，默认 False）")
     contextual_retrieval: Optional[bool] = Field(None, description="上下文检索增强：开启后切块时对每个块调用 LLM 生成上下文摘要（向量化/检索文本加【上下文】前缀，产生额外 token 费用；失败/超时跳过不阻塞入库；默认 False）")
+    knowledge_graph: Optional[bool] = Field(None, description="知识图谱：开启后入库时用激活 LLM 对每个切块抽取实体与关系，合并构建知识图谱（存储 data/storage/graphs/{kb_id}.json，产生额外 token 费用；失败/超时跳过不阻塞入库；默认 False）")
+    parse_llm_model: Optional[str] = Field(None, description="解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为激活档案 LLM 模型列表的 name；空/缺省=用当前激活对话模型，查不到回退激活模型；对话不受影响；随 parser_config 持久化，重跑沿用）")
     qa_force_continue: Optional[bool] = Field(None, description="QA 问答切块规范性强制继续（仅 method=qa 生效）：False/缺省=解析后检测问答对占比（问答对/总段落），低于 50% 任务失败并带检测详情；True=跳过规范性检测直接入库（前端确认继续入库时提交）")
+
+
+    """补建/重建文档知识图谱请求（全部可选）
+
+      文档 parser_config（文档持久化配置不变，再次构建不带该字段时仍用
+      文档原配置/激活模型）；空/不传 → 沿用文档 parser_config.parse_llm_model
+      （文档也未配置 → 激活模型）；模型不在激活档案 → 回退文档配置/激活
+      模型（warning 日志，不失败）
+    """
 
 
 class Source(BaseModel):
@@ -226,6 +239,51 @@ class DocumentDetail(DocumentItem):
     """文档详情（详情接口响应：在 DocumentItem 基础上补充 chunks 对象数组与 full_text）"""
     chunks: List[ChunkInfo] = Field(default_factory=list, description="切块（完整列表，含偏移，来源 chunks_meta）")
     full_text: str = Field("", description="解析后全文（data/parsed/{doc_id}.md，偏移以此为基准；未入库/文件缺失为空）")
+
+
+class GraphChunkRef(BaseModel):
+    """实体/关系在文档中的引用位置（chunk_index 为 chunks_meta 下标，
+    char_start/char_end 相对文档解析全文，与 chunks_meta 偏移契约一致）"""
+    doc_id: str = Field(..., description="文档 ID")
+    chunk_index: int = Field(..., description="块序号（chunks_meta 下标）")
+    char_start: int = Field(..., description="字符起始偏移（相对文档解析全文；定位失败回退整块区间）")
+    char_end: int = Field(..., description="字符结束偏移（开区间）")
+
+
+class GraphEntity(BaseModel):
+    """知识图谱实体（入库时 LLM 从切块抽取，按 name+type 规范化合并）"""
+    id: str = Field(..., description="实体 ID（e1/e2...，图内稳定）")
+    name: str = Field(..., description="实体名称（规范化：trim/全半角统一/数字间空格压缩）")
+    type: str = Field(..., description="实体类型（人物/机构/技术/概念/事件/成果）")
+    description: str = Field("", description="描述（多处出现时合并截断 200 字）")
+    count: int = Field(1, description="出现次数（关联块数）")
+    chunk_refs: List[GraphChunkRef] = Field(default_factory=list, description="出现位置引用（同块去重）")
+
+
+class GraphRelation(BaseModel):
+    """知识图谱关系（source/target 为实体 ID，按 source+target+type 合并）"""
+    id: str = Field(..., description="关系 ID（r1/r2...）")
+    source: str = Field(..., description="源实体 ID")
+    target: str = Field(..., description="目标实体 ID")
+    type: str = Field(..., description="关系类型（提出/开发/发明/启动/导致/影响/属于/相关）")
+    description: str = Field("", description="描述")
+    weight: float = Field(1.0, description="关系强度（关联块数）")
+    chunk_refs: List[GraphChunkRef] = Field(default_factory=list, description="出处引用")
+
+
+class GraphDocInfo(BaseModel):
+    """图谱中文档摘要"""
+    name: str = Field("", description="文档原始名")
+    chunk_count: int = Field(0, description="构建时的切块数")
+
+
+class KnowledgeGraph(BaseModel):
+    """知识图谱查询响应（GET /api/kbs/{kb_id}/graph）"""
+    kb_id: str = Field(..., description="知识库 ID")
+    updated_at: str = Field("", description="最近构建时间")
+    docs: Dict[str, GraphDocInfo] = Field(default_factory=dict, description="已构建图谱的文档摘要（{doc_id: {name, chunk_count}}）")
+    entities: List[GraphEntity] = Field(default_factory=list)
+    relations: List[GraphRelation] = Field(default_factory=list)
 
 
 class Stats(BaseModel):

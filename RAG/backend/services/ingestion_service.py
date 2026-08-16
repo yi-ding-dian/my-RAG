@@ -9,13 +9,20 @@ parsed 为历史中间态，仅兼容保留）
   入库成功时解析配置持久化到文档元数据（parser_id/parser_config），重跑沿用
 - 解析配置（parser_config 扩展字段）：layout_recognize/pages/task_page_size/
   table_enable/formula_enable/return_images/lang_list/enable_heading_in_content/
-  contextual_retrieval，全部可选（默认见 _DEFAULT_PARSER_CONFIG），校验非法
-  400；解析器参数透传 parser_client.parse（table_enable/formula_enable/
-  return_images/lang_list/pages/backend），enable_heading_in_content 走切块后
-  处理 add_heading_paths（块前缀标题路径）；contextual_retrieval（上下文检索
-  增强，默认关）走切块后处理 enrich_chunks：为每个块用激活 LLM 生成上下文
-  摘要（失败/超时跳过不阻塞入库），向量化用 "【上下文】摘要\n原文"，摘要存
-  chunks_meta.context / 向量 metadata（截断 500），chunks_meta.text 保持原文
+  contextual_retrieval/knowledge_graph/thinking_mode/parse_llm_model，全部可选
+  （默认见 _DEFAULT_PARSER_CONFIG），校验非法 400；解析器参数透传
+  parser_client.parse（table_enable/formula_enable/return_images/lang_list/
+  pages/backend），enable_heading_in_content 走切块后处理 add_heading_paths
+  （块前缀标题路径）；contextual_retrieval（上下文检索增强，默认关）走切块后
+  处理 enrich_chunks：为每个块生成上下文摘要（失败/超时跳过不阻塞入库），
+  向量化用 "【上下文】摘要\n原文"，摘要存 chunks_meta.context / 向量 metadata
+  （截断 500），chunks_meta.text 保持原文；thinking_mode（思考模式，默认
+  disabled）控制图谱抽取/上下文摘要调用的思考关闭策略（在线 DeepSeek →
+  extra_body，本地 LM Studio Qwen → messages prefill 注入，实现见
+  backend/services/thinking_strategy.py）；parse_llm_model
+  （解析 LLM 模型，默认空=激活模型）：上下文摘要/图谱抽取专用模型（值为激活
+  档案模型列表的 name，后端按 name 查完整配置覆盖 llm 段，查不到回退激活
+  模型，仅影响摘要/抽取，对话不受影响）
 - MinerU 解析后端 backend（mineru-api /file_parse 参数）：可选
   hybrid-auto-engine（质量优，默认）/pipeline（快但表格错乱）；None 或 "auto"
   不持久化不透传（跟随服务端默认）；仅 MinerU 引擎解析时透传
@@ -61,6 +68,7 @@ from backend.services.contextual_retriever import enrich_chunks
 from backend.services.document_service import get_document_service
 from backend.services.embedding_service import get_embedding_service
 from backend.services.dim_check import VectorDimensionError
+from backend.services.knowledge_graph_service import build_graph_for_doc
 from backend.services.parser_client import get_parser_client
 from backend.services.parser_probe import probe_parsers
 from backend.services.parser_images import rewrite_image_refs
@@ -138,10 +146,13 @@ _DEFAULT_PARSER_CONFIG = {
     "lang_list": "ch",                   # 语言 ch/en（MinerU lang_list）
     "enable_heading_in_content": False,  # 包含父标题（切块后为不含标题的块拼接前缀标题路径）
     "contextual_retrieval": False,       # 上下文检索增强（切块后为每个块调用 LLM 生成上下文摘要，产生额外 token 费用）
+    "knowledge_graph": False,            # 知识图谱（切块后为每个块调用 LLM 抽取实体与关系，产生额外 token 费用）
+    "parse_llm_model": "",               # 解析 LLM 模型（上下文摘要/图谱抽取专用，值为激活档案模型列表的 name；空=用当前激活模型，对话不受影响）
 }
 # 布尔字段名（类型校验；注意 bool 是 int 子类，需单独判型）
 _PARSER_BOOL_FIELDS = ("table_enable", "formula_enable", "return_images",
-                       "enable_heading_in_content", "contextual_retrieval")
+                       "enable_heading_in_content", "contextual_retrieval",
+                       "knowledge_graph")
 # 透传给 parser_client.parse 的字段（enable_heading_in_content 是切块后处理，不传解析器；
 # backend 仅在显式选择 hybrid-auto-engine/pipeline 时存在于 parser_config，auto/None 不写入）
 _PARSER_PARSE_OPTS = ("table_enable", "formula_enable", "return_images",
@@ -530,6 +541,34 @@ class IngestionService:
                 logger.info("上下文摘要生成: %s (%d/%d 块)", doc.original_name,
                             len(contexts), len(chunk_objects))
 
+            # 4.8) 知识图谱（knowledge_graph）：切块后为每个块调用激活 LLM
+            # 抽取实体与关系，合并进 data/storage/graphs/{kb_id}.json（幂等：
+            # 重入库先清该文档旧引用再合并；失败/超时跳过对应块——绝不阻塞
+            # 入库）。用原始块文本（父标题前缀只用于展示，实体偏移以原文为
+            # 准，与 chunks_meta 偏移契约一致）。构建成功 → graph_status=ready，
+            # 失败 → failed + graph_error（随 transition ingested 写回文档元数据）
+            kg_status: Optional[str] = None  # None=未开开关（graph_status 保持原值）
+            kg_error: Optional[str] = None
+            if parser_config.get("knowledge_graph"):
+                try:
+                    kg_stats = await build_graph_for_doc(
+                        doc.kb_id, doc_id, doc.original_name,
+                        chunk_objects, raw_texts=raw_chunk_texts,
+                        cfg=parser_config)
+                    if kg_stats.get("extracted"):
+                        logger.info(
+                            "知识图谱构建: %s (%s) 抽取 %d/%d 块 → 实体 %d / 关系 %d",
+                            doc.original_name, doc_id, kg_stats["extracted"],
+                            kg_stats["chunks"], kg_stats["entities"],
+                            kg_stats["relations"])
+                    kg_status = "ready"
+                except Exception as e:
+                    # 图谱构建失败不阻塞入库（与上下文检索增强同策略）
+                    logger.warning("知识图谱构建失败（不阻塞入库）: %s err=%s",
+                                   doc_id, str(e)[:150])
+                    kg_status = "failed"
+                    kg_error = str(e)[:500]
+
             chunks: List[str] = [c.text for c in chunk_objects]
             if not chunks:
                 raise RuntimeError("切块结果为空")
@@ -589,20 +628,25 @@ class IngestionService:
             get_retrieval_service().invalidate_bm25(doc.kb_id)
 
             # 6) 完成：解析配置持久化到文档元数据（重跑沿用）；
-            # chunks_meta 存完整列表（text+偏移，详情接口读），chunk_preview 兼容保留
-            doc_svc.transition(
-                doc_id, "ingested",
-                parse_method=parse_method,
-                chunk_count=len(chunks),
-                chunk_preview=[c[:_PREVIEW_CHAR] for c in chunks[:_PREVIEW_LIMIT]],
-                chunks_meta=[
+            # chunks_meta 存完整列表（text+偏移，详情接口读），chunk_preview 兼容保留；
+            # 图谱状态随入库写回（kg_status=None 即开关关，保持文档原值不清空）
+            transition_kwargs = {
+                "parse_method": parse_method,
+                "chunk_count": len(chunks),
+                "chunk_preview": [c[:_PREVIEW_CHAR] for c in chunks[:_PREVIEW_LIMIT]],
+                "chunks_meta": [
                     {"text": c.text, "char_start": c.char_start,
                      "char_end": c.char_end,
-                     **({"context": contexts[i]} if i in contexts else {})}
+                     **({"context": contexts[i]} if i in contexts else {}),
                     for i, c in enumerate(chunk_objects)],
-                parser_id=parser_id,
-                parser_config=parser_config,
-            )
+                "parser_id": parser_id,
+                "parser_config": parser_config,
+            }
+            if kg_status is not None:
+                transition_kwargs["graph_status"] = kg_status
+                if kg_status == "failed":
+                    transition_kwargs["graph_error"] = kg_error
+            doc_svc.transition(doc_id, "ingested", **transition_kwargs)
             logger.info("入库完成: %s (%s) chunks=%d method=%s", doc.original_name,
                         doc_id, len(chunks), parser_id)
         except Exception as e:

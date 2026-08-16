@@ -892,7 +892,7 @@ const SettingsPage: React.FC = () => {
                       type="info"
                       showIcon
                       style={{ marginBottom: 8 }}
-                      message="可添加多个模型；勾选激活的模型用于问答 / 上下文摘要 / 评估等全部 LLM 场景。激活时自动测试连接（GET {base_url}/models），连接失败可确认后仍激活。"
+                      message="可添加多个模型；勾选激活的模型用于问答 / 评估等对话场景，以及未指定解析模型的上下文摘要 / 知识图谱抽取（解析配置弹窗可单独指定解析 LLM 模型）。激活时自动测试连接（GET {base_url}/models），连接失败可确认后仍激活。"
                     />
                     {llmModels.length === 0 ? (
                       <Empty

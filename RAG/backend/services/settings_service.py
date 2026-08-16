@@ -463,6 +463,45 @@ def active_llm_item(llm: dict) -> dict:
     return item if isinstance(item, dict) else {}
 
 
+def find_llm_item(ident: str) -> Optional[dict]:
+    """按标识从当前激活档案的 LLM 模型列表查完整条目（name 优先，model 次之）
+
+    供解析配置 parse_llm_model（上下文摘要/知识图谱抽取指定模型）使用：
+    返回条目含 api_key（内部使用，绝不对外）；未指定标识 / 无激活档案 /
+    未找到 → None（调用方回退激活模型）。标识匹配用 str 严格相等。
+    """
+    if not ident:
+        return None
+    profile = get_settings_service().get_active()
+    if not profile:
+        return None
+    llm = profile.get("llm")
+    if not isinstance(llm, dict):
+        return None
+    models = llm.get("models")
+    if not isinstance(models, list):
+        return None
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        if str(m.get("name") or "") == ident:
+            return dict(m)
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        if str(m.get("model") or "") == ident:
+            return dict(m)
+    return None
+
+
+def llm_cfg_for_parser(ident) -> Optional[dict]:
+    """解析配置指定模型 → 完整 LLM 配置 dict（含 api_key，供上下文摘要/图谱
+    抽取客户端覆盖激活模型）；未指定（None/空串）/查不到 → None（回退激活）"""
+    if not ident:
+        return None
+    return find_llm_item(str(ident))
+
+
 def merge_department_llm(global_llm: dict, dept_llm: dict) -> dict:
     """LLM 配置字段级合并（部门只覆盖它显式设置的字段，其余用全局）
 
