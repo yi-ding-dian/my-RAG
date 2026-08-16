@@ -202,6 +202,9 @@ class ChatConfig(BaseModel):
     enable_multi_turn: bool = True
     # 自定义系统提示词：空串 = 使用内置默认模板（chat_service._SYSTEM_PROMPT_TEMPLATE）
     system_prompt: str = ""
+    # 知识图谱增强：查询时 LLM 抽实体 → 图谱匹配 → 1-hop 邻接扩展，
+    # 图谱上下文作为"知识图谱"来源引用注入回答（默认开；无图谱自动跳过零成本）
+    kg_enhance: bool = True
 
 
 class MySQLConfig(BaseModel):

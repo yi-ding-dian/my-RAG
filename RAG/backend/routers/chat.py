@@ -30,6 +30,7 @@ from backend.models.rag_models import (ChatHistoryItem, ChatRequest,
 from backend.models.user_models import UserPublic
 from backend.services import audit_service, department_service
 from backend.services.chat_service import get_chat_service, sse_event
+from backend.services.knowledge_graph_service import build_kg_source
 from backend.services.retrieval_service import get_retrieval_service
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,22 @@ async def retrieve(body: RetrieveRequest, db: AsyncSession = Depends(get_db),
                     enable_rerank=body.enable_rerank))
             merged.sort(key=lambda s: s.score, reverse=True)
             sources = merged[:top_k]
+        # 知识图谱增强通道（与普通检索并行注入）：开关开且有图谱时，
+        # 每个库独立尝试图谱上下文，作为"知识图谱"来源引用追加在末尾
+        # （不参与排序/rerank；无图谱/失败自动跳过，不影响检索结果）。
+        # 引用顺序规则：普通引用合并后按 score 降序截取全局 top_k，
+        # 图谱引用（score=0）在截断之后 append——编号 = 列表顺序 1..N 连续
+        # 无跳跃、无重复，图谱恒在最后（作为补充引用），前端 [n]/面板角标
+        # 均按此顺序取，调用方不得对返回列表重排。
+        kg_enabled = body.enable_kg
+        if kg_enabled is None:
+            kg_enabled = get_active_config().chat.kg_enhance
+        if kg_enabled:
+            for kid in kb_ids:
+                kg = await build_kg_source(kid, body.query.strip(), enabled=True)
+                if kg:
+                    kg.kb_name = kb_name_map.get(kid, kg.kb_name)
+                    sources.append(kg)
         for s in sources:
             s.kb_name = kb_name_map.get(s.kb_id, s.kb_name)
         return RetrieveResponse(sources=sources)

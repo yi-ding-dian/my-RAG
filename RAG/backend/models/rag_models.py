@@ -218,6 +218,7 @@ class RetrieveRequest(BaseModel):
     top_k: Optional[int] = Field(None, description="返回条数（默认取配置 RETRIEVAL_TOP_K）")
     enable_hybrid: Optional[bool] = Field(None, description="混合检索开关：None=用配置默认；true/false=强制开关（对比实验用；当前版本检索链路为纯向量，参数为预留契约）")
     enable_rerank: Optional[bool] = Field(None, description="重排开关：None=用配置默认；true/false=强制开关（对比实验用；当前版本检索链路无重排，参数为预留契约）")
+    enable_kg: Optional[bool] = Field(None, description="知识图谱增强开关：None=用配置默认（chat.kg_enhance）；true/false=强制开关——图谱上下文作为「知识图谱」来源引用追加在结果末尾（无图谱/无匹配自动跳过）")
     similarity_threshold: Optional[float] = Field(None, description="相似度阈值覆盖：None=用配置；给定则覆盖（0~1，低于该分数的命中被过滤），调试阈值影响用")
 
 

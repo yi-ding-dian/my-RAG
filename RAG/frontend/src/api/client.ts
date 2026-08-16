@@ -1325,6 +1325,8 @@ export interface ChatSettingsPayload {
     history_rounds: number;
     /** 空串 = 使用内置默认模板 */
     system_prompt: string;
+    /** 知识图谱增强（默认 true；查询时图谱上下文作为「知识图谱」来源引用注入） */
+    kg_enhance?: boolean;
   };
   /** 合并后的 LLM 配置（全局活跃 + 本部门覆盖；api_key 已脱敏） */
   llm?: DeptLlmConfig;
@@ -1343,6 +1345,7 @@ export interface ChatSettingsPayload {
       enable_multi_turn?: boolean;
       history_rounds?: number;
       system_prompt?: string;
+      kg_enhance?: boolean;
     };
   } | null;
 }

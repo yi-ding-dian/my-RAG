@@ -330,6 +330,8 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             "enable_multi_turn": {"condition": "not_none", "whitelist": True},
             "system_prompt": {"condition": "not_none", "on_null": "restore",
                               "whitelist": True, "fill_missing": True},
+            "kg_enhance": {"condition": "not_none", "whitelist": True,
+                           "fill_missing": True},
         },
         pass_null=True),
     "mysql": _reflect_section("mysql", MySQLConfig,
@@ -414,6 +416,7 @@ def chat_payload(profile: dict) -> dict:
             "top_p": chat.get("top_p"),
             "max_tokens": chat.get("max_tokens"),
             "system_prompt": chat.get("system_prompt", ""),
+            "kg_enhance": chat.get("kg_enhance", True),
         },
     }
 

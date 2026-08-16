@@ -24,7 +24,7 @@ from conftest import _FakeStream, create_department_and_admin, create_kb, \
 GLOBAL = {
     "chat": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 2048,
              "enable_multi_turn": True, "history_rounds": 8,
-             "system_prompt": "全局提示词"},
+             "system_prompt": "全局提示词", "kg_enhance": True},
     "retrieval": {"top_k": 5, "similarity_threshold": 0.0},
 }
 

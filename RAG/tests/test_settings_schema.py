@@ -137,7 +137,7 @@ class TestWhitelistFromSchema:
         """部门合并函数用的白名单 == schema whitelist 标记"""
         assert set(ss.CHAT_FIELD_NAMES) == {
             "temperature", "top_p", "max_tokens", "enable_multi_turn",
-            "history_rounds", "system_prompt"}
+            "history_rounds", "system_prompt", "kg_enhance"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
         assert set(ss.LLM_FIELD_NAMES) == {
@@ -192,8 +192,10 @@ class TestCoerceBehavior:
             "rerank": {"enabled": False, "base_url": "", "model": "",
                        "top_n": 10},
         }
-        # chat 缺段 → 只补 system_prompt=""（历史契约，不补全段）
-        assert out["chat"] == {"system_prompt": ""}
+        # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + kg_enhance=True
+        #（历史契约：不补全段）
+        assert out["chat"] == {"system_prompt": "",
+                               "kg_enhance": build_default_config().chat.kg_enhance}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()
         assert out["mysql"] == {

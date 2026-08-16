@@ -224,6 +224,28 @@ class ChatService:
         dept_llm = dept.get("llm") if isinstance(dept.get("llm"), dict) else {}
 
         try:
+            # 0) 聊天配置字段级合并（提前计算：知识图谱增强开关在此读取；
+            #    纯函数无副作用，第 4 步直接复用，避免重复合并）
+            cfg = get_active_config()
+            merged_chat = merge_chat_config(
+                {
+                    "chat": {
+                        "temperature": cfg.chat.temperature,
+                        "top_p": cfg.chat.top_p,
+                        "max_tokens": cfg.chat.max_tokens,
+                        "enable_multi_turn": cfg.chat.enable_multi_turn,
+                        "history_rounds": cfg.chat.history_rounds,
+                        "system_prompt": cfg.chat.system_prompt,
+                        "kg_enhance": cfg.chat.kg_enhance,
+                    },
+                    "retrieval": {
+                        "top_k": cfg.retrieval.top_k,
+                        "similarity_threshold": cfg.retrieval.similarity_threshold,
+                    },
+                },
+                dept,
+            )["chat"]
+
             # 1) 检索（P1-2：Embedding 服务不可用等 RetrievalUnavailableError
             # 直接透传"检索服务不可用：..."，其余异常统一"检索失败: ..."前缀）
             #    部门配置覆盖检索参数：top_k（路由层选择器优先）与相似度阈值
@@ -242,7 +264,24 @@ class ChatService:
                     yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
 
-            # 2) meta
+            # 2) 知识图谱增强通道（与普通检索并行注入：LLM 抽实体 → 图谱匹配
+            #    → 1-hop 邻接扩展 → 组装"知识图谱"来源引用；开关关/无图谱/
+            #    失败一律跳过不阻塞查询；不参与 rerank——rerank 只处理检索
+            #    服务内的普通候选）
+            #
+            #    引用顺序规则（全链路编号 = 本列表顺序，1..N 连续无跳跃）：
+            #    普通检索引用保持相关度降序（retrieval_service 内排好），
+            #    图谱引用（score=0，无相似度语义）固定追加在末尾作为补充引用，
+            #    不参与任何分数排序。meta 事件与 _build_refs 均按本列表顺序
+            #    编号，前端行内 [n]（sources[n-1]）与面板角标（index+1）同源，
+            #    任何地方不得对 sources 重排。
+            from backend.services.knowledge_graph_service import build_kg_source
+            kg_source = await build_kg_source(
+                kb_id, message, merged_chat.get("kg_enhance", True))
+            if kg_source:
+                sources.append(kg_source)
+
+            # 3) meta
             yield sse_event("meta", {
                 "sources": [s.model_dump(mode="json") for s in sources],
             })
@@ -262,28 +301,8 @@ class ChatService:
                 return
 
             # 4) 组装 prompt（引用放在 system；history 截最近 N 轮，
-            #    多轮开关 enable_multi_turn=False 时不带历史）
-            #    部门配置字段级合并统一走 settings_service.merge_chat_config
-            #    （部门非 None 且非空串字段覆盖全局，其余用全局；不修改全局
-            #    ServiceConfig，并发安全）
-            cfg = get_active_config()
-            merged_chat = merge_chat_config(
-                {
-                    "chat": {
-                        "temperature": cfg.chat.temperature,
-                        "top_p": cfg.chat.top_p,
-                        "max_tokens": cfg.chat.max_tokens,
-                        "enable_multi_turn": cfg.chat.enable_multi_turn,
-                        "history_rounds": cfg.chat.history_rounds,
-                        "system_prompt": cfg.chat.system_prompt,
-                    },
-                    "retrieval": {
-                        "top_k": cfg.retrieval.top_k,
-                        "similarity_threshold": cfg.retrieval.similarity_threshold,
-                    },
-                },
-                dept,
-            )["chat"]
+            #    多轮开关 enable_multi_turn=False 时不带历史；
+            #    合并后的聊天配置已在第 0 步计算（部门字段级覆盖），直接复用）
             sys_prompt = merged_chat["system_prompt"]
             enable_multi_turn = merged_chat["enable_multi_turn"]
             history_rounds = merged_chat["history_rounds"]
