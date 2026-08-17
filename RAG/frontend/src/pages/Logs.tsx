@@ -42,6 +42,8 @@ import {
 } from '../api/client';
 import AppEmpty from '../components/AppEmpty';
 import PageHeader from '../components/PageHeader';
+import ResizableTitle from '../components/ResizableTitle';
+import type { ResizeCallbackData } from 'react-resizable';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -278,26 +280,48 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
     return m;
   }, [actionOptions]);
 
-  const columns: ColumnsType<AuditLog> = [
+  // 列宽拖拽：拖拽后的宽度存在 colWidths（按列 key），未拖过的列用初始 width
+  const [colWidths, setColWidths] = useState<Record<string, number>>({});
+  const handleResize = useCallback(
+    (key: React.Key) =>
+      (_: React.SyntheticEvent<Element>, { size }: ResizeCallbackData) => {
+        setColWidths(prev => ({ ...prev, [String(key)]: size.width }));
+      },
+    [],
+  );
+
+  const columns = useMemo<ColumnsType<AuditLog>>(() => [
     {
       title: '时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: colWidths.created_at ?? 170,
+      onHeaderCell: () => ({
+        width: colWidths.created_at ?? 170,
+        onResize: handleResize('created_at'),
+      }),
       render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
     },
     {
       title: '用户',
       dataIndex: 'username',
       key: 'username',
-      width: 130,
+      width: colWidths.username ?? 130,
+      onHeaderCell: () => ({
+        width: colWidths.username ?? 130,
+        onResize: handleResize('username'),
+      }),
       render: (v: string) => (v ? <Text strong>{v}</Text> : <Text type="secondary">未认证</Text>),
     },
     {
       title: '角色',
       dataIndex: 'role',
       key: 'role',
-      width: 110,
+      width: colWidths.role ?? 110,
+      onHeaderCell: () => ({
+        width: colWidths.role ?? 110,
+        onResize: handleResize('role'),
+      }),
       render: (role: string) => {
         const meta = roleMeta[role];
         return meta ? <Tag color={meta.color}>{meta.text}</Tag> : <Tag>{role || '-'}</Tag>;
@@ -307,13 +331,21 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       title: '操作',
       dataIndex: 'action',
       key: 'action',
-      width: 150,
+      width: colWidths.action ?? 150,
+      onHeaderCell: () => ({
+        width: colWidths.action ?? 150,
+        onResize: handleResize('action'),
+      }),
       render: (a: string) => <Tag color="blue">{actionLabelMap[a] ?? a}</Tag>,
     },
     {
       title: '目标',
       key: 'target',
-      width: 200,
+      width: colWidths.target ?? 200,
+      onHeaderCell: () => ({
+        width: colWidths.target ?? 200,
+        onResize: handleResize('target'),
+      }),
       ellipsis: true,
       render: (_, row) => {
         const type = targetTypeLabelMap[row.target_type ?? ''] ?? row.target_type ?? '';
@@ -325,19 +357,44 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
     {
       title: '详情',
       key: 'detail',
+      width: colWidths.detail ?? 420,
+      onHeaderCell: () => ({
+        width: colWidths.detail ?? 420,
+        onResize: handleResize('detail'),
+      }),
       ellipsis: true,
       render: (_, row) => (row.detail ? row.detail.slice(0, 80) : '-'),
     },
-    { title: 'IP', dataIndex: 'ip', key: 'ip', width: 140, render: (v: string) => v || '-' },
+    {
+      title: 'IP',
+      dataIndex: 'ip',
+      key: 'ip',
+      width: colWidths.ip ?? 140,
+      onHeaderCell: () => ({
+        width: colWidths.ip ?? 140,
+        onResize: handleResize('ip'),
+      }),
+      render: (v: string) => v || '-',
+    },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 90,
+      // 最后一列不提供拖拽手柄（避免拖出表格边界）
+      width: colWidths.status ?? 90,
       render: (s: string) =>
         s === 'success' ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>,
     },
-  ];
+  ], [actionLabelMap, colWidths, handleResize]);
+
+  // 表格总宽 = 当前各列宽度之和（跟随列宽拖拽动态变化）。
+  // 必须让 scroll.x === 总宽：antd 表格为 fixed 布局，scroll.x > 总宽时浏览器会按
+  // 比例放大各列渲染宽度，拖拽中比例随总宽变化 → 列实际位移量 ≠ 鼠标位移量，
+  // 导致列宽拖拽严重漂移（实测拖 -100 实际变 -145）。动态对齐后缩放比例恒为 1。
+  const tableWidth = useMemo(
+    () => columns.reduce((s, c) => s + ((c.width as number) || 0), 0),
+    [columns],
+  );
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -390,10 +447,14 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
         dataSource={items}
         loading={loading}
         pagination={false}
+        // 表头单元格替换为 ResizableTitle：列头右侧出现拖拽手柄，可自由调整列宽
+        components={{ header: { cell: ResizableTitle } }}
+        // x = 当前列宽总和（动态，见上方 tableWidth 注释）：保证拖拽精确且
+        // 总宽超出容器宽度时出现横向滚动
         // y 用 calc 相对视口计算：扣除 Content padding(48) + 页头(72) + Card body
         // padding(48) + Tab 头(56) + 筛选栏(48) + 表头(39) + 分页(48) 后，剩余高度
         // 给表格 body 内部滚动（分页器与筛选栏固定）
-        scroll={{ x: 1000, y: 'calc(100vh - 365px)' }}
+        scroll={{ x: tableWidth, y: 'calc(100vh - 365px)' }}
         locale={{
           emptyText: <AppEmpty title="暂无审计记录" description="尚无符合条件的关键操作记录" />,
         }}
