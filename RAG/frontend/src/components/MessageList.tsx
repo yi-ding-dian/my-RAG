@@ -47,10 +47,13 @@ export const UserAvatar: React.FC<{ userId: string; avatarKey?: string | null }>
   return <img src={src} alt="我的头像" onError={() => setFailed(true)} style={AVATAR_STYLE} />;
 };
 
-/** AI 头像：固定自制 ai-avatar.svg（蓝紫渐变机器人线稿） */
-const AiAvatar: React.FC = () => (
-  <img src={AI_AVATAR} alt="AI" style={AVATAR_STYLE} />
-);
+/** AI 头像：固定自制 ai-avatar.svg（蓝紫渐变机器人线稿）；
+ * 加载失败（如后端未 serve 该文件）时隐藏而非显示 alt 文字 */
+const AiAvatar: React.FC = () => {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return <img src={AI_AVATAR} alt="AI" onError={() => setFailed(true)} style={AVATAR_STYLE} />;
+};
 
 /**
  * 行内引用标记 [n]：悬浮显示引用摘要（Tooltip），点击打开引用详情弹窗。

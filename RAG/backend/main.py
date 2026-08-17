@@ -219,6 +219,17 @@ if FRONTEND_DIST.exists():
     if _assets.exists():
         app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
 
+    # 根级静态资源（frontend/public 产物：ai-avatar.svg / default-avatar.svg）。
+    # 必须显式声明在 SPA 兜底路由之前——否则 /xx.svg 会落入 serve_frontend 返回
+    # index.html（text/html），浏览器 <img> 加载失败 → 显示 alt 文字
+    # （AI 头像显示"AI"、默认头像破图），聊天界面头像无法显示
+    for _pf in ("ai-avatar.svg", "default-avatar.svg"):
+        _path = FRONTEND_DIST / _pf
+        if _path.exists():
+            app.get(f"/{_pf}", include_in_schema=False)(
+                lambda p=_path: FileResponse(str(p), media_type="image/svg+xml")
+            )
+
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
         """兜底路由: 非 API 请求返回前端 index.html"""

@@ -1,7 +1,6 @@
-import React, { lazy, Suspense, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Avatar,
   Dropdown,
   Layout,
   Menu,
@@ -170,10 +169,10 @@ const AppLayout: React.FC = () => {
   const { token } = theme.useToken();
   const { user, logout, refreshUser } = useAuth();
 
-  // 姓名首字（头像用）
-  const initial = (user?.display_name || user?.username || 'U').trim().charAt(0).toUpperCase();
-  // 侧栏头像：有头像显示代理图片，加载失败回退首字（无头像直接首字）
+  // 侧栏头像：有头像显示代理图片，加载失败回退默认 SVG；无头像直接默认 SVG
   const [avatarFailed, setAvatarFailed] = useState(false);
+  // 头像更换后重置失败态，自动重试加载新头像
+  useEffect(() => setAvatarFailed(false), [user?.avatar]);
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -278,17 +277,17 @@ const AppLayout: React.FC = () => {
                       }}
                     />
                   ) : (
-                    <Avatar
-                      size={34}
+                    <img
+                      src="/default-avatar.svg"
+                      alt="我的头像"
                       style={{
+                        width: 34,
+                        height: 34,
                         flexShrink: 0,
-                        background:
-                          'linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%)',
-                        fontWeight: 600,
+                        borderRadius: '50%',
+                        objectFit: 'cover',
                       }}
-                    >
-                      {initial}
-                    </Avatar>
+                    />
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <Typography.Text strong ellipsis style={{ fontSize: 13, display: 'block' }}>

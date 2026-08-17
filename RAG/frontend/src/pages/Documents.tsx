@@ -114,18 +114,93 @@ const formatSize = (bytes: number) => {
   return `${bytes} B`;
 };
 
-/** 解析参数摘要（供解析方式列 Tooltip 展示） */
-const parserConfigSummary = (
-  config: Record<string, unknown> | undefined,
+/** 解析方式语义说明（与后端 splitter.py / ingestion_service.py 实际行为对齐） */
+const METHOD_DESC: Record<string, string> = {
+  naive:
+    '按分隔符（空行/换行/句号等）递归字符切块，块大小与重叠可配；不感知文档标题结构，适用于无固定格式的文档',
+  title:
+    '按 Markdown # 标题与纯文本常见标题样式切块（Setext 下划线式、单行包裹式如 === 标题 ===、前导符号式如 ■ 标题），标题层级限制参与切分的最大层级（默认 H3）；表格/代码块整体归块不切开，超长章节段内再按块大小递归切',
+  regex:
+    '按正则表达式匹配位置切块，匹配片段与其余文本都成块（内容不丢失）；超长块再按块大小递归切',
+  parent_child:
+    '双层块结构：父块按标题聚合完整章节作上下文（无大小上限，超长单节按父块大小兜底），子块按标题断章后按块大小细粒度切分（不跨章节）；检索命中子块时返回所属父块完整章节',
+  qa:
+    '按“问：/答：”标记聚合问答对为整块（答案跨多段保留、含原文标记），问答对整体成块、不按块大小再切分；入库前检测问答对占比（≥50% 合格），不足需在列表确认后继续入库',
+  agentic:
+    'LLM 通读全文自主判断完整逻辑段落切割，每块附类型标签（论述类/事实类/操作类/数据类/其他）；≤1 万字直接分块，1 万~5 万字入库时需确认后继续，超过 5 万字不支持；LLM 调用失败自动回退按标题切块',
+};
+
+/** 版面识别说明（仅 pdf/docx 文档有意义，与解析配置弹窗文案一致） */
+const LAYOUT_RECOGNIZE_DESC: Record<string, string> = {
+  MinerU: 'MinerU 高精度版面识别（PDF 混排图文表格）',
+  DeepDOC: 'DeepDoc（RAGFlow）解析，表格输出为可检索 HTML（仅 PDF）',
+  PlainText: '纯文本直提（pypdf/python-docx，无表格/图片识别）',
+};
+
+/** 思考模式显示名（disabled=关闭为默认，不展示） */
+const THINKING_MODE_LABEL: Record<string, string> = {
+  enabled_low: '开-低',
+  enabled_high: '开-高',
+  enabled_max: '开-最大',
+};
+
+/** 解析方式列 Tooltip 内容：方式语义 + 实际生效的参数摘要。
+ *  qa/agentic 不消费块大小/重叠（问答对整块 / LLM 自主切分），不展示避免误导；
+ *  版面识别/降级说明仅 pdf/docx 展示（txt/md 直读不经解析器）。 */
+const methodTooltipContent = (
   method: string,
-): string | null => {
-  if (!config) return null;
-  const parts: string[] = [];
-  if (config.chunk_size != null) parts.push(`块大小 ${config.chunk_size}`);
-  if (config.overlap != null) parts.push(`重叠 ${config.overlap}`);
-  if (method === 'title' && config.split_level != null) parts.push(`标题层级 H${config.split_level}`);
-  if (method === 'regex' && config.regex_pattern) parts.push(`正则 ${String(config.regex_pattern)}`);
-  return parts.length > 0 ? parts.join(' / ') : null;
+  config: Record<string, unknown> | undefined,
+  fileType: string,
+): React.ReactNode => {
+  const parts: React.ReactNode[] = [];
+  const desc = METHOD_DESC[method];
+  if (desc) {
+    parts.push(
+      <div key="desc" style={{ maxWidth: 320 }}>
+        {desc}
+      </div>,
+    );
+  }
+  if (config) {
+    const params: string[] = [];
+    if (method === 'parent_child') {
+      // 子块参数 + 父块参数（父块大小是超长单节兜底上限，非目标大小）
+      if (config.chunk_size != null) params.push(`子块大小 ${config.chunk_size}`);
+      if (config.overlap != null) params.push(`子块重叠 ${config.overlap}`);
+      if (config.parent_chunk_size != null) params.push(`父块大小 ${config.parent_chunk_size}`);
+      if (config.parent_split_level != null) params.push(`父块层级 H${config.parent_split_level}`);
+      if (config.retrieval_mode === 'child') params.push('检索返回子块');
+    } else if (method !== 'qa' && method !== 'agentic') {
+      if (config.chunk_size != null) params.push(`块大小 ${config.chunk_size}`);
+      if (config.overlap != null) params.push(`重叠 ${config.overlap}`);
+      if (method === 'naive' && config.delimiter) params.push(`分隔符 ${String(config.delimiter)}`);
+      if (method === 'title' && config.split_level != null) params.push(`标题层级 H${config.split_level}`);
+      if (method === 'regex' && config.regex_pattern) params.push(`正则 ${String(config.regex_pattern)}`);
+    }
+    // 思考模式：非默认（关闭）时展示（图谱抽取/上下文摘要/Agentic 分块共用）
+    if (config.thinking_mode && config.thinking_mode !== 'disabled') {
+      params.push(
+        `思考模式 ${THINKING_MODE_LABEL[String(config.thinking_mode)] ?? String(config.thinking_mode)}`,
+      );
+    }
+    // 版面识别与降级说明：仅 pdf/docx 真实解析场景有意义（txt/md 直读不经解析器）
+    const isPdfLike = fileType === 'pdf' || fileType === 'docx';
+    if (isPdfLike) {
+      const lr = config.layout_recognize;
+      if (typeof lr === 'string' && LAYOUT_RECOGNIZE_DESC[lr]) {
+        params.push(LAYOUT_RECOGNIZE_DESC[lr]);
+      }
+      if (typeof config.degrade === 'string' && config.degrade) params.push(config.degrade);
+    }
+    if (params.length > 0) {
+      parts.push(
+        <div key="params" style={{ marginTop: 4, maxWidth: 320 }}>
+          {params.join(' / ')}
+        </div>,
+      );
+    }
+  }
+  return <>{parts}</>;
 };
 
 const DocumentsPage: React.FC = () => {
@@ -870,8 +945,13 @@ const DocumentsPage: React.FC = () => {
       render: (v: string | undefined, row) => {
         if (!v) return <Text type="secondary">-</Text>;
         const tag = <Tag color={methodColor(v)}>{methodLabel(v)}</Tag>;
-        const summary = parserConfigSummary(row.parser_config, v);
-        const parseTag = summary ? <Tooltip title={summary}>{tag}</Tooltip> : tag;
+        // Tooltip：方式语义 + 实际生效的参数摘要（qa/agentic 无块大小/重叠；
+        // 版面识别/降级仅 pdf/docx 展示），无参数配置时也展示方式语义
+        const parseTag = (
+          <Tooltip title={methodTooltipContent(v, row.parser_config, row.file_type)}>
+            {tag}
+          </Tooltip>
+        );
         // 已构建知识图谱的文档：解析方式后追加紫色"图谱"标签（tooltip 说明）
         const graphTag =
           row.graph_status === 'ready' ? (
