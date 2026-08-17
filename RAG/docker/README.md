@@ -49,7 +49,7 @@ docker compose -f docker/docker-compose.infra.yml down
 - 无需 MinIO 时，可将 `.env.docker` 中 `STORAGE_BACKEND` 改为 `local`
   （对象存本地 `data/storage`），仅需保留 MySQL
 - 外部依赖（LLM / Embedding / MinerU / Rerank / RAGAS）的获取方式与可降级性
-  见 `../docs/external-deps.md`
+  见 `../docs/外部依赖部署指南.md`
 
 ## 配置说明
 

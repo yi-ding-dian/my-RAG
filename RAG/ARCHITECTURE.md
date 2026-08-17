@@ -1,7 +1,7 @@
 # my-RAG 知识库系统 — 架构文档
 
 本文档描述 RAG 子系统的整体架构、模块职责与关键流程。快速上手与接口契约见
-[README.md](./README.md) 与 [docs/api_contract.md](./docs/api_contract.md)。
+[README.md](./README.md) 与 [docs/API接口契约.md](./docs/API接口契约.md)。
 
 ## 1. 总体架构
 
@@ -81,7 +81,7 @@ flowchart LR
     ↓
 解析：MinerU 高质量解析（含图片提取）→ 不可用自动降级 pypdf / python-docx
     ↓
-切块：通用 / 按标题 / 正则 / 父子分块 / QA 问答 / Agentic 智能分块（chunk_size / chunk_overlap 可配；Agentic 为 LLM 读全文语义切块，≤1 万字，原理见 docs/agentic-chunking.md）
+切块：通用 / 按标题 / 正则 / 父子分块 / QA 问答 / Agentic 智能分块（chunk_size / chunk_overlap 可配；Agentic 为 LLM 读全文语义切块，≤1 万字，原理见 docs/Agentic智能分块原理.md）
     ↓
 向量化：bge-m3（批量 32、超长截断 8000 字符）+ 维度检测
     ↓

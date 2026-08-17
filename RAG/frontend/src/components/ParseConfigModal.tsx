@@ -112,9 +112,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 切换模型时正在测试连接的标记（防重复点击）
   const [testingLlm, setTestingLlm] = useState(false);
   const method = Form.useWatch('method', form) ?? 'naive';
-  // Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签。与上下文检索增强/
-  // 知识图谱三选一互斥（用户约束：三个大模型功能只能选一个）——选 agentic
-  // 自动关闭并禁用这两个开关（后端 resolve_parser_config 同样强制关闭双保险）
+  // Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签。与上下文检索增强
+  // 互斥（用户约束）——选 agentic 自动关闭并禁用该开关（后端
+  // resolve_parser_config 同样强制关闭双保险）；知识图谱不互斥可叠加
   const isAgentic = method === 'agentic';
   // 文档类型判断（B4）：解析方式 + 整个"PDF 解析配置"Collapse 仅 pdf/docx
   // 文档显示（file_type 由扩展名推导，见后端 document_service.create_document，
@@ -123,13 +123,12 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 隐藏时相关字段不渲染、提交时剔除（见 handleOk），后端缺省默认兜底。
   const docFileType = (doc?.file_type ?? '').toLowerCase().replace(/^\./, '');
   const isPdfLike = docFileType === 'pdf' || docFileType === 'docx';
+  // 选 agentic 时强制关闭上下文检索增强（互斥）；知识图谱不互斥，
+  // 保持用户已开的状态（可叠加选择）
   useEffect(() => {
     if (!open || !isAgentic) return;
     if (form.getFieldValue('contextual_retrieval')) {
       form.setFieldValue('contextual_retrieval', false);
-    }
-    if (form.getFieldValue('knowledge_graph')) {
-      form.setFieldValue('knowledge_graph', false);
     }
   }, [isAgentic, open, form]);
 
@@ -608,11 +607,14 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           />
         </Form.Item>
 
-        {/* Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签（说明与互斥提示） */}
+        {/* Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签（说明；与
+            上下文检索增强互斥、与知识图谱可叠加，见大模型处理区）；
+            B3：由 LLM 自主切分，分块大小/重叠不适用，隐藏这两个参数输入；
+            超限策略：1 万~5 万字入库时需确认后继续，超过 5 万字不支持 */}
         {method === 'agentic' && (
           <Alert
             message="Agentic 智能分块说明"
-            description="LLM 自主判断完整逻辑段落切割并打标签（论述类/事实类/操作类/数据类/其他），仅支持 ≤1 万字文档（超过将提示换用其他切块方式）。与上下文检索增强、知识图谱互斥（只能选一个）。LLM 调用失败时自动回退按标题切块，不阻塞入库。"
+            description="由 LLM 自主切分逻辑段落，自主判断完整逻辑段落切割并打标签（论述类/事实类/操作类/数据类/其他）；文档 1 万~5 万字需确认后继续，超过 5 万字不支持"
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
@@ -774,7 +776,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         {/* 大模型处理（D1：位于切块方式/切块参数之后，避免用户先看到禁用的互斥开关
             才选到 agentic）：上下文检索增强/知识图谱/思考模式/解析 LLM 模型——均为
             切块后处理（不依赖解析器），与文档格式无关（txt/docx 同样适用）；
-            上下文检索增强/知识图谱与 Agentic 互斥（选 agentic 禁用）*/}
+            仅上下文检索增强与 Agentic 互斥（选 agentic 禁用），知识图谱可叠加 */}
         <Collapse
           ghost
           style={{ marginBottom: 16, marginTop: 4 }}
@@ -814,10 +816,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                   <SwitchField
                     name="knowledge_graph"
                     label="知识图谱"
-                    desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）"
+                    desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）；与 Agentic 智能分块可叠加选择"
                     defaultValue={false}
-                    disabled={isAgentic}
-                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
                   />
                   {knowledgeGraph && (
                     <Alert

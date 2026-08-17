@@ -5,6 +5,7 @@ import {
   Breadcrumb,
   Button,
   Card,
+  Input,
   Modal,
   Popconfirm,
   Segmented,
@@ -48,6 +49,7 @@ import {
   ParserLlmModelItem,
   buildDocumentGraph,
   cancelDocumentGraphBuild,
+  cancelDocumentIngestion,
   deleteDocument,
   emptyTrash,
   getDocument,
@@ -188,6 +190,10 @@ const DocumentsPage: React.FC = () => {
   const [trashLoading, setTrashLoading] = useState(false);
   // 状态筛选：全部/待解析/解析中/已入库/失败（前端过滤）
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // 文件名/关键词过滤：keywordInput=输入框即时值，keyword=防抖生效值
+  // （生效后触发重拉；列表接口无 keyword 参数，见 load 内注释）
+  const [keywordInput, setKeywordInput] = useState('');
+  const [keyword, setKeyword] = useState('');
 
   const kbName = kbs.find(k => k.id === kbId)?.name;
 
@@ -206,17 +212,25 @@ const DocumentsPage: React.FC = () => {
   // M3: unparsed 透传后端（status=unparsed 映射 uploaded+parsed 两态，
   // 服务端先过滤后分页，total 为过滤后数量）；此处过滤为幂等兜底
   // （docs 已是服务端 unparsed 结果，再滤一次结果一致）
+  // keyword 为纯前端过滤（keyword 模式下 docs 是全量数据，见 load 内注释），
+  // 与状态筛选叠加：先状态（幂等兜底）再文件名包含匹配（大小写不敏感）
   const visibleDocs = useMemo(() => {
+    let list = docs;
     if (statusFilter === 'unparsed') {
-      return docs.filter(d => d.status === 'uploaded' || d.status === 'parsed');
+      list = list.filter(d => d.status === 'uploaded' || d.status === 'parsed');
     }
-    return docs;
-  }, [docs, statusFilter]);
+    const kw = keyword.trim().toLowerCase();
+    if (kw) {
+      list = list.filter(d => (d.original_name || '').toLowerCase().includes(kw));
+    }
+    return list;
+  }, [docs, statusFilter, keyword]);
 
-  // 待解析文档数（仅"全部"筛选下有意义，用于列表上方引导提示）
+  // 待解析文档数（仅"全部"筛选下有意义，用于列表上方引导提示；
+  // 基于可见列表统计，keyword 过滤后与实际展示一致）
   const unparsedCount =
     statusFilter === 'all'
-      ? docs.filter(d => d.status === 'uploaded' || d.status === 'parsed').length
+      ? visibleDocs.filter(d => d.status === 'uploaded' || d.status === 'parsed').length
       : 0;
 
   // ---------- 数据加载 ----------
@@ -251,9 +265,13 @@ const DocumentsPage: React.FC = () => {
         // 兼容后端未分页的旧响应（裸数组）
         // B2: 状态筛选下沉后端（先过滤后分页，total 为过滤后数量），
         // 不再本地 filter 当前页数据；unparsed 由后端映射 uploaded+parsed 两态
+        // keyword 纯前端过滤：列表接口（GET /kbs/{id}/documents）无 keyword
+        // 参数，关键词非空时强制第 1 页 + page_size=200（后端上限）全量拉取，
+        // 前端过滤后由 Table 前端分页展示（避免"搜索只作用于当前页"；
+        // 超 200 文档的知识库搜索不完整，接口无 keyword 约束下的最优解）
         const res = await listDocuments(kbId, {
-          page: p,
-          page_size: ps,
+          page: keyword ? 1 : p,
+          page_size: keyword ? 200 : ps,
           status: toBackendStatus(statusFilter),
         });
         const data = res.data;
@@ -270,7 +288,7 @@ const DocumentsPage: React.FC = () => {
         if (!silent) setLoading(false);
       }
     },
-    [kbId, message, statusFilter],
+    [kbId, message, statusFilter, keyword],
   );
 
   /** B2: 删除/解析/上传等变更操作后刷新：回第 1 页重拉（避免页码显示旧值错位） */
@@ -292,10 +310,19 @@ const DocumentsPage: React.FC = () => {
   }, [urlKbId]);
 
   useEffect(() => {
-    // 切换知识库时重置页码回第 1 页（避免 Table 显示旧页码而数据是新库第 1 页）
+    // 切换知识库/关键词生效时重置页码回第 1 页
+    // （避免 Table 显示旧页码而数据是新库第 1 页）
     setPage(1);
     void load(false, 1, pageSize);
-  }, [kbId, load, pageSize]);
+  }, [kbId, keyword, load, pageSize]);
+
+  // 搜索框输入防抖 300ms 后生效（输入即时过滤，避免每击键重拉全量）
+  useEffect(() => {
+    const kw = keywordInput.trim();
+    if (kw === keyword) return;
+    const timer = window.setTimeout(() => setKeyword(kw), 300);
+    return () => window.clearTimeout(timer);
+  }, [keywordInput, keyword]);
 
   // 状态轮询：存在 parsing（入库中）或 graph_status=building（图谱构建中）时
   // 每 2s 静默刷新，全终态自动停止（uploaded=待解析不会自动流转，无需轮询）
@@ -349,20 +376,55 @@ const DocumentsPage: React.FC = () => {
     }
   }, [docs, kbId, modal, message, reloadFirstPage]);
 
-  // Agentic 分块超限提示：Agentic 方式入库时后端校验解析文本 >1 万字 →
-  // 任务失败，error 带"超过 1 万字"提示（成本太高，提交前无法预知文本
-  // 长度，由后端校验后经 doc.error 传递）；此处弹错误提示引导换切块方式
+  // Agentic 分块超限处理（两档）：Agentic 方式入库时后端校验解析文本长度
+  // → 任务失败，error 经 doc.error 传递（提交前无法预知文本长度，由后端
+  // 校验后带字数提示）。此处解析失败信息：
+  // - "超过 5 万字" → 直接拒绝，弹错误提示引导换切块方式（不弹确认）
+  // - "文档约 X.X 万字"（1 万~5 万字）→ 弹确认框询问是否继续：确认 →
+  //   带 agentic_confirm=true 重新提交；取消 → 放弃本次提示
   useEffect(() => {
     if (!kbId) return;
     for (const doc of docs) {
       if (doc.status !== 'failed' || !doc.error) continue;
-      if (!doc.error.includes('超过 1 万字') || agenticPromptedRef.current.has(doc.id)) continue;
+      // 超过 5 万字：不支持，保持错误提示换方式（不弹确认）
+      if (doc.error.includes('超过 5 万字')) {
+        if (agenticPromptedRef.current.has(doc.id)) continue;
+        agenticPromptedRef.current.add(doc.id);
+        message.error(
+          `「${doc.original_name}」文档超过 5 万字，不支持 Agentic 分块，请换用其他切块方式`,
+        );
+        continue;
+      }
+      // 1 万~5 万字：弹确认框（字数从错误信息"文档约 X.X 万字"解析）
+      const m = doc.error.match(/文档约\s*([\d.]+)\s*万字/);
+      if (!m || agenticPromptedRef.current.has(doc.id)) continue;
+      // 先标记再弹窗，避免 docs 重复变化导致连弹
       agenticPromptedRef.current.add(doc.id);
-      message.error(
-        `「${doc.original_name}」文档超过 1 万字，Agentic 分块成本太高，请换用其他切块方式`,
-      );
+      modal.confirm({
+        title: 'Agentic 分块成本较高',
+        content: (
+          <span>
+            当前文档「{doc.original_name}」约 {m[1]} 万字，Agentic 分块成本较高，
+            是否继续？
+          </span>
+        ),
+        okText: '继续',
+        cancelText: '取消',
+        onOk: async () => {
+          try {
+            await ingestDocument(kbId!, doc.id, {
+              method: 'agentic',
+              agentic_confirm: true,
+            });
+            message.success(`已按 Agentic 方式重新提交「${doc.original_name}」入库`);
+            void reloadFirstPage();
+          } catch (e: any) {
+            message.error(e.response?.data?.detail || '重新提交入库失败');
+          }
+        },
+      });
     }
-  }, [docs, kbId, message]);
+  }, [docs, kbId, modal, message, reloadFirstPage]);
 
   // ---------- 操作 ----------
 
@@ -647,6 +709,18 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
+  // 取消解析（仅 parsing 可取消）：接口置取消信号 → 任务尽快停止，文档
+  // 回 failed（error="用户取消解析"），可重新发起解析；列表轮询自动刷新
+  const handleCancelIngestion = async (doc: DocumentItem) => {
+    try {
+      await cancelDocumentIngestion(kbId!, doc.id);
+      message.success('已发送取消请求，文档将回到失败状态，可重新解析');
+      void reloadFirstPage();
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '取消解析失败');
+    }
+  };
+
   // ---------- 回收站 ----------
 
   const loadTrash = useCallback(
@@ -859,6 +933,21 @@ const DocumentsPage: React.FC = () => {
                 解析
               </Button>
             ))}
+          {canManage && row.status === 'parsing' && (
+            <Popconfirm
+              key="ingest-cancel"
+              title={`取消解析「${row.original_name}」？`}
+              description="将停止本次解析，文档回到失败状态，可重新发起解析"
+              onConfirm={() => handleCancelIngestion(row)}
+              okText="取消解析"
+              cancelText="再想想"
+              okButtonProps={{ danger: true }}
+            >
+              <Button size="small" danger icon={<StopOutlined />}>
+                取消解析
+              </Button>
+            </Popconfirm>
+          )}
           {canManage && row.status === 'ingested' &&
             (row.graph_status === 'building' ? (
               <Popconfirm
@@ -1085,25 +1174,37 @@ const DocumentsPage: React.FC = () => {
           </Space>
         }
         extra={
-          canManage && (
-            <Space>
-              {selectedRowKeys.length > 0 && (
-                <Text type="secondary">已选 {selectedRowKeys.length} 项</Text>
-              )}
-              <Button
-                type="primary"
-                ghost
-                icon={<ThunderboltOutlined />}
-                onClick={handleBatchParse}
-                disabled={!kbId || selectedRowKeys.length === 0 || batchParsing}
-                loading={batchParsing}
-              >
-                {batchParsing && parseProgress
-                  ? `解析中 ${parseProgress.done}/${parseProgress.total}`
-                  : '批量解析'}
-              </Button>
-            </Space>
-          )
+          <Space>
+            {/* 文件名/关键词过滤：输入防抖 300ms 后生效（与状态筛选叠加）；
+                allowClear 清空即恢复全部；批量解析按钮左侧 */}
+            <Input.Search
+              allowClear
+              placeholder="搜索文档名称"
+              style={{ width: 220 }}
+              value={keywordInput}
+              onChange={e => setKeywordInput(e.target.value)}
+              onSearch={v => setKeyword(v.trim())}
+            />
+            {canManage && (
+              <>
+                {selectedRowKeys.length > 0 && (
+                  <Text type="secondary">已选 {selectedRowKeys.length} 项</Text>
+                )}
+                <Button
+                  type="primary"
+                  ghost
+                  icon={<ThunderboltOutlined />}
+                  onClick={handleBatchParse}
+                  disabled={!kbId || selectedRowKeys.length === 0 || batchParsing}
+                  loading={batchParsing}
+                >
+                  {batchParsing && parseProgress
+                    ? `解析中 ${parseProgress.done}/${parseProgress.total}`
+                    : '批量解析'}
+                </Button>
+              </>
+            )}
+          </Space>
         }
       >
         {/* 上传条：收敛为列表卡片顶部的内嵌窄条（点击/拖拽上传 + 从 URL 导入） */}
@@ -1170,24 +1271,45 @@ const DocumentsPage: React.FC = () => {
           columns={columns}
           rowKey="id"
           loading={loading}
-          pagination={{
-            // P2-10 服务端分页：翻页重新请求；total 来自后端
-            current: page,
-            pageSize,
-            total,
-            showTotal: (t: number) => `共 ${t} 条`,
-            onChange: (p: number, ps: number) => {
-              setPage(p);
-              setPageSize(ps);
-              void load(false, p, ps);
-            },
-          }}
+          pagination={
+            keyword
+              ? {
+                  // keyword 模式：dataSource 为全量过滤结果，
+                  // total 与 dataSource 等长 → antd 自动前端分页，
+                  // 翻页仅改本地页码不发请求
+                  current: page,
+                  pageSize,
+                  total: visibleDocs.length,
+                  showTotal: (t: number) => `共 ${t} 条`,
+                  onChange: (p: number, ps: number) => {
+                    setPage(p);
+                    setPageSize(ps);
+                  },
+                }
+              : {
+                  // P2-10 服务端分页：翻页重新请求；total 来自后端
+                  current: page,
+                  pageSize,
+                  total,
+                  showTotal: (t: number) => `共 ${t} 条`,
+                  onChange: (p: number, ps: number) => {
+                    setPage(p);
+                    setPageSize(ps);
+                    void load(false, p, ps);
+                  },
+                }
+          }
           locale={{
             emptyText:
               total === 0 ? (
                 <AppEmpty
                   title="暂无文档"
                   description="点击上方上传条上传文件，或从 URL 导入网页内容"
+                />
+              ) : keyword && visibleDocs.length === 0 ? (
+                <AppEmpty
+                  title="无匹配文档"
+                  description={`没有文件名包含「${keyword}」的文档，可清空搜索词或切换状态筛选`}
                 />
               ) : (
                 <AppEmpty

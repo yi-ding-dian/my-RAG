@@ -14,6 +14,8 @@ auto 与 None 语义等价（不持久化、不透传）。
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from conftest import create_kb, upload_doc, wait_for_status
@@ -37,21 +39,28 @@ def _get_doc(client, kb_id, doc_id, headers=None):
 
 
 class _FakeParser:
-    """伪 parser：记录 parse_opts，返回构造的 (text, images, method)"""
+    """伪 parser：记录 parse_opts，返回构造的 (text, images, method)
 
-    def __init__(self, text: str, images: list):
+    delay: 模拟解析耗时（取消测试用——任务在解析中时用户点取消）
+    """
+
+    def __init__(self, text: str, images: list, delay: float = 0.0):
         self.text = text
         self.images = images
+        self.delay = delay
         self.last_opts: dict | None = None
 
     async def parse(self, path, file_type, engine="auto", **opts):
         self.last_opts = opts
+        if self.delay:
+            await asyncio.sleep(self.delay)
         return self.text, self.images, "mineru"
 
 
-def _install_fake_parser(monkeypatch, text: str, images: list) -> _FakeParser:
+def _install_fake_parser(monkeypatch, text: str, images: list,
+                         delay: float = 0.0) -> _FakeParser:
     """替换 get_parser_client（源模块与消费模块两处引用复制，同 test_parser_images_chain）"""
-    fake = _FakeParser(text, images)
+    fake = _FakeParser(text, images, delay=delay)
     monkeypatch.setattr("backend.services.parser_client.get_parser_client",
                         lambda: fake)
     monkeypatch.setattr("backend.services.ingestion_service.get_parser_client",
@@ -240,3 +249,93 @@ class TestParserBackendFormData:
         asyncio.run(parser._parse_via_mineru(
             "http://mineru:8001", pdf, 30.0, backend="hybrid-auto-engine"))
         assert fake.post_data["backend"] == "hybrid-auto-engine"
+
+
+class TestCancelIngestion:
+    """取消解析：仅 parsing 可取消；取消后任务停止、文档回 failed
+    （error="用户取消解析"），可重新发起解析"""
+
+    def _wait_settled(self, client, kb_id, doc_id, timeout=20.0, headers=None):
+        """等待任务结束（ingested/failed 任一终态），返回最终文档"""
+        import time
+        deadline = time.monotonic() + timeout
+        while True:
+            doc = _get_doc(client, kb_id, doc_id, headers)
+            if doc["status"] in ("ingested", "failed"):
+                return doc
+            if time.monotonic() > deadline:
+                raise AssertionError(
+                    f"等待任务结束超时，当前状态: {doc['status']} "
+                    f"error={doc.get('error')}")
+            time.sleep(0.2)
+
+    def test_cancel_not_parsing_409(self, client, admin_headers):
+        """非解析中（uploaded）取消 → 409，提示当前状态"""
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"])
+        resp = client.post(
+            f"/api/kbs/{kb['id']}/documents/{doc['id']}/ingest/cancel",
+            headers=admin_headers)
+        assert resp.status_code == 409
+        assert "当前不在解析中" in resp.json()["detail"]
+        # 状态未被改动
+        assert _get_doc(client, kb["id"], doc["id"],
+                        admin_headers)["status"] == "uploaded"
+
+    def test_cancel_parsing_marks_failed_and_stops(self, client, monkeypatch,
+                                                   mock_embedding,
+                                                   admin_headers):
+        """解析中取消：任务检查点命中 → 状态回 failed（error="用户取消解析"），
+        未写入 ingested（解析仍在外部解析器执行，无法打断但结果不落库）"""
+        # 伪 parser 延迟 3s 模拟解析中（给取消留出窗口）
+        fake = _install_fake_parser(monkeypatch, "# 标题\n\n内容段落", [],
+                                    delay=3.0)
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"])
+        resp = _ingest(client, kb["id"], doc["id"], {"method": "naive"},
+                       admin_headers)
+        assert resp.status_code == 200
+        # 等进入 parsing 后再取消（取消仅对解析中生效）
+        import time
+        deadline = time.monotonic() + 10
+        while True:
+            d = _get_doc(client, kb["id"], doc["id"], admin_headers)
+            if d["status"] == "parsing":
+                break
+            if time.monotonic() > deadline:
+                raise AssertionError("未进入 parsing 状态")
+            time.sleep(0.1)
+        resp2 = client.post(
+            f"/api/kbs/{kb['id']}/documents/{doc['id']}/ingest/cancel",
+            headers=admin_headers)
+        assert resp2.status_code == 200, resp2.text
+        assert resp2.json()["doc_id"] == doc["id"]
+        final = self._wait_settled(client, kb["id"], doc["id"],
+                                   headers=admin_headers)
+        assert final["status"] == "failed"
+        assert final["error"] == "用户取消解析"
+        # 重新发起解析（failed -> parsing 合法）可再次入库：这次不取消 → ingested
+        fake.delay = 0.0
+        resp3 = _ingest(client, kb["id"], doc["id"], {"method": "naive"},
+                        admin_headers)
+        assert resp3.status_code == 200
+        final2 = wait_for_status(client, kb["id"], doc["id"], status="ingested",
+                                 timeout=20.0, headers=admin_headers)
+        assert final2["status"] == "ingested"
+
+    def test_cancel_after_ingested_409(self, client, monkeypatch,
+                                       mock_embedding, admin_headers):
+        """已入库后取消 → 409（解析已结束，不可取消）"""
+        _install_fake_parser(monkeypatch, "# 标题\n\n内容段落", [])
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"])
+        assert _ingest(client, kb["id"], doc["id"], {"method": "naive"},
+                       admin_headers).status_code == 200
+        final = wait_for_status(client, kb["id"], doc["id"], status="ingested",
+                                timeout=20.0, headers=admin_headers)
+        assert final["status"] == "ingested"
+        resp = client.post(
+            f"/api/kbs/{kb['id']}/documents/{doc['id']}/ingest/cancel",
+            headers=admin_headers)
+        assert resp.status_code == 409
+        assert "当前不在解析中" in resp.json()["detail"]

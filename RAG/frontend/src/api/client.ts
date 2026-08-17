@@ -150,6 +150,8 @@ export interface IngestConfig {
   knowledge_graph?: boolean;
   /** 思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要调用共用）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度 */
   thinking_mode?: ThinkingMode;
+  /** Agentic 分块超限确认（仅 method=agentic）：文档 1 万~5 万字时后端要求确认，确认后带 true 重新提交（仅本次生效，不持久化） */
+  agentic_confirm?: boolean;
   /** 解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为系统配置 LLM 模型列表的 name；空=默认用当前激活对话模型，对话不受影响） */
   parse_llm_model?: string;
   /** QA 问答切块规范性强制继续（仅 method=qa）：true=跳过问答对占比检测直接入库（入库失败确认"继续入库"时提交） */
@@ -664,6 +666,15 @@ export const buildDocumentGraph = (
  * 非构建中 → 409"当前不在图谱构建中，无法中断"）
  * 中断后任务停止、状态恢复构建前值（旧图谱保留），可再次构建
  */
+/** 取消解析中的文档（仅 parsing 可取消 → 200"取消解析请求已发送"；
+ * 非解析中 → 409"当前不在解析中，无法取消"。取消后文档回 failed（"用户
+ * 取消解析"），可重新发起解析）
+ */
+export const cancelDocumentIngestion = (kbId: string, docId: string) =>
+  api.post<{ message: string; doc_id: string }>(
+    `/kbs/${kbId}/documents/${docId}/ingest/cancel`,
+  );
+
 export const cancelDocumentGraphBuild = (kbId: string, docId: string) =>
   api.post<{ message: string; doc_id: string }>(
     `/kbs/${kbId}/documents/${docId}/graph-build/cancel`,

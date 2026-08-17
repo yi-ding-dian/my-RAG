@@ -96,7 +96,7 @@
 
 ### 必改清单（首次部署前逐项确认）
 
-> 详细说明（各服务的获取方式 / 端口 / 可降级性）见 **`docs/external-deps.md`**。
+> 详细说明（各服务的获取方式 / 端口 / 可降级性）见 **`docs/外部依赖部署指南.md`**。
 
 1. **JWT_SECRET**：`cp .env.example .env` 后，必须把 `.env` 中 `JWT_SECRET`
    改为 ≥16 字符的强随机值（`openssl rand -hex 32` 生成），否则后端**拒绝启动**。
@@ -157,7 +157,7 @@ bash scripts/verify.sh
 
 ## API 文档
 
-完整接口契约见 **`docs/api_contract.md`**（v1.2），包含：全局约定（认证/角色/错误码）、
+完整接口契约见 **`docs/API接口契约.md`**（v1.2），包含：全局约定（认证/角色/错误码）、
 用户/部门管理、知识库、文档、聊天、统计、审计、文件代理、系统配置。
 
 快速索引：
@@ -228,7 +228,7 @@ MinerU、检索（top_k / similarity_threshold / enable_hybrid / **rerank**）�
 my-RAG/
 ├── deploy/            # 源码部署脚本（install/build/start/stop + 说明）
 ├── docker/            # Docker 部署（Dockerfile×2 / compose / nginx.conf / .env.docker / README）
-├── docs/api_contract.md  # API 契约（v1.2，全部接口）
+├── docs/API接口契约.md  # API 契约（v1.2，全部接口）
 ├── scripts/verify.sh  # 端到端验证（21 步）
 ├── tests/             # pytest（90+ 测试文件 / 900+ 用例，离线可跑）
 ├── README.md / .gitignore / .dockerignore

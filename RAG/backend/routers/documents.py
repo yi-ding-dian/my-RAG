@@ -198,6 +198,37 @@ async def ingest_document(request: Request, kb_id: str, doc_id: str,
     return resp
 
 
+@router.post("/{doc_id}/ingest/cancel")
+async def cancel_document_ingestion(request: Request, kb_id: str, doc_id: str,
+                                    db: AsyncSession = Depends(get_db),
+                                    user: UserPublic = Depends(get_current_user)):
+    """取消解析（后台任务取消信号，can_manage_kb）
+
+    - 仅解析中（status=parsing）可取消：非解析中 → 409
+      "当前不在解析中，无法取消（状态: xxx）"
+    - 置取消标记后任务尽快停止（检查点：解析完成后/向量化写入前），
+      写回 status=failed + error="用户取消解析"，可重新发起解析；
+      任务不在运行（信号量排队/重启恢复等边缘场景）→ 直接拨回 failed
+    """
+    await kb_or_404(db, kb_id, user, manage=True)
+    doc = _get_doc_or_404(kb_id, doc_id)
+    doc_svc = get_document_service()
+    ing_svc = get_ingestion_service()
+    if doc.status != "parsing":
+        raise HTTPException(
+            status_code=409,
+            detail=f"当前不在解析中，无法取消（状态: {doc.status}）")
+    ing_svc.cancel(doc_id)
+    # 任务不在运行（排队/边缘场景）→ 无检查点可消费，直接拨回 failed
+    if not ing_svc.is_running(doc_id):
+        doc_svc.mark_failed(doc_id, "用户取消解析")
+    await audit_service.record_action(
+        user, action="doc.ingest-cancel", target_type="doc",
+        target_id=doc_id, target_name=doc.original_name, request=request)
+    logger.info("取消解析请求: %s (%s)", doc.original_name, doc_id)
+    return {"message": "取消解析请求已发送", "doc_id": doc_id}
+
+
 @router.post("/from-url", response_model=DocumentItem)
 async def import_from_url(request: Request, kb_id: str, req: UrlImportRequest,
                           db: AsyncSession = Depends(get_db),

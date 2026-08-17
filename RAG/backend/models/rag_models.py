@@ -136,6 +136,7 @@ class IngestRequest(BaseModel):
     thinking_mode: Optional[str] = Field(None, description="思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要调用共用）：disabled=关闭思考（默认，简单延迟敏感任务加速并节省 token）/enabled_low/enabled_high/enabled_max=开启思考并指定强度（low/high/max）")
     parse_llm_model: Optional[str] = Field(None, description="解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为激活档案 LLM 模型列表的 name；空/缺省=用当前激活对话模型，查不到回退激活模型；对话不受影响；随 parser_config 持久化，重跑沿用）")
     qa_force_continue: Optional[bool] = Field(None, description="QA 问答切块规范性强制继续（仅 method=qa 生效）：False/缺省=解析后检测问答对占比（问答对/总段落），低于 50% 任务失败并带检测详情；True=跳过规范性检测直接入库（前端确认继续入库时提交）")
+    agentic_confirm: Optional[bool] = Field(None, description="Agentic 分块超限确认（仅 method=agentic 生效）：解析文本 1 万~5 万字且未带确认 → 任务失败，error 带字数提示（如'文档约 1.3 万字…agentic_confirm=true'，前端确认后带本参数重新提交）；True=跳过 1 万~5 万字超限校验直接分块；超过 5 万字无论是否确认都拒绝。确认标记仅本次提交生效，不持久化到文档 parser_config（入库时剔除）")
 
 
 class GraphBuildRequest(BaseModel):

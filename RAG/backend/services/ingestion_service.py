@@ -43,15 +43,19 @@ parsed 为历史中间态，仅兼容保留）
 - parent_child 父子分块：子块入向量库（metadata 带 char_start/char_end/
   parent_chunk_index/parent_text/retrieval_mode），父块全文随子块存储供检索上下文；
   其他方式 metadata 仅 document_id/document_name/chunk_index/char_start/char_end
-- agentic（Agentic 智能分块，第六种方式）：LLM 读全文（≤1 万字）自主判断
+- agentic（Agentic 智能分块，第六种方式）：LLM 读全文自主判断
   完整逻辑段落切割，每块附类型标签（论述类/事实类/操作类/数据类/其他，
-  实现见 backend/services/agentic_chunker.py）。超 1 万字 → ValueError
-  （"成本太高"提示，任务失败，前端换切块方式）；LLM 失败/超时/对齐全失败
-  → 回退 title 切块（warning 注明原因，不阻塞入库）。标签存
-  chunks_meta.label（可选字段，仅 agentic 成功块带）。思考关闭策略复用
-  thinking_strategy（在线 extra_body / 本地 Qwen prefill）。与上下文检索
-  增强/知识图谱三选一互斥：前端互斥逻辑 + 后端 resolve_parser_config 强制
-  关闭（防 API 直调/重跑旧配置组合）
+  实现见 backend/services/agentic_chunker.py）。文本长度两档校验（解析出
+  文本后、切块前）：>5 万字直接拒绝（不支持 Agentic 分块）；1 万~5 万字
+  且未带 agentic_confirm → ValueError（错误信息带"约 X.X 万字"提示，任务
+  失败，前端弹确认框，确认后带 agentic_confirm=true 重新提交）；带确认
+  → 跳过超限校验直接分块。确认标记仅本次提交生效（入库前从 parser_config
+  剔除，不持久化，重跑仍需再次确认；防旧配置带确认标记绕过未来校验）。
+  LLM 失败/超时/对齐全失败 → 回退 title 切块（warning 注明原因，不阻塞
+  入库）。标签存 chunks_meta.label（可选字段，仅 agentic 成功块带）。
+  思考关闭策略复用 thinking_strategy（在线 extra_body / 本地 Qwen prefill）。
+  与上下文检索增强互斥：前端互斥逻辑 + 后端 resolve_parser_config 强制
+  关闭（防 API 直调/重跑旧配置组合）；知识图谱不互斥，可叠加选择
 - 防重复触发：任务执行中用内存集合标记，状态机迁移双保险
 - 入库前先清旧向量（对任何切块方式都执行，幂等）
 - 原始文件从对象存储（MinIO/local）下载到 data/uploads/ 供解析；
@@ -347,29 +351,58 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
             if not isinstance(value, bool):
                 raise ValueError(f"{key} 必须是布尔值（true/false）")
         cfg[key] = value
-    # agentic 与上下文检索增强/知识图谱三选一互斥（用户约束：三个大模型
-    # 功能只能选一个）：强制关闭后两者——前端互斥逻辑 + 后端双保险，
-    # 防 API 直调/重跑沿用文档旧配置产生组合
+    # agentic 与上下文检索增强互斥（用户约束）：选 agentic 强制关闭上下文
+    # 检索增强——前端互斥逻辑 + 后端双保险，防 API 直调/重跑沿用文档旧配置
+    # 产生组合；知识图谱不互斥（切块后处理，与切块方式无关），可叠加选择
     if method == "agentic":
         cfg["contextual_retrieval"] = False
-        cfg["knowledge_graph"] = False
+    # Agentic 分块超限确认标记（仅 method=agentic 生效）：只读请求显式传
+    # （params），不读文档旧配置——避免旧配置持久化的确认标记绕过未来校验；
+    # True 时作为临时键放 cfg（_ingest 校验处读取，入库前剔除不持久化）
+    if method == "agentic" and params.get("agentic_confirm") is not None:
+        confirm = params.get("agentic_confirm")
+        if not isinstance(confirm, bool):
+            raise ValueError("agentic_confirm 必须是布尔值（true/false）")
+        if confirm:
+            cfg["agentic_confirm"] = True
     return method, cfg
 
 # 切块预览上限
 _PREVIEW_LIMIT = 20
 _PREVIEW_CHAR = 500
-# Agentic 智能分块文本长度上限（用户约束：超过 1 万字 LLM 全量读取成本
-# 太高 → 提示换方式；校验在解析出文本后、切块前，失败写回 failed）
+# Agentic 智能分块文本长度两档上限（用户约束：LLM 全量读取成本随长度
+# 上升——1 万~5 万字需前端确认后继续（agentic_confirm=true），超过 5 万字
+# 直接拒绝；校验在解析出文本后、切块前，失败写回 failed）
 _MAX_AGENTIC_TEXT_CHARS = 10000
+_MAX_AGENTIC_TEXT_CHARS_HARD = 50000
+
+
+class _IngestCancelled(Exception):
+    """入库任务被用户取消（路由 cancel 接口置标记，任务检查点抛出）"""
 
 
 class IngestionService:
 
     def __init__(self):
         self._running: Set[str] = set()  # 正在入库的 doc_id，防并发重复触发
+        self._cancel: Set[str] = set()   # 用户取消标记（cancel 接口置位，任务检查点消费）
 
     def is_running(self, doc_id: str) -> bool:
         return doc_id in self._running
+
+    def is_cancelled(self, doc_id: str) -> bool:
+        return doc_id in self._cancel
+
+    def cancel(self, doc_id: str) -> None:
+        """置取消标记（幂等）。任务内检查点命中后中止本次入库并清除标记"""
+        self._cancel.add(doc_id)
+
+    def _raise_if_cancelled(self, doc_id: str) -> None:
+        """任务内取消检查点：命中标记 → 清除标记并抛 _IngestCancelled
+        （调用方捕获后 mark_failed"用户取消解析"）；未命中无操作"""
+        if doc_id in self._cancel:
+            self._cancel.discard(doc_id)
+            raise _IngestCancelled(doc_id)
 
     async def run_ingestion(self, doc_id: str, method: str | None = None,
                             **params):
@@ -404,6 +437,7 @@ class IngestionService:
             await self._ingest(doc_id, method=method, **params)
         finally:
             self._running.discard(doc_id)
+            self._cancel.discard(doc_id)  # 取消标记随任务结束清除（含正常完成）
 
     async def _ingest(self, doc_id: str, method: str | None = None, **params):
         doc_svc = get_document_service()
@@ -503,6 +537,10 @@ class IngestionService:
                 raise RuntimeError(
                     "解析结果为空（扫描版 PDF 或无文本内容），请检查解析服务后重试")
 
+            # 取消检查点 1：解析已完成、尚未上传图片/落盘/切块——用户取消
+            # 后不再做后续耗时处理（解析服务调用本身无法中途打断，已白跑）
+            self._raise_if_cancelled(doc_id)
+
             # 2.5) 解析图片上传存储 + markdown 引用替换
             # 上传前先清该文档旧解析图片（re-ingest 防残留孤儿对象；
             # 即使本次解析无图也清理，失败仅 warning 不阻断入库）
@@ -545,16 +583,24 @@ class IngestionService:
             # 该字段，chunks_meta.label 可选）
             agentic_labels: Dict[int, str] = {}
             if parser_id == "agentic":
-                # Agentic 智能分块：LLM 读全文（≤1 万字）自主切逻辑段落并打
-                # 标签（论述类/事实类/操作类/数据类/其他，实现与失败语义见
-                # agentic_chunker）。超限 → ValueError（任务失败，前端提示换
-                # 方式）；LLM 失败/超时/对齐全失败 → 回退 title 切块
-                # （warning 注明原因，不阻塞入库）；思考关闭策略复用
-                # thinking_strategy（cfg.thinking_mode）
-                if len(text) > _MAX_AGENTIC_TEXT_CHARS:
+                # Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签（论述类/
+                # 事实类/操作类/数据类/其他，实现与失败语义见 agentic_chunker）。
+                # 两档校验（超限 → ValueError 任务失败，前端据此提示/弹确认）：
+                # >5 万字直接拒绝（不支持 Agentic 分块）；1 万~5 万字且未带
+                # agentic_confirm → 失败带字数提示（前端确认后带
+                # agentic_confirm=true 重新提交），带确认 → 跳过校验直接分块；
+                # LLM 失败/超时/对齐全失败 → 回退 title 切块（warning 注明
+                # 原因，不阻塞入库）；思考关闭策略复用 thinking_strategy
+                if len(text) > _MAX_AGENTIC_TEXT_CHARS_HARD:
                     raise ValueError(
-                        "文档超过 1 万字，Agentic 分块成本太高，"
+                        "文档超过 5 万字，不支持 Agentic 分块，"
                         "请换用其他切块方式")
+                if len(text) > _MAX_AGENTIC_TEXT_CHARS \
+                        and not parser_config.get("agentic_confirm"):
+                    raise ValueError(
+                        f"文档约 {len(text)/10000:.1f} 万字，"
+                        f"Agentic 分块成本较高，确认继续请重试"
+                        f"（agentic_confirm=true）")
                 try:
                     agentic_chunks, labels = await agentic_chunk(
                         text, parser_config)
@@ -633,6 +679,10 @@ class IngestionService:
             if not chunks:
                 raise RuntimeError("切块结果为空")
 
+            # 取消检查点 2a：切块/图谱/摘要已完成、向量化开始前——命中则中止，
+            # 跳过耗时的 embedding，立即结束（状态由 _IngestCancelled 写 failed）
+            self._raise_if_cancelled(doc_id)
+
             # 5) 向量化 + 入库（入库前先清旧向量——对任何切块方式都执行，幂等）
             emb_svc = get_embedding_service()
             # 向量化文本：有摘要的块用 "【上下文】摘要\n原文"（检索质量提升的
@@ -644,6 +694,9 @@ class IngestionService:
                 for i, c in enumerate(chunk_objects)
             ]
             embeddings = await emb_svc.embed(embed_texts)
+            # 取消检查点 2b：嵌入完成后、向量写入前——命中则不写向量库
+            # （嵌入白算可接受，向量库保持干净，不污染检索）
+            self._raise_if_cancelled(doc_id)
             vec = get_vector_store()
             # 5.5) 维度冲突防护（P0）：collection 已有旧维度向量（更换 embedding
             # 模型后），新维度写入 Chroma 会报错；这里提前校验，失败中止入库并
@@ -690,6 +743,9 @@ class IngestionService:
             # 6) 完成：解析配置持久化到文档元数据（重跑沿用）；
             # chunks_meta 存完整列表（text+偏移，详情接口读），chunk_preview 兼容保留；
             # 图谱状态随入库写回（kg_status=None 即开关关，保持文档原值不清空）
+            # Agentic 超限确认标记为"本次提交确认"语义：入库前剔除，不持久化到
+            # 文档 parser_config（重跑仍需再次确认；防旧配置带确认标记绕过校验）
+            parser_config.pop("agentic_confirm", None)
             transition_kwargs = {
                 "parse_method": parse_method,
                 "chunk_count": len(chunks),
@@ -711,6 +767,10 @@ class IngestionService:
             doc_svc.transition(doc_id, "ingested", **transition_kwargs)
             logger.info("入库完成: %s (%s) chunks=%d method=%s", doc.original_name,
                         doc_id, len(chunks), parser_id)
+        except _IngestCancelled:
+            # 用户取消解析（检查点命中）：写回 failed + 取消原因，不打堆栈
+            logger.info("入库任务已取消: %s (%s)", doc.original_name, doc_id)
+            doc_svc.mark_failed(doc_id, "用户取消解析")
         except Exception as e:
             logger.exception("入库失败: %s (%s)", doc_id, e)
             doc_svc.mark_failed(doc_id, str(e))

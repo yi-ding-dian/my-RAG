@@ -1,11 +1,12 @@
-"""Agentic 智能分块：对齐算法 / LLM 调用 / 入库链路（超限 400 语义、回退 title、互斥）
+"""Agentic 智能分块：对齐算法 / LLM 调用 / 入库链路（两档超限校验、回退 title、互斥）
 
 - align_chunks 纯函数：完全匹配 / 折叠空白偏差 / 前缀模糊 / 部分失败 / 全失败
 - agentic_chunk 单元（patch 客户端）：成功（偏移+标签）/ 失败 / 超时 /
-  坏响应 / 围栏 JSON / 白名单外标签 / 对齐全失败 / LLM 未配置 / 超 1 万字
+  坏响应 / 围栏 JSON / 白名单外标签 / 对齐全失败 / LLM 未配置 / 超 5 万字
 - 入库链路（TestClient + 记录式 embedding + 伪 agentic 客户端）：
-  成功（label 存储+偏移正确）/ LLM 失败回退 title / 超限失败 /
-  与上下文检索增强/知识图谱互斥强制关闭
+  成功（label 存储+偏移正确）/ LLM 失败回退 title / 两档超限校验
+  （1 万~5 万字未确认失败带字数、确认后入库成功且确认标记不持久化、
+  超 5 万字即使确认也拒绝）/ 与上下文检索增强/知识图谱互斥强制关闭
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from conftest import char_vector, create_kb, upload_doc
 from backend.models.rag_models import DocumentItem
 from backend.services.agentic_chunker import (
     AgenticChunkError, _parse_response, agentic_chunk, align_chunks,
-    normalize_label)
+    normalize_label, restore_heading_prefix)
 from backend.services.ingestion_service import resolve_parser_config
 
 # ==================== 样例与伪客户端 ====================
@@ -210,6 +211,105 @@ class TestAlignChunks:
         assert text[s:e] == "重复句。"
 
 
+# ==================== restore_heading_prefix（标题归属兜底） ====================
+
+class TestRestoreHeadingPrefix:
+    """标题归属兜底：单标题并入 / 多级链并入 / 已含标题不动 / 无标题不动 /
+    后续块不重复并入 / setext 识别 / 链上限 / 偏移契约"""
+
+    def _restored(self, text, llm_chunks):
+        """align_chunks + restore_heading_prefix 串联（与 agentic_chunk 同路径）"""
+        return restore_heading_prefix(text, align_chunks(text, llm_chunks))
+
+    def test_single_heading_merged(self):
+        """块前有单个标题未包含 → 扩展块起点并入标题"""
+        text = "## 第二章 安装\n\n第一段内容。\n\n第二段内容。"
+        aligned = self._restored(text, ["第一段内容。", "第二段内容。"])
+        assert len(aligned) == 2
+        s, e, i = aligned[0]
+        assert i == 0
+        assert text[s:e] == "## 第二章 安装\n\n第一段内容。"
+        # 第二块：标题已并入第一块 → 不重复并入（保持原样）
+        s2 = text.find("第二段内容。")
+        assert aligned[1] == (s2, s2 + len("第二段内容。"), 1)
+
+    def test_multi_level_headings_merged(self):
+        """多级连续标题（## + ###）→ 两级并入块开头（标题层级链）"""
+        text = "## 第二章\n### 2.1 概述\n第一段内容。"
+        aligned = self._restored(text, ["第一段内容。"])
+        s, e, _ = aligned[0]
+        assert text[s:e].startswith("## 第二章\n### 2.1 概述")
+        assert text[s:e] == text  # 标题链 + 正文整段 = 块文本
+
+    def test_block_already_contains_heading_unchanged(self):
+        """块已以标题行开头（LLM 已保留标题）→ 不动（不并入更早标题）"""
+        text = "# 文档总标题\n\n## 第一章\n第一段内容。"
+        aligned = self._restored(text, ["## 第一章\n第一段内容。"])
+        s, e, _ = aligned[0]
+        assert text[s:e] == "## 第一章\n第一段内容。"
+
+    def test_no_heading_unchanged(self):
+        """无标题文本 → 全部不动"""
+        text = "第一段内容。\n\n第二段内容。"
+        aligned = self._restored(text, ["第一段内容。", "第二段内容。"])
+        assert text[aligned[0][0]:aligned[0][1]] == "第一段内容。"
+        assert text[aligned[1][0]:aligned[1][1]] == "第二段内容。"
+
+    def test_following_chunks_not_repeat_heading(self):
+        """一个标题下的第一个块扩展后，同章节后续块不重复并入同一标题"""
+        text = ("## 第一章 背景\n\n第一段背景内容。\n\n第二段背景内容。\n\n"
+                "## 第二章 现状\n\n第三段现状内容。")
+        aligned = self._restored(text, ["第一段背景内容。", "第二段背景内容。",
+                                        "第三段现状内容。"])
+        assert len(aligned) == 3
+        assert text[aligned[0][0]:aligned[0][1]] == (
+            "## 第一章 背景\n\n第一段背景内容。")
+        assert text[aligned[1][0]:aligned[1][1]] == "第二段背景内容。"
+        assert text[aligned[2][0]:aligned[2][1]] == (
+            "## 第二章 现状\n\n第三段现状内容。")
+
+    def test_setext_heading_merged(self):
+        """setext 样式标题（下划线式）同样识别并并入（复用 _iter_headings）"""
+        text = "第一章 安装\n============\n\n第一段内容。"
+        aligned = self._restored(text, ["第一段内容。"])
+        s, e, _ = aligned[0]
+        assert text[s:e].startswith("第一章 安装\n============")
+
+    def test_heading_path_chain_capped(self):
+        """连续标题行链最多并入 _MAX_HEADING_PATH_LINES 行（防过度扩展）"""
+        from backend.services.agentic_chunker import _MAX_HEADING_PATH_LINES
+        text = "# 一级\n## 二级\n### 三级\n#### 四级\n第一段内容。"
+        aligned = self._restored(text, ["第一段内容。"])
+        s, e, _ = aligned[0]
+        assert text[s:e].startswith(
+            "## 二级\n### 三级\n#### 四级\n第一段内容。")
+        assert not text[s:e].startswith("# 一级")  # 第 4 行标题被上限截断
+
+    def test_offset_contract_after_restore(self):
+        """扩展后偏移契约：块文本 == 原文切片（空行间隔的标题也并入链，
+        与块起点前的扩展一致，char_start/end 与 text 严格对齐）"""
+        text = "# 总标题\n\n## 第一节\n第一段。\n\n## 第二节\n第二段。"
+        aligned = self._restored(text, ["第一段。", "第二段。"])
+        assert len(aligned) == 2
+        # 块1：链并入空行间隔的 # 总标题 + ## 第一节
+        assert text[aligned[0][0]:aligned[0][1]] == (
+            "# 总标题\n\n## 第一节\n第一段。")
+        # 块2：并入 ## 第二节
+        assert text[aligned[1][0]:aligned[1][1]] == "## 第二节\n第二段。"
+        # 偏移契约：块文本 == 原文[char_start:char_end]（restore 只前移
+        # char_start，text 按原文切片重取，偏移契约由上面的逐字比较覆盖）
+
+
+class TestAgenticPrompt:
+    """prompt 约束：块开头必须含所属章节标题行"""
+
+    def test_prompt_requires_heading_line(self):
+        from backend.services.agentic_chunker import _AGENTIC_PROMPT
+        assert "章节标题行" in _AGENTIC_PROMPT
+        assert "标题行是段落的一部分" in _AGENTIC_PROMPT
+        assert "逐字拷贝" in _AGENTIC_PROMPT
+
+
 # ==================== agentic_chunk 单元 ====================
 
 class TestAgenticChunk:
@@ -293,10 +393,20 @@ class TestAgenticChunk:
             asyncio.run(agentic_chunk(_AGENTIC_DOC, {}))
 
     def test_too_long_text_raises(self, monkeypatch):
-        """超 1 万字 → AgenticChunkError（ingestion 层另有 400 校验）"""
+        """超 5 万字 → AgenticChunkError（ingestion 层另有拒绝校验）"""
         fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
-        with pytest.raises(AgenticChunkError, match="超过 1 万字"):
-            asyncio.run(agentic_chunk("字" * 10001, {}))
+        with pytest.raises(AgenticChunkError, match="超过 5 万字"):
+            asyncio.run(agentic_chunk("字" * 50001, {}))
+
+    def test_mid_size_text_with_confirm_allowed(self, monkeypatch):
+        """1 万~5 万字文本（~1 万字）：agentic_chunk 防御上限已放宽到 5 万，
+        不抛长度类错误（超限校验在 ingestion 层按确认标记决定）"""
+        fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
+        text = _AGENTIC_DOC * 55  # ~1.04 万字（mock LLM 输出可对齐，验证正常切块）
+        assert 10000 < len(text) <= 50000
+        chunks, labels = asyncio.run(agentic_chunk(text, {}))
+        assert fake.call_count == 1
+        assert len(chunks) == 3  # 未抛 AgenticChunkError，正常切块
 
     def test_online_strategy_injects_extra_body(self, monkeypatch):
         """在线模型（DeepSeek）：thinking disabled → extra_body 关闭思考"""
@@ -424,28 +534,68 @@ class TestIngestAgentic:
         assert any("Agentic 切块失败，回退标题切块" in r.message
                    for r in caplog.records)
 
-    def test_too_long_document_fails_with_hint(self, client, monkeypatch, admin_headers):
-        """超 1 万字：任务失败（failed），error 带"超过 1 万字"提示
-        （后端 400 校验语义：失败原因经文档 error 传递，前端提示换方式）"""
+    def test_too_long_document_fails_with_word_count(self, client, monkeypatch, admin_headers):
+        """1 万~5 万字未带确认：任务失败（failed），error 带"约 1.2 万字"
+        提示与 agentic_confirm=true 重试指引（前端据此弹确认框）"""
         _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         _patch_rec_embedding(monkeypatch)
         kb = create_kb(client)
-        long_text = ("# 标题\n\n" + "这是一个很长的段落。" * 1200)  # > 10000 字
-        assert len(long_text) > 10000
+        long_text = ("# 标题\n\n" + "这是一个很长的段落。" * 1200)  # ~1.2 万字
+        assert 10000 < len(long_text) <= 50000
         doc = upload_doc(client, kb["id"], content=long_text)
         final = self._ingest_and_wait(client, kb["id"], doc["id"],
                                       {"method": "agentic"},
                                       headers=admin_headers)
         assert final["status"] == "failed"
-        assert "超过 1 万字" in final["error"]
+        assert "约 1.2 万字" in final["error"]
         assert "Agentic" in final["error"]
+        assert "agentic_confirm=true" in final["error"]
         # LLM 不应被调用（超限在切块前拦截）
         fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         assert fake.call_count == 0
 
+    def test_mid_size_document_confirm_ingests_and_not_persisted(self, client, monkeypatch, admin_headers):
+        """1 万~5 万字带 agentic_confirm=true：跳过超限校验直接分块入库
+        （mock LLM 对重复段落文本对不齐 → 回退 title，不阻塞入库）；
+        确认标记不持久化——入库后文档 parser_config 无 agentic_confirm 键
+        （重跑仍需再次确认）"""
+        _patch_agentic_client(monkeypatch, _FakeAgenticClient())
+        _patch_rec_embedding(monkeypatch)
+        kb = create_kb(client)
+        long_text = ("# 标题\n\n" + "这是一个很长的段落。" * 1200)  # ~1.2 万字
+        doc = upload_doc(client, kb["id"], content=long_text)
+        final = self._ingest_and_wait(
+            client, kb["id"], doc["id"],
+            {"method": "agentic", "agentic_confirm": True},
+            headers=admin_headers)
+        assert final["status"] == "ingested", final.get("error")
+        assert final["parser_id"] == "agentic"
+        assert final["chunk_count"] > 0
+        assert "agentic_confirm" not in final["parser_config"]
+
+    def test_over_50000_rejected_even_with_confirm(self, client, monkeypatch, admin_headers):
+        """超过 5 万字：即使带 agentic_confirm=true 也直接拒绝（error 带
+        "超过 5 万字"，不提供确认）"""
+        _patch_agentic_client(monkeypatch, _FakeAgenticClient())
+        _patch_rec_embedding(monkeypatch)
+        kb = create_kb(client)
+        huge_text = ("# 标题\n\n" + "这是一个很长的段落。" * 5100)  # ~5.1 万字
+        assert len(huge_text) > 50000
+        doc = upload_doc(client, kb["id"], content=huge_text)
+        final = self._ingest_and_wait(
+            client, kb["id"], doc["id"],
+            {"method": "agentic", "agentic_confirm": True},
+            headers=admin_headers)
+        assert final["status"] == "failed"
+        assert "超过 5 万字" in final["error"]
+        # LLM 不应被调用（拒绝在切块前拦截）
+        fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
+        assert fake.call_count == 0
+
     def test_agentic_forces_mutual_exclusion(self, client, monkeypatch, admin_headers):
-        """互斥：agentic + 上下文检索增强/知识图谱同时传 → 后端强制关闭
-        （chunks_meta 无 context、graph_status 不构建、解析配置强制 False）"""
+        """互斥：agentic + 上下文检索增强同时传 → 后端强制关闭 CR
+        （chunks_meta 无 context）；知识图谱与 Agentic 可叠加保留
+        （kg 保留 True，LLM 不可达时抽取失败跳过不阻塞入库）"""
         _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         _patch_rec_embedding(monkeypatch)
         kb = create_kb(client)
@@ -456,14 +606,17 @@ class TestIngestAgentic:
              "knowledge_graph": True}, headers=admin_headers)
         assert final["status"] == "ingested", final.get("error")
         assert final["parser_config"]["contextual_retrieval"] is False
-        assert final["parser_config"]["knowledge_graph"] is False
-        assert final["graph_status"] == "none"
+        assert final["parser_config"]["knowledge_graph"] is True  # 可叠加保留
+        # 图谱抽取失败（LLM 不可达）被内部跳过，入库不受阻塞
+        assert final["graph_status"] in ("ready", "failed")
         assert all("context" not in m for m in final["chunks_meta"])
-        # 重跑沿用（不带开关参数）：持久化配置已是 False，仍不构建图谱
+        # 重跑沿用（不带开关参数）：持久化配置 CR=False / kg=True →
+        # 仍不构建 CR，图谱按持久化配置继续尝试
         final2 = self._ingest_and_wait(client, kb["id"], doc["id"],
                                        {"method": "agentic"},
                                        headers=admin_headers)
-        assert final2["graph_status"] == "none"
+        assert final2["parser_config"]["contextual_retrieval"] is False
+        assert final2["graph_status"] in ("ready", "failed")
 
     def test_agentic_method_is_valid(self, client, admin_headers):
         """method=agentic 路由校验通过（200 启动；未知方法仍 400）"""
@@ -482,7 +635,8 @@ class TestIngestAgentic:
 
 
 class TestResolveParserConfigAgentic:
-    """resolve_parser_config：agentic 合法且互斥强制（重跑沿用旧配置组合）"""
+    """resolve_parser_config：agentic 合法、CR 互斥强制、KG 可叠加、
+    agentic_confirm 临时键（仅请求显式传、不读旧配置）"""
 
     def test_agentic_allowed_and_mutual_exclusion(self):
         doc = DocumentItem(id="d1", kb_id="k1",
@@ -491,7 +645,28 @@ class TestResolveParserConfigAgentic:
         method, cfg = resolve_parser_config(doc, "agentic", {})
         assert method == "agentic"
         assert cfg["contextual_retrieval"] is False
-        assert cfg["knowledge_graph"] is False
+        assert cfg["knowledge_graph"] is True  # 知识图谱与 Agentic 可叠加保留
+
+    def test_agentic_confirm_reads_request_only(self):
+        """agentic_confirm 只读请求显式传（不读文档旧配置，防旧配置带确认
+        标记绕过未来校验）；True 时作为临时键放 cfg，False/缺省不写入"""
+        # 请求显式传 True → cfg 带临时键
+        doc = DocumentItem(id="d1", kb_id="k1")
+        _, cfg = resolve_parser_config(doc, "agentic",
+                                       {"agentic_confirm": True})
+        assert cfg.get("agentic_confirm") is True
+        # 旧配置带确认标记（历史脏数据）→ 不生效（只从请求读）
+        doc2 = DocumentItem(id="d2", kb_id="k1",
+                            parser_config={"agentic_confirm": True})
+        _, cfg2 = resolve_parser_config(doc2, "agentic", {})
+        assert "agentic_confirm" not in cfg2
+        # 请求显式 False → 不写入
+        _, cfg3 = resolve_parser_config(doc, "agentic",
+                                        {"agentic_confirm": False})
+        assert "agentic_confirm" not in cfg3
+        # 非布尔 → ValueError（路由层 400 / 任务内写回 failed 双保险）
+        with pytest.raises(ValueError, match="agentic_confirm"):
+            resolve_parser_config(doc, "agentic", {"agentic_confirm": "yes"})
 
     def test_unknown_method_still_rejected(self):
         doc = DocumentItem(id="d1", kb_id="k1")

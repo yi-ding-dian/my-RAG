@@ -1,7 +1,7 @@
 """Agentic 智能分块：LLM 读全文自主判断完整逻辑段落并切割，每块附类型标签
 
-- 适用：文档解析文本 ≤1 万字（超过在 ingestion 层校验 400——成本太高，
-  任务书约束）；LLM 单次调用读全文，输出 JSON
+- 适用：文档解析文本 ≤5 万字（1 万~5 万字需带 agentic_confirm 确认，
+  超过 5 万字在 ingestion 层校验拒绝——成本太高）；LLM 单次调用读全文，输出 JSON
   {"chunks": [{"text": "块原文", "label": "论述类"}]}
 - 标签白名单：论述类/事实类/操作类/数据类/其他（白名单外归"其他"宽容处理）
 - 偏移对齐：LLM 输出块文本需在原文定位（align_chunks 纯函数，供测试直测）：
@@ -10,6 +10,10 @@
   3) 前缀 seed + 滑动窗口 difflib 最长匹配（块文本被模型改写/截断时）。
   对齐失败块丢弃（warning 日志）；全部失败 → AgenticChunkError
   （上层 ingestion 回退 title 切块）
+- 标题保留双保险：① prompt 要求块开头必须含所属章节标题行；
+  ② 对齐成功后 restore_heading_prefix 兜底——LLM 丢标题时把块起点
+  前移并入其前最近的连续标题行链（复用 splitter._iter_headings 识别），
+  块 text 始终为原文切片（偏移契约保持）
 - 失败语义：LLM 未配置 / 单次调用超时（默认 120s）/ 调用异常 /
   响应解析失败 / 对齐全失败 → AgenticChunkError（上层回退，绝不阻塞入库）
 - 思考关闭策略复用 thinking_strategy：get_thinking_strategy(llm_cfg,
@@ -34,7 +38,8 @@ from typing import List, Optional, Tuple
 
 from openai import AsyncOpenAI
 
-from backend.chunking.splitter import Chunk
+from backend.chunking.splitter import (
+    Chunk, _iter_headings, find_protected_ranges)
 from backend.config import get_active_config
 from backend.services.chat_service import _llm_to_dict
 from backend.services.settings_service import llm_cfg_for_parser
@@ -42,8 +47,9 @@ from backend.services.thinking_strategy import get_thinking_strategy
 
 logger = logging.getLogger(__name__)
 
-# 文档文本长度上限（任务书约束：超过成本太高，ingestion 层 400 校验）
-_MAX_TEXT_CHARS = 10000
+# 文档文本长度硬上限（防御校验：ingestion 层两档校验——1 万~5 万字带
+# agentic_confirm 确认可通过，超过 5 万字拒绝；此处兜底防调用方漏校验）
+_MAX_TEXT_CHARS = 50000
 # 每块长度约束（提示词要求 LLM 每块 ≤1500 字）
 _MAX_CHUNK_CHARS = 1500
 # 单次调用 max_tokens：块文本需逐字拷贝输出（LLM 输出块文本总和接近
@@ -68,13 +74,17 @@ _AGENTIC_PROMPT = (
     "【规则】\n"
     "1. 每块必须是一个语义完整的逻辑段落（观点论证 / 事实陈述 / 操作步骤 / 数据说明），\n"
     "   不得把无关内容拼接在一起，也不要把一个完整逻辑段落拆散；\n"
-    "2. 每块不超过 {max_chunk} 字；块数尽量少（不要碎块化）；\n"
-    "3. 块文本必须逐字拷贝原文（不改写、不概括、不增删字词，标点符号保持原样）；\n"
-    "4. 每块打一个标签，只能从以下类型中选择：\n"
+    "2. 每个逻辑段落块的开头必须包含其所属的章节标题行（如 '## 第二章 xxx'、\n"
+    "   '### 2.1 xxx'），标题行是段落的一部分、不能省略；输出块文本 = 原文逐字\n"
+    "   拷贝（含标题行），标题行 + 该标题下第一个完整逻辑段落作为一块；\n"
+    "   无标题的正文块保持原样；\n"
+    "3. 每块不超过 {max_chunk} 字；块数尽量少（不要碎块化）；\n"
+    "4. 块文本必须逐字拷贝原文（不改写、不概括、不增删字词，标点符号保持原样）；\n"
+    "5. 每块打一个标签，只能从以下类型中选择：\n"
     "   论述类（观点、分析、论证、评价）；事实类（客观事实、背景、历史沿革）；\n"
     "   操作类（步骤、操作方法、配置指引）；数据类（数据、统计、指标说明）；\n"
     "   其他（不适合以上分类的内容）；\n"
-    "5. 所有块按文档顺序排列，完整覆盖文档全部内容，不要遗漏也不要重复。\n"
+    "6. 所有块按文档顺序排列，完整覆盖文档全部内容，不要遗漏也不要重复。\n"
     "【输出格式】只输出 JSON，不要任何多余文字、解释或代码块标记：\n"
     '{{"chunks":[{{"text":"块原文","label":"论述类"}}]}}\n\n'
     "文档全文：\n{text}"
@@ -217,6 +227,94 @@ def align_chunks(original_text: str, llm_chunks: List[str]) -> List[Tuple[int, i
     return results
 
 
+# 标题链并入上限行数（块起点前连续标题行最多并入行数，防过度扩展）
+_MAX_HEADING_PATH_LINES = 3
+
+
+def _line_end(text: str, start: int) -> int:
+    """start 所在行结束偏移（不含换行符）；start 越界返回 len(text)"""
+    nl = text.find("\n", start)
+    return nl if nl != -1 else len(text)
+
+
+def restore_heading_prefix(original_text: str,
+                           aligned: List[Tuple[int, int, int]]
+                           ) -> List[Tuple[int, int, int]]:
+    """标题归属兜底：对齐成功后把块起点前移，并入所属章节标题行
+
+    - 背景：LLM 可能把标题行当作"非逻辑段落内容"丢弃，导致每个块不含
+      所属章节标题（如 '## 第二章 xxx'、'### 2.1 xxx'）——本函数在
+      align_chunks 对齐成功后调用，双保险之一（另一重是 prompt 约束）；
+    - 标题行识别复用 splitter._iter_headings（ATX # / setext / 包裹式 /
+      前导符号式统一识别，protected 过滤表格与代码块内的伪标题）；
+    - 对每个块（s 为块起点）：取 s 之前最近的标题行；满足全部条件才扩展——
+      ① 块起点本身是标题行（块已以标题行开头）→ 不动；
+      ② 块文本已含该标题行内容（折叠空白比较，LLM 已保留标题）→ 不动；
+      ③ 标题行已被前一块覆盖（同一标题已并入前一块，后续同章节块不再
+         重复并入）→ 不动；
+    - 需要扩展时：把块起点前"连续标题行链"整体并入——从最近标题行向上，
+      标题行两两之间只允许空行（直接相邻或空行间隔），最多
+      _MAX_HEADING_PATH_LINES 行（如 '## 第二章' + '### 2.1' 两级并入，
+      层级链思路参照 splitter.add_heading_paths）；
+    - 扩展仅把 char_start 前移到链首标题行起点，end 不变；text 由调用方
+      按原文切片重建（偏移契约 text == 原文[char_start:char_end] 保持）；
+      与前一扩展块重叠的标题行不并入（防块区间交叉）
+    - 返回 [(start, end, 块下标)]，仅 start 可能前移，顺序与输入一致
+    """
+    if not aligned or not original_text:
+        return aligned
+    headings = _iter_headings(
+        original_text, find_protected_ranges(original_text))
+    if not headings:
+        return aligned
+    h_starts = [h[0] for h in headings]
+    result: List[Tuple[int, int, int]] = []
+    prev_end = 0  # 上一块处理后的 end（用于防重复并入 / 防区间交叉）
+    for s, e, src_idx in aligned:
+        # ① 块起点本身就是标题行 → 块已含所属标题，不动
+        pos = bisect.bisect_left(h_starts, s)
+        if pos < len(h_starts) and h_starts[pos] == s:
+            result.append((s, e, src_idx))
+            prev_end = e
+            continue
+        # 块起点之前最近的标题行
+        j = bisect.bisect_left(h_starts, s) - 1
+        if j < 0:
+            result.append((s, e, src_idx))
+            prev_end = e
+            continue
+        h_start = h_starts[j]
+        # ③ 标题行已被前一块覆盖（同一标题已并入前一块）→ 不动
+        if h_start < prev_end:
+            result.append((s, e, src_idx))
+            prev_end = e
+            continue
+        # ② 块文本已含该标题行内容（LLM 已保留标题）→ 不动
+        h_line = original_text[h_start:_line_end(original_text, h_start)]
+        flat_block = "".join(ch for ch in original_text[s:e]
+                             if not ch.isspace())
+        if not h_line or "".join(h_line.split()) in flat_block:
+            result.append((s, e, src_idx))
+            prev_end = e
+            continue
+        # 向上收集连续标题行链（两两之间只允许空行，且不得与前一块重叠，
+        # 最多 _MAX_HEADING_PATH_LINES 行）
+        chain: List[int] = [h_start]
+        k = j - 1
+        while k >= 0 and len(chain) < _MAX_HEADING_PATH_LINES:
+            if h_starts[k] < prev_end:
+                break  # 更早标题已被前一块覆盖 → 不再并入
+            gap = original_text[
+                _line_end(original_text, h_starts[k]):h_starts[k + 1]]
+            if gap.strip():
+                break  # 标题行之间有正文 → 链断开
+            chain.append(h_starts[k])
+            k -= 1
+        result.append((chain[-1], e, src_idx))
+        prev_end = e
+    return result
+
+
 # ==================== LLM 客户端（key 比对自动重建） ====================
 
 _client: Optional[AsyncOpenAI] = None
@@ -282,7 +380,7 @@ async def agentic_chunk(text: str, cfg: Optional[dict] = None,
                         timeout: float = _TIMEOUT) -> Tuple[List[Chunk], List[str]]:
     """Agentic 智能分块：LLM 读全文切逻辑段落，返回 (chunks, labels)
 
-    - text: 文档解析文本（调用方已保证 ≤1 万字，此处再防御校验）
+    - text: 文档解析文本（调用方已保证 ≤5 万字，此处再防御校验）
     - cfg: parser_config（thinking_mode/parse_llm_model 生效；
       parse_llm_model 指定时用该模型，空/查不到回退激活模型）
     - timeout: 单次调用超时（秒，测试可缩小）
@@ -295,7 +393,7 @@ async def agentic_chunk(text: str, cfg: Optional[dict] = None,
     text = (text or "").strip()
     if len(text) > _MAX_TEXT_CHARS:
         raise AgenticChunkError(
-            "文档超过 1 万字，Agentic 分块成本太高，请换用其他切块方式")
+            "文档超过 5 万字，不支持 Agentic 分块，请换用其他切块方式")
     if not text:
         raise AgenticChunkError("文档文本为空，无法 Agentic 分块")
 
@@ -364,6 +462,9 @@ async def agentic_chunk(text: str, cfg: Optional[dict] = None,
     aligned = align_chunks(text, llm_chunks)
     if not aligned:
         raise AgenticChunkError("Agentic 分块偏移对齐全失败，回退其他切块方式")
+    # 标题归属兜底：LLM 丢弃标题行时把块起点前移并入所属标题
+    # （偏移契约验证在构建 Chunk 前，修复后仍严格一致）
+    aligned = restore_heading_prefix(text, aligned)
     chunks: List[Chunk] = []
     out_labels: List[str] = []
     for s, e, src_idx in aligned:
