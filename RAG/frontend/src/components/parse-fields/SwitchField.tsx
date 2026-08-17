@@ -10,7 +10,7 @@ interface SwitchFieldProps {
   desc?: string;
   /** 默认值（表单尚未设置该字段时生效） */
   defaultValue?: boolean;
-  /** 禁用开关（如 Agentic 分块与上下文检索/知识图谱互斥时禁用） */
+  /** 禁用开关（如 Agentic 分块与上下文检索增强互斥时禁用） */
   disabled?: boolean;
   /** 禁用时的提示（Tooltip 包裹开关行） */
   tooltip?: string;
@@ -19,7 +19,8 @@ interface SwitchFieldProps {
 /**
  * 通用开关行：标签+说明在左，Switch 在右。
  * 行式布局参考 KnowFlow chunking-config 开关面板；作为独立组件便于各配置项复用。
- * disabled+tooltip：互斥场景（如 Agentic 分块）禁用开关并用 Tooltip 说明原因。
+ * disabled+tooltip：互斥场景（如 Agentic 分块与上下文检索增强）禁用开关并用
+ * Tooltip 说明原因。
  */
 const SwitchField: React.FC<SwitchFieldProps> = ({ name, label, desc, defaultValue = false, disabled, tooltip }) => {
   const row = (

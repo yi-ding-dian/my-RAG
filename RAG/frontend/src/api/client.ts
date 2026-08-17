@@ -92,6 +92,9 @@ export type MinerUBackend = 'auto' | 'hybrid-auto-engine' | 'pipeline';
 /** PDF 版面识别引擎：MinerU=高精度（推荐）| DeepDOC=表格输出为可检索 HTML| PlainText=纯文本直提（pypdf/python-docx，无表格/图片识别） */
 export type LayoutRecognize = 'MinerU' | 'DeepDOC' | 'PlainText';
 
+/** 解析方式（合并解析引擎+版面识别，无自动档）：MinerU=高精度（默认）| DeepDOC=表格输出可检索 HTML（仅 PDF）| PlainText=纯文本直提（本地 pypdf/python-docx，恒可用） */
+export type ParseMode = 'MinerU' | 'DeepDOC' | 'PlainText';
+
 /** 解析语言：ch=中文 | en=英文 */
 export type ParseLang = 'ch' | 'en';
 

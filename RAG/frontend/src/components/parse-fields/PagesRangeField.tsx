@@ -12,6 +12,8 @@ interface PagesRangeFieldProps {
 /**
  * 页码范围 Form.List：每项显示为「第 [from] - [to] 页」，可增删。
  * 校验：from/to ≥ 1 且 to ≥ from；第二段起 from 需大于上一段 to（参考 KnowFlow chunk-method-modal）。
+ * C2：后端 parser_client._build_mineru_form_data 多组页码仅第一组生效（
+ * "group = pages[0]  # 多组页码：仅第一组生效"），文案如实标注。
  */
 const PagesRangeField: React.FC<PagesRangeFieldProps> = ({ name = 'pages', initialValue }) => {
   const defaultPairs =
@@ -22,7 +24,7 @@ const PagesRangeField: React.FC<PagesRangeFieldProps> = ({ name = 'pages', initi
   return (
     <Form.Item
       label="页码范围"
-      extra="只解析指定页范围，可多段；默认全篇（第 1 页至末尾）"
+      extra="只解析指定页范围，可多段；多段时仅第一段生效；默认全篇（第 1 页至末尾）"
     >
       <Form.List name={name} initialValue={defaultPairs}>
         {(fields, { add, remove }) => (

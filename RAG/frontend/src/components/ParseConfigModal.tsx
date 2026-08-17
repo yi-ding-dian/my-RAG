@@ -12,11 +12,12 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Tooltip,
 } from 'antd';
-import type { DocumentItem, IngestConfig, LayoutRecognize, MinerUBackend, ParseLang, ParseMethod, ParserEngine, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../api/client';
+import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
+import type { DocumentItem, IngestConfig, MinerUBackend, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../api/client';
 import { getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../api/client';
-import LayoutRecognizeField from './parse-fields/LayoutRecognizeField';
 import MinerUBackendField from './parse-fields/MinerUBackendField';
 import PagesRangeField from './parse-fields/PagesRangeField';
 import TaskPageSizeField from './parse-fields/TaskPageSizeField';
@@ -24,7 +25,9 @@ import SwitchField from './parse-fields/SwitchField';
 import LangSelectField from './parse-fields/LangSelectField';
 
 interface ParseConfigFormValues {
-  parser_engine: ParserEngine;
+  /** 解析方式（合并解析引擎+版面识别，无自动档）：MinerU/DeepDOC/PlainText，
+   *  提交时直接映射引擎 mineru/deepdoc/plain（见 handleOk） */
+  parse_mode: ParseMode;
   method: ParseMethod;
   chunk_size: number;
   overlap: number;
@@ -34,9 +37,8 @@ interface ParseConfigFormValues {
   parent_chunk_overlap: number;
   parent_split_level: number;
   retrieval_mode: 'parent' | 'child';
-  // ===== PDF 解析配置（仅 PDF/混排文档场景有意义，简化：始终随表单发送当前值） =====
-  layout_recognize: LayoutRecognize;
-  /** MinerU 解析后端（仅解析引擎=mineru 时显示/提交；auto=不传跟随服务端默认） */
+  // ===== PDF 解析配置（仅 pdf/docx 文档显示/提交，见 isPdfLike；txt/md/url 隐藏） =====
+  /** MinerU 解析后端（仅解析方式=MinerU 时显示/提交；auto=不传跟随服务端默认） */
   backend: MinerUBackend;
   /** Form.List 页码范围（每项 {from, to}），提交时转 [[from, to]] */
   pages?: Array<{ from?: number; to?: number }>;
@@ -64,25 +66,36 @@ interface ParseConfigModalProps {
   onSuccess: () => void;
 }
 
-/** 解析器可用性徽标：✅ 可用 / ❌ 不可用（红色），Tooltip 显示原因 */
-const ParserStatusBadge: React.FC<{ name: string; entry: ParserStatusEntry | undefined }> = ({
-  name,
+/** 解析方式下拉选项的状态标签：可用 → 绿色 √；不可用 → 红色 x（Tooltip 显示
+ *  原因，选项禁用）；探测中（probe 未返回）→ Spin */
+const ParseModeOptionLabel: React.FC<{ label: string; entry: ParserStatusEntry | undefined; probing: boolean }> = ({
+  label,
   entry,
+  probing,
 }) => {
-  if (!entry) {
-    return <span style={{ color: '#999' }}>{name} 检测中…</span>;
-  }
-  if (entry.available) {
+  if (probing) {
     return (
-      <Tooltip title={`${name} 可用`}>
-        <span style={{ color: '#52c41a', fontWeight: 500 }}>✅ {name}</span>
+      <Space size={6}>
+        <Spin size="small" />
+        <span>{label}</span>
+      </Space>
+    );
+  }
+  if (entry && !entry.available) {
+    return (
+      <Tooltip title={entry.reason || '服务不可用，无法选择该解析方式'}>
+        <Space size={6}>
+          <CloseCircleFilled style={{ color: '#ff4d4f' }} />
+          <span>{label}</span>
+        </Space>
       </Tooltip>
     );
   }
   return (
-    <Tooltip title={`${name} 不可用${entry.reason ? `：${entry.reason}` : ''}，解析时将自动切换其他解析方式`}>
-      <span style={{ color: '#ff4d4f', fontWeight: 500 }}>❌ {name}</span>
-    </Tooltip>
+    <Space size={6}>
+      <CheckCircleFilled style={{ color: '#52c41a' }} />
+      <span>{label}</span>
+    </Space>
   );
 };
 
@@ -103,6 +116,13 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 知识图谱三选一互斥（用户约束：三个大模型功能只能选一个）——选 agentic
   // 自动关闭并禁用这两个开关（后端 resolve_parser_config 同样强制关闭双保险）
   const isAgentic = method === 'agentic';
+  // 文档类型判断（B4）：解析方式 + 整个"PDF 解析配置"Collapse 仅 pdf/docx
+  // 文档显示（file_type 由扩展名推导，见后端 document_service.create_document，
+  // URL 导入为 "url"；后端引擎判断同样 lower + lstrip(".") 后比对，见
+  // ingestion_service._ingest）；txt/md/url 文档无版面识别/页码等链路，隐藏。
+  // 隐藏时相关字段不渲染、提交时剔除（见 handleOk），后端缺省默认兜底。
+  const docFileType = (doc?.file_type ?? '').toLowerCase().replace(/^\./, '');
+  const isPdfLike = docFileType === 'pdf' || docFileType === 'docx';
   useEffect(() => {
     if (!open || !isAgentic) return;
     if (form.getFieldValue('contextual_retrieval')) {
@@ -113,24 +133,58 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     }
   }, [isAgentic, open, form]);
 
-  // 打开时探测解析器可用性（GET /kbs/parsers/status，并行 ≤8s）：显示状态徽标；
-  // 探测失败静默（徽标不显示，不阻塞弹窗使用）
+  // 解析器可用性探测（GET /kbs/parsers/status，mineru/deepdoc 并行 ≤8s）：
+  // 解析方式下拉的选项状态图标（绿√/红x+禁用）数据源；弹窗打开（组件
+  // 加载）与解析方式下拉每次打开时都刷新；探测失败静默（下拉不显示状态，
+  // 不阻塞弹窗使用）；探测完成后若当前选中的解析方式不可用，自动切换到
+  // 下一个可用项（优先级 MinerU → DeepDOC → 纯文本）并提示（探测中不切换）
+  const [probing, setProbing] = useState(false);
+  const refreshParserStatus = React.useCallback(() => {
+    let cancelled = false;
+    setProbing(true);
+    getParserStatus()
+      .then(res => {
+        if (cancelled) return;
+        setParserStatus(res.data);
+        // 自动切换：仅"探测已完成且有结果"时触发；当前值不可用 → 按优先级
+        // MinerU → DeepDOC → 纯文本选第一个可用项（纯文本恒可用兜底，必有
+        // 结果）；用户手动选择不受影响（不可用项本就 disabled，探测中不切换）
+        const current = (form.getFieldValue('parse_mode') ?? 'MinerU') as ParseMode;
+        const isAvailable = (mode: ParseMode): boolean => {
+          if (mode === 'PlainText') return true;
+          const entry = mode === 'MinerU' ? res.data.mineru : res.data.deepdoc;
+          return !!entry && entry.available;
+        };
+        if (!isAvailable(current)) {
+          const order: ParseMode[] = ['MinerU', 'DeepDOC', 'PlainText'];
+          const next = order.find(isAvailable);
+          if (next && next !== current) {
+            form.setFieldValue('parse_mode', next);
+            const nameMap: Record<ParseMode, string> = {
+              MinerU: 'MinerU',
+              DeepDOC: 'DeepDOC',
+              PlainText: '纯文本',
+            };
+            message.info(`当前解析方式（${nameMap[current]}）不可用，已自动切换为${nameMap[next]}`);
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setParserStatus(null);
+      })
+      .finally(() => {
+        if (!cancelled) setProbing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form, message]);
   useEffect(() => {
     if (open && doc) {
-      let cancelled = false;
-      getParserStatus()
-        .then(res => {
-          if (!cancelled) setParserStatus(res.data);
-        })
-        .catch(() => {
-          if (!cancelled) setParserStatus(null);
-        });
-      return () => {
-        cancelled = true;
-      };
+      return refreshParserStatus();
     }
     return undefined;
-  }, [open, doc]);
+  }, [open, doc, refreshParserStatus]);
 
   // 打开时拉取 LLM 模型列表（GET /api/settings/llm/models，登录即可读）：
   // "解析 LLM 模型"下拉数据源（仅名称+model，无敏感字段）；失败静默
@@ -170,10 +224,15 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           ? (doc.parser_id as ParseMethod)
           : 'naive';
       // PDF 解析配置回填：parser_config 有对应字段时沿用（含页码范围），缺失用默认值
-      const layoutRecognize: LayoutRecognize =
-        cfg.layout_recognize === 'DeepDOC' || cfg.layout_recognize === 'PlainText'
-          ? (cfg.layout_recognize as LayoutRecognize)
-          : 'MinerU';
+      // 解析方式回填（兼容旧配置：parser_engine=auto + layout_recognize 值、或仅
+      // engine 无 layout 的旧文档）：layout_recognize 精确值优先，缺失/非法时按
+      // parser_engine 兜底，再缺省 MinerU（默认，无自动档）
+      const oldEngine = cfg.parser_engine;
+      let parseMode: ParseMode = 'MinerU';
+      if (cfg.layout_recognize === 'DeepDOC') parseMode = 'DeepDOC';
+      else if (cfg.layout_recognize === 'PlainText') parseMode = 'PlainText';
+      else if (oldEngine === 'deepdoc') parseMode = 'DeepDOC';
+      else if (oldEngine === 'plain') parseMode = 'PlainText';
       const cfgPages =
         Array.isArray(cfg.pages) && cfg.pages.length > 0
           ? cfg.pages
@@ -181,10 +240,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
               .map(p => ({ from: Math.max(1, Number(p[0]) || 1), to: Math.max(1, Number(p[1]) || 1000000) }))
           : [];
       form.setFieldsValue({
-        // 重解析沿用上次解析引擎（非法/缺失回退自动）
-        parser_engine: cfg.parser_engine === 'mineru' || cfg.parser_engine === 'deepdoc' || cfg.parser_engine === 'plain'
-          ? (cfg.parser_engine as ParserEngine)
-          : 'auto',
+        parse_mode: parseMode,
         method: initMethod,
         chunk_size: toNumber(cfg.chunk_size, isParentChild ? 512 : 800),
         overlap: toNumber(cfg.overlap, isParentChild ? 50 : 100),
@@ -194,8 +250,6 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         parent_chunk_overlap: toNumber(cfg.parent_chunk_overlap, 100),
         parent_split_level: toNumber(cfg.parent_split_level, 2),
         retrieval_mode: cfg.retrieval_mode === 'child' ? 'child' : 'parent',
-        // PDF 解析配置
-        layout_recognize: layoutRecognize,
         // MinerU 解析后端：重解析沿用上次持久化值；缺失/非法回退"自动"（不传跟随服务端默认）
         backend:
           cfg.backend === 'hybrid-auto-engine' || cfg.backend === 'pipeline'
@@ -265,41 +319,33 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     }
   };
 
-  // MinerU 解析后端仅解析引擎=mineru 时显示（auto/其他引擎不发送，跟随服务端默认）
-  const parserEngine = Form.useWatch('parser_engine', form) ?? 'auto';
+  // 解析方式（合并解析引擎+版面识别，无自动档）：驱动 MinerU 专属项显隐、
+  // 提交时直接映射引擎 mineru/deepdoc/plain（见 handleOk）
+  const parseMode: ParseMode = Form.useWatch('parse_mode', form) ?? 'MinerU';
   // 上下文检索增强/知识图谱开关状态（开启时显示额外 token 费用提示）
   const contextualRetrieval = Form.useWatch('contextual_retrieval', form);
   const knowledgeGraph = Form.useWatch('knowledge_graph', form);
 
-  // 版面识别=DeepDOC 时解析引擎强制 deepdoc、=PlainText 时强制 plain
-  // （与后端规则一致：auto+DeepDOC→deepdoc / auto+PlainText→plain；前端
-  // 直接强制，避免出现 layout=DeepDOC + engine=mineru 之类的冲突组合）
-  const layoutRecognize = Form.useWatch('layout_recognize', form) ?? 'MinerU';
-
-  // ===== 版面识别联动显隐（设置不了的就不显示；依据后端实际生效范围）=====
-  // 后端 resolve_parser_config 后 _PARSER_PARSE_OPTS 透传解析器：
+  // ===== 解析方式联动显隐（设置不了的就不显示；依据后端实际生效范围）=====
+  // 前端解析方式直接映射引擎提交（MinerU→mineru / DeepDOC→deepdoc /
+  // PlainText→plain，无自动档），后端 resolve_parser_config 后
+  // _PARSER_PARSE_OPTS 透传解析器：
   //   engine=deepdoc 时 parse_opts={}（表格/公式/图片/页码/任务页大小/语言全部不透传）；
   //   engine=plain 时 parser_client._extract_plain 不消费 parse_opts（纯文本直提无这些链路）；
   //   parse_opts 仅对 MinerU（API 请求体）有意义；plain 无需解析器探测。
   // 显隐对照表：
   //   配置项                  MinerU   DeepDOC   PlainText
-  //   解析器状态               显示     显示      隐藏（plain 无需探测）
   //   页码范围 pages           显示     隐藏      隐藏（非 MinerU 不透传）
   //   任务页面大小             显示     隐藏      隐藏（同上）
-  //   表格识别                 显示     隐藏      隐藏（同上；MinerU 下服务端固定开启暂不生效）
-  //   公式识别                 显示     隐藏      隐藏（同上；取决于 MinerU 服务端）
+  //   表格识别                 显示     隐藏      隐藏（同上；参数透传服务端，是否生效取决于服务端配置）
+  //   公式识别                 显示     隐藏      隐藏（同上；参数透传服务端）
   //   图片提取                 显示     隐藏      隐藏（同上；DeepDOC 无图片链路）
-  //   包含父标题               显示     显示      隐藏（切块后处理与引擎无关，仅 UI 隐藏、提交保留）
-  //   上下文检索/知识图谱/思考模式/语言/切块  均显示（与版面识别无关）
-  const isMinerU = layoutRecognize === 'MinerU';
-  const isPlainText = layoutRecognize === 'PlainText';
-  useEffect(() => {
-    if (open && layoutRecognize === 'DeepDOC') {
-      form.setFieldValue('parser_engine', 'deepdoc');
-    } else if (open && layoutRecognize === 'PlainText') {
-      form.setFieldValue('parser_engine', 'plain');
-    }
-  }, [layoutRecognize, open, form]);
+  //   语言 lang_list           显示     隐藏      隐藏（仅 MinerU 透传 lang_list，其余不提交）
+  //   包含父标题               全部显示（切块后处理与引擎/格式无关，已移入切块参数区）
+  //   思考模式/解析 LLM 模型   上下文检索增强/知识图谱/Agentic 任一开启时显示（三者全关隐藏，
+  //                            关闭时提交剔除 parse_llm_model，thinking_mode 值恒合法）
+  //   切块方式与参数           均显示（与解析方式无关；qa/agentic 无分块大小/重叠参数）
+  const isMinerU = parseMode === 'MinerU';
 
   // 切换切块方式时补齐该方式的默认值（已有值不覆盖）
   useEffect(() => {
@@ -328,12 +374,19 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       return;
     }
     const config: IngestConfig = {
-      // 解析引擎始终携带当前选择（auto/mineru/plain，后端默认 auto 行为一致）
-      parser_engine: values.parser_engine,
       method: values.method,
       chunk_size: values.chunk_size,
       overlap: values.overlap,
     };
+    // 解析方式（合并解析引擎+版面识别）仅 pdf/docx 文档提交（B4：txt/md/url
+    // 文档无解析配置，不传由后端默认 auto 直读，避免持久化无关配置）；
+    // 提交结构不变（parser_engine + layout_recognize），解析方式直接映射
+    // 对应引擎（前端无自动档：MinerU→mineru / DeepDOC→deepdoc / PlainText→plain）
+    if (isPdfLike) {
+      config.parser_engine =
+        values.parse_mode === 'MinerU' ? 'mineru' : values.parse_mode === 'DeepDOC' ? 'deepdoc' : 'plain';
+      config.layout_recognize = values.parse_mode;
+    }
     if (values.method === 'title') config.split_level = values.split_level;
     if (values.method === 'regex') config.regex_pattern = values.regex_pattern;
     // 父子分块：发送子块 + 父块 + 检索模式全部参数；其他方式不发送 parent_* 字段
@@ -343,17 +396,16 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       config.parent_split_level = values.parent_split_level;
       config.retrieval_mode = values.retrieval_mode;
     }
-    config.layout_recognize = values.layout_recognize;
-    // MinerU 解析后端：仅解析引擎=mineru 时发送；选"自动"（auto）不传（跟随服务端默认）
-    if (values.parser_engine === 'mineru' && values.backend && values.backend !== 'auto') {
+    // MinerU 解析后端：仅解析方式=MinerU 时发送；选"自动"（auto）不传（跟随服务端默认）
+    if (values.parse_mode === 'MinerU' && values.backend && values.backend !== 'auto') {
       config.backend = values.backend;
     }
-    // 版面识别联动提交（隐藏即不提交）：非 MinerU 时后端不读
-    // pages/task_page_size/table_enable/formula_enable/return_images
+    // 解析方式联动提交（隐藏即不提交）：非 MinerU 时后端不读
+    // pages/task_page_size/table_enable/formula_enable/return_images/lang_list
     // （engine=deepdoc 时 parse_opts={}；plain 分支不消费 parse_opts），
     // 剔除避免持久化无关配置；缺省由后端 _DEFAULT_PARSER_CONFIG 兜底，
     // 重跑回填（前端缺省默认值）兼容
-    if (values.layout_recognize === 'MinerU') {
+    if (isPdfLike && values.parse_mode === 'MinerU') {
       // 页码范围转 [[from,to]] 数组；空时发默认全篇 [[1, 1000000]]
       const pages: number[][] = (values.pages ?? [])
         .filter(p => p && typeof p.from === 'number' && typeof p.to === 'number')
@@ -363,34 +415,38 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       config.table_enable = values.table_enable;
       config.formula_enable = values.formula_enable;
       config.return_images = values.return_images;
+      // 语言 lang_list 仅 MinerU 提交（B1：非 MinerU 时后端不透传，
+      // 剔除避免持久化无关配置，缺省后端默认 ch）
+      config.lang_list = values.lang_list;
     }
-    // 包含父标题：切块后处理（不依赖解析引擎，PlainText 下同样生效），
-    // 始终提交（仅 UI 隐藏，不影响实际行为）
+    // 包含父标题：切块后处理（不依赖解析引擎/文档格式/切块方式），
+    // 位于切块参数区统一显示，始终提交
     config.enable_heading_in_content = values.enable_heading_in_content;
     config.contextual_retrieval = values.contextual_retrieval;
     config.knowledge_graph = values.knowledge_graph;
     config.thinking_mode = values.thinking_mode;
-    // 解析 LLM 模型（摘要/图谱抽取专用）：空/未选不发 → 后端默认用激活模型
-    if (values.parse_llm_model) config.parse_llm_model = values.parse_llm_model;
-    config.lang_list = values.lang_list;
-    // 提交前检查所选解析器可用性（探测结果来自弹窗打开时的状态接口）：
-    // 不可用 → warning 提示将自动降级（后端解析前检测会执行降级链，仍可继续）；
-    // 引擎联动（与后端 resolve_parser_engine 一致）：auto+DeepDOC→deepdoc、
-    // auto+PlainText→plain（plain 无需探测）
-    const chosenEngine: ParserEngine =
-      values.parser_engine === 'auto' && values.layout_recognize === 'DeepDOC'
-        ? 'deepdoc'
-        : values.parser_engine === 'auto' && values.layout_recognize === 'PlainText'
-          ? 'plain'
-          : values.parser_engine;
-    if (chosenEngine === 'deepdoc' && parserStatus?.deepdoc && !parserStatus.deepdoc.available) {
-      message.warning(
-        `DeepDoc 服务不可用（${parserStatus.deepdoc.reason || '未知原因'}），将自动切换 MinerU/纯文本解析`,
-      );
-    } else if (chosenEngine !== 'plain' && parserStatus?.mineru && !parserStatus.mineru.available) {
-      message.warning(
-        `MinerU 服务不可用（${parserStatus.mineru.reason || '未知原因'}），将自动切换纯文本解析`,
-      );
+    // 解析 LLM 模型（摘要/图谱抽取/Agentic 分块专用）：仅上下文检索增强/
+    // 知识图谱/Agentic 任一开启时提交（B5：三者全关时字段隐藏，不提交，
+    // 避免持久化无意义配置）；空/未选不发 → 后端默认用激活模型
+    if ((contextualRetrieval || knowledgeGraph || isAgentic) && values.parse_llm_model) {
+      config.parse_llm_model = values.parse_llm_model;
+    }
+    // 提交前检查所选解析器可用性（仅 pdf/docx 文档有意义——txt/md 直读不经过
+    // 解析器；探测结果来自弹窗打开/下拉打开时的状态接口）：不可用 → warning
+    // 提示将自动降级（后端解析前检测会执行降级链，仍可继续）；解析方式直接
+    // 映射引擎（plain 无需探测）
+    if (isPdfLike) {
+      const chosenEngine =
+        values.parse_mode === 'MinerU' ? 'mineru' : values.parse_mode === 'DeepDOC' ? 'deepdoc' : 'plain';
+      if (chosenEngine === 'deepdoc' && parserStatus?.deepdoc && !parserStatus.deepdoc.available) {
+        message.warning(
+          `DeepDoc 服务不可用（${parserStatus.deepdoc.reason || '未知原因'}），将自动切换 MinerU/纯文本解析`,
+        );
+      } else if (chosenEngine !== 'plain' && parserStatus?.mineru && !parserStatus.mineru.available) {
+        message.warning(
+          `MinerU 服务不可用（${parserStatus.mineru.reason || '未知原因'}），将自动切换纯文本解析`,
+        );
+      }
     }
     setSubmitting(true);
     try {
@@ -411,6 +467,38 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   };
 
   const isParentChild = method === 'parent_child';
+
+  // 解析方式下拉选项（含连接检测状态）：可用 → 绿√；不可用 → 红x + 禁用 +
+  // Tooltip 原因；探测中（parserStatus 未返回）→ Spin 且不禁用（探测完成前
+  // 不阻断选择）；纯文本本地直提恒可用（绿√）
+  const parseModeOptions: Array<{ value: ParseMode; label: React.ReactNode; disabled?: boolean }> = [
+    {
+      value: 'MinerU',
+      label: (
+        <ParseModeOptionLabel
+          label="MinerU（高精度，PDF 混排图文表格）"
+          entry={parserStatus?.mineru}
+          probing={probing && !parserStatus}
+        />
+      ),
+      disabled: !!parserStatus && !parserStatus.mineru.available,
+    },
+    {
+      value: 'DeepDOC',
+      label: (
+        <ParseModeOptionLabel
+          label="DeepDOC（表格输出可检索 HTML）"
+          entry={parserStatus?.deepdoc}
+          probing={probing && !parserStatus}
+        />
+      ),
+      disabled: !!parserStatus && !parserStatus.deepdoc.available,
+    },
+    {
+      value: 'PlainText',
+      label: <ParseModeOptionLabel label="纯文本（本地直提，无表格/图片识别）" entry={{ available: true, reason: '' }} probing={false} />,
+    },
+  ];
 
   // 固定高度弹窗（内容长 → 88vh 档）：头部/关闭按钮固定，滚动只在内容区
   // 内部（滚动结构修复见 index.css .parse-config-modal，与
@@ -435,166 +523,77 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       }}
     >
       <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
-        {/* 解析引擎：auto=自动探测（MinerU 优先、不可用自动降级）/ mineru=强制高精度 / deepdoc=强制 DeepDoc / plain=纯文本直提 */}
-        <Form.Item
-          name="parser_engine"
-          label="解析引擎"
-          rules={[{ required: true, message: '请选择解析引擎' }]}
-          extra="MinerU 适用于 PDF 混排（图文表格）文档；DeepDoc 通过 RAGFlow 服务解析，表格输出为可检索 HTML（仅 PDF）；自动模式优先 MinerU，不可用时降级纯文本；版面识别选 DeepDOC 时引擎自动切为 DeepDoc"
-        >
-          <Select
-            options={[
-              { value: 'auto', label: '自动（推荐）' },
-              { value: 'mineru', label: 'MinerU 高精度（PDF 混排）' },
-              { value: 'deepdoc', label: 'DeepDoc（表格输出可检索 HTML）' },
-              { value: 'plain', label: '纯文本提取' },
-            ]}
-          />
-        </Form.Item>
-
-        {/* PDF 解析配置：版面识别 / 页码范围 / 任务页面大小 / 开关组 / 语言（参考 KnowFlow 每配置项一组件范式） */}
-        <Collapse
-          ghost
-          style={{ marginBottom: 16, marginTop: 4 }}
-          defaultActiveKey={['pdf-parse']}
-          items={[
-            {
-              key: 'pdf-parse',
-              label: 'PDF 解析配置',
-              children: (
-                <>
-                  <LayoutRecognizeField />
-                  {/* MinerU 解析后端：仅解析引擎=mineru 时显示（auto/其他引擎不传，
-                      跟随 MinerU 服务端默认 hybrid-auto-engine） */}
-                  {parserEngine === 'mineru' && <MinerUBackendField />}
-                  {/* 解析器可用性徽标（弹窗打开时探测；不可用红色，Tooltip 显示原因）；
-                      PlainText 无需解析器探测（后端 plain 分支直接 pypdf/python-docx 提取），不显示 */}
-                  {parserStatus && !isPlainText && (
-                    <Form.Item label="解析器状态" style={{ marginBottom: 16 }}>
-                      <Space size="large">
-                        <ParserStatusBadge name="MinerU" entry={parserStatus.mineru} />
-                        <ParserStatusBadge name="DeepDoc" entry={parserStatus.deepdoc} />
-                      </Space>
-                    </Form.Item>
-                  )}
-                  {/* 页码范围/任务页面大小/表格/公式/图片：仅 MinerU 生效（非 MinerU 时
-                      后端 parse_opts={} 或 plain 分支不消费），隐藏即不提交 */}
-                  {isMinerU && <PagesRangeField />}
-                  {isMinerU && <TaskPageSizeField />}
-                  {isMinerU && (
-                    <SwitchField
-                      name="table_enable"
-                      label="表格识别"
-                      desc="当前 MinerU 服务端固定开启表格识别（以图片输出），此开关暂不生效"
-                      defaultValue
-                    />
-                  )}
-                  {isMinerU && (
-                    <SwitchField
-                      name="formula_enable"
-                      label="公式识别"
-                      desc="此开关暂不生效，取决于 MinerU 服务端配置"
-                      defaultValue
-                    />
-                  )}
-                  {isMinerU && (
-                    <SwitchField
-                      name="return_images"
-                      label="图片提取"
-                      desc="提取文档图片并保存（存 MinIO）"
-                      defaultValue
-                    />
-                  )}
-                  {/* 包含父标题是切块后处理（不依赖解析引擎，PlainText 下同样生效），
-                      仅 UI 隐藏以精简表单，提交值保留（见 handleOk） */}
-                  {!isPlainText && (
-                    <SwitchField
-                      name="enable_heading_in_content"
-                      label="包含父标题"
-                      desc="切块时在块前补标题路径"
-                      defaultValue={false}
-                    />
-                  )}
-                  {/* 上下文检索增强：对所有文档类型生效（切块后处理，不依赖解析器）；
-                      开关开启时 Alert 提示额外 token 费用（用户确认的提示文案） */}
-                  <SwitchField
-                    name="contextual_retrieval"
-                    label="上下文检索增强"
-                    desc="切块后用 LLM 为每个块生成简短上下文摘要附在块头部，解决孤立分块缺乏全局背景的问题，提升检索质量"
-                    defaultValue={false}
-                    disabled={isAgentic}
-                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
-                  />
-                  {contextualRetrieval && (
-                    <Alert
-                      message="开启后每次解析将对每个切块调用 LLM 生成上下文摘要，将产生额外 token 费用"
-                      type="warning"
-                      showIcon
-                      style={{ marginBottom: 12 }}
-                    />
-                  )}
-                  {/* 知识图谱：对所有文档类型生效（切块后处理，不依赖解析器）；
-                      开启时 Alert 提示额外 token 费用（与上下文检索增强并列） */}
-                  <SwitchField
-                    name="knowledge_graph"
-                    label="知识图谱"
-                    desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）"
-                    defaultValue={false}
-                    disabled={isAgentic}
-                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
-                  />
-                  {knowledgeGraph && (
-                    <Alert
-                      message="开启后每次解析将对每个切块调用 LLM 抽取实体与关系，将产生额外 token 费用"
-                      type="warning"
-                      showIcon
-                      style={{ marginBottom: 12 }}
-                    />
-                  )}
-                  {/* 解析 LLM 模型：上下文检索增强/知识图谱任一开启时显示（下拉数据源=
-                      系统配置模型列表，仅名称+model 无敏感字段；默认=当前激活模型，
-                      切换前自动测试连接，通过才生效） */}
-                  {(contextualRetrieval || knowledgeGraph || isAgentic) && (
+        {/* PDF 解析配置（仅 pdf/docx 文档显示，B4；解析方式并入 Collapse 顶部，
+            不再孤悬在外）：解析方式（合并原解析引擎+版面识别，带连接检测）/
+            MinerU 解析后端 / 页码范围 / 任务页面大小 / 表格/公式/图片 /
+            语言（参考 KnowFlow 范式） */}
+        {isPdfLike && (
+          <Collapse
+            ghost
+            style={{ marginBottom: 16, marginTop: 4 }}
+            defaultActiveKey={['pdf-parse']}
+            items={[
+              {
+                key: 'pdf-parse',
+                label: 'PDF 解析配置',
+                children: (
+                  <>
+                    {/* 解析方式（合并解析引擎+版面识别，无自动档）：MinerU=高精度 /
+                        DeepDOC=表格输出可检索 HTML / PlainText=纯文本直提；选项状态
+                        图标来自探测（弹窗打开+每次打开下拉刷新），不可用禁用 */}
                     <Form.Item
-                      name="parse_llm_model"
-                      label="解析 LLM 模型"
-                      extra="使用模型仅影响上下文摘要/知识图谱抽取/Agentic 分块，对话仍用当前激活模型；切换前自动测试连接，通过才生效"
+                      name="parse_mode"
+                      label="解析方式"
+                      rules={[{ required: true, message: '请选择解析方式' }]}
+                      extra="MinerU 适用于 PDF 混排（图文表格）文档（高精度）；DeepDoc 通过 RAGFlow 服务解析，表格输出为可检索 HTML（仅 PDF）；纯文本本地直提（pypdf/python-docx，无表格/图片识别，恒可用）。选项前的 √/x 为服务可用性检测结果（打开下拉时实时刷新），不可用的解析方式无法选择"
                     >
                       <Select
-                        loading={testingLlm}
-                        placeholder="默认使用当前激活模型"
-                        options={llmModels.map((m, i) => ({
-                          value: m.name,
-                          label: `${m.name}${m.model && m.model !== m.name ? `（${m.model}）` : ''}${i === activeLlmIdx ? ' — 当前使用' : ''}`,
-                        }))}
-                        onChange={handleParseLlmChange}
+                        options={parseModeOptions}
+                        onDropdownVisibleChange={visible => {
+                          if (visible) refreshParserStatus();
+                        }}
                       />
                     </Form.Item>
-                  )}
-                  {/* 思考模式（DeepSeek thinking 控制）：图谱抽取/上下文摘要调用的
-                      extra_body 组装；默认关闭——图谱抽取/摘要属简单延迟敏感任务，
-                      关闭思考可加快解析速度并节省 token（DeepSeek 推理模型
-                      reasoning 会大量消耗 token 拖慢响应） */}
-                  <Form.Item
-                    name="thinking_mode"
-                    label="思考模式"
-                    extra="控制图谱抽取/上下文摘要调用的 DeepSeek 思考（reasoning）。关闭思考可加快解析速度并节省 token（推荐）"
-                  >
-                    <Select
-                      options={[
-                        { value: 'disabled', label: '关闭思考（推荐，更快）' },
-                        { value: 'enabled_low', label: '开启-低' },
-                        { value: 'enabled_high', label: '开启-高' },
-                        { value: 'enabled_max', label: '开启-最大' },
-                      ]}
-                    />
-                  </Form.Item>
-                  <LangSelectField />
-                </>
-              ),
-            },
-          ]}
-        />
+                    {/* MinerU 解析后端：仅解析方式=MinerU 时显示（其他方式不传，
+                        跟随 MinerU 服务端默认 hybrid-auto-engine） */}
+                    {isMinerU && <MinerUBackendField />}
+                    {/* 页码范围/任务页面大小/表格/公式/图片/语言：仅 MinerU 生效（非 MinerU
+                        时后端 parse_opts={} 或 plain 分支不消费），隐藏即不提交 */}
+                    {isMinerU && <PagesRangeField />}
+                    {isMinerU && <TaskPageSizeField />}
+                    {isMinerU && (
+                      <SwitchField
+                        name="table_enable"
+                        label="表格识别"
+                        desc="该参数将透传至 MinerU 服务端（table_enable），是否生效取决于服务端配置"
+                        defaultValue
+                      />
+                    )}
+                    {isMinerU && (
+                      <SwitchField
+                        name="formula_enable"
+                        label="公式识别"
+                        desc="该参数将透传至 MinerU 服务端（formula_enable），是否生效取决于服务端配置"
+                        defaultValue
+                      />
+                    )}
+                    {isMinerU && (
+                      <SwitchField
+                        name="return_images"
+                        label="图片提取"
+                        desc="提取文档图片并保存（存 MinIO）"
+                        defaultValue
+                      />
+                    )}
+                    {/* 语言 lang_list：仅 MinerU 显示/提交（B1）——与页码范围同组条件；
+                        非 MinerU 时提交剔除（后端不透传，缺省默认 ch） */}
+                    {isMinerU && <LangSelectField />}
+                  </>
+                ),
+              },
+            ]}
+          />
+        )}
 
         <Form.Item name="method" label="切块方式" rules={[{ required: true }]}>
           <Select
@@ -638,10 +637,13 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     label="分块大小（字符）"
                     rules={[
                       { required: true, message: '请输入分块大小' },
-                      { type: 'number', min: 50, max: 2000, message: '子块大小范围 50-2000' },
+                      // D3：子块上限与后端校验统一为 20000（ingestion_service
+                      // _MAX_CHUNK_SIZE，naive/title/regex 档同值；原 2000 与后端
+                      // 允许值不一致，父块上限 4000 保留——父块是超长章节兜底）
+                      { type: 'number', min: 50, max: 20000, message: '子块大小范围 50-20000' },
                     ]}
                   >
-                    <InputNumber min={50} max={2000} style={{ width: '100%' }} />
+                    <InputNumber min={50} max={20000} style={{ width: '100%' }} />
                   </Form.Item>
                   <Form.Item name="overlap" label="重叠字符" rules={[{ required: true, message: '请输入重叠字符' }]}>
                     <InputNumber min={0} style={{ width: '100%' }} />
@@ -706,11 +708,12 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           </>
         )}
 
-        {/* QA 问答切块：说明（qa 无需额外参数；入库失败后由文档列表确认继续） */}
+        {/* QA 问答切块：说明（qa 无需额外参数；入库失败后由文档列表确认继续）；
+            B3：问答对整块，分块大小/重叠不适用，隐藏这两个参数输入 */}
         {!isParentChild && method === 'qa' && (
           <Alert
             message="QA 问答切块说明"
-            description="按“问：/答：”标记聚合问答对为整块（答案可跨多段，保留原文标记）。入库时会检测问答对占比（问答对/总段落），低于 50% 判定不符合 QA 文档规范，需在文档列表确认后继续入库。"
+            description="按“问：/答：”标记聚合问答对为整块，分块大小/重叠不适用（已隐藏）。答案可跨多段，保留原文标记。入库时会检测问答对占比（问答对/总段落），低于 50% 判定不符合 QA 文档规范，需在文档列表确认后继续入库。"
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
@@ -741,8 +744,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           </Form.Item>
         )}
 
-        {/* 通用（非父子分块）：分块大小与重叠 */}
-        {!isParentChild && (
+        {/* 通用（naive/title/regex）：分块大小与重叠；qa/agentic 不消费这两个参数，
+            该方式下只显示说明 Alert、隐藏输入（B3） */}
+        {!isParentChild && method !== 'qa' && method !== 'agentic' && (
           <>
             <Form.Item
               name="chunk_size"
@@ -756,6 +760,121 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
             </Form.Item>
           </>
         )}
+
+        {/* 包含父标题（A1）：切块后处理——为不含标题的块拼接前缀标题路径，与解析引擎/
+            版面识别/文档格式无关，统一显示于切块参数区（不随版面识别隐藏）；
+            qa/agentic 同样生效（块内保留标题路径） */}
+        <SwitchField
+          name="enable_heading_in_content"
+          label="包含父标题"
+          desc="切块时在块前补标题路径"
+          defaultValue={false}
+        />
+
+        {/* 大模型处理（D1：位于切块方式/切块参数之后，避免用户先看到禁用的互斥开关
+            才选到 agentic）：上下文检索增强/知识图谱/思考模式/解析 LLM 模型——均为
+            切块后处理（不依赖解析器），与文档格式无关（txt/docx 同样适用）；
+            上下文检索增强/知识图谱与 Agentic 互斥（选 agentic 禁用）*/}
+        <Collapse
+          ghost
+          style={{ marginBottom: 16, marginTop: 4 }}
+          defaultActiveKey={['llm-process']}
+          items={[
+            {
+              key: 'llm-process',
+              label: '大模型处理',
+              children: (
+                <>
+                  <Alert
+                    message="以下功能与文档格式无关，txt/docx 等文档同样适用；开启后每次解析将调用大模型，产生额外 token 费用"
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                  />
+                  {/* 上下文检索增强：对所有文档类型生效（切块后处理，不依赖解析器）；
+                      开关开启时 Alert 提示额外 token 费用（用户确认的提示文案） */}
+                  <SwitchField
+                    name="contextual_retrieval"
+                    label="上下文检索增强"
+                    desc="切块后用 LLM 为每个块生成简短上下文摘要附在块头部，解决孤立分块缺乏全局背景的问题，提升检索质量"
+                    defaultValue={false}
+                    disabled={isAgentic}
+                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
+                  />
+                  {contextualRetrieval && (
+                    <Alert
+                      message="开启后每次解析将对每个切块调用 LLM 生成上下文摘要，将产生额外 token 费用"
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                    />
+                  )}
+                  {/* 知识图谱：对所有文档类型生效（切块后处理，不依赖解析器）；
+                      开启时 Alert 提示额外 token 费用（与上下文检索增强并列） */}
+                  <SwitchField
+                    name="knowledge_graph"
+                    label="知识图谱"
+                    desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）"
+                    defaultValue={false}
+                    disabled={isAgentic}
+                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
+                  />
+                  {knowledgeGraph && (
+                    <Alert
+                      message="开启后每次解析将对每个切块调用 LLM 抽取实体与关系，将产生额外 token 费用"
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                    />
+                  )}
+                  {/* 解析 LLM 模型：上下文检索增强/知识图谱/Agentic 任一开启时显示
+                      （三者全关隐藏且提交剔除，B5；下拉数据源=系统配置模型列表，
+                      仅名称+model 无敏感字段；默认=当前激活模型，切换前自动测试
+                      连接，通过才生效） */}
+                  {(contextualRetrieval || knowledgeGraph || isAgentic) && (
+                    <Form.Item
+                      name="parse_llm_model"
+                      label="解析 LLM 模型"
+                      extra="使用模型仅影响上下文摘要/知识图谱抽取/Agentic 分块，对话仍用当前激活模型；切换前自动测试连接，通过才生效"
+                    >
+                      <Select
+                        loading={testingLlm}
+                        placeholder="默认使用当前激活模型"
+                        options={llmModels.map((m, i) => ({
+                          value: m.name,
+                          label: `${m.name}${m.model && m.model !== m.name ? `（${m.model}）` : ''}${i === activeLlmIdx ? ' — 当前使用' : ''}`,
+                        }))}
+                        onChange={handleParseLlmChange}
+                      />
+                    </Form.Item>
+                  )}
+                  {/* 思考模式（DeepSeek thinking 控制）：与解析 LLM 模型同条件显隐
+                      （B2：contextualRetrieval || knowledgeGraph || isAgentic 时才
+                      显示，三者全关隐藏）——图谱抽取/摘要/Agentic 分块调用的
+                      extra_body 组装；默认关闭——图谱抽取/摘要属简单延迟敏感任务，
+                      关闭思考可加快解析速度并节省 token（DeepSeek 推理模型
+                      reasoning 会大量消耗 token 拖慢响应） */}
+                  {(contextualRetrieval || knowledgeGraph || isAgentic) && (
+                    <Form.Item
+                      name="thinking_mode"
+                      label="思考模式"
+                      extra="控制图谱抽取/上下文摘要/Agentic 分块调用的 DeepSeek 思考（reasoning）。关闭思考可加快解析速度并节省 token（推荐）"
+                    >
+                      <Select
+                        options={[
+                          { value: 'disabled', label: '关闭思考（推荐，更快）' },
+                          { value: 'enabled_low', label: '开启-低' },
+                          { value: 'enabled_high', label: '开启-高' },
+                          { value: 'enabled_max', label: '开启-最大' },
+                        ]}
+                      />
+                    </Form.Item>
+                  )}
+                </>
+              ),
+            },
+          ]}
+        />
       </Form>
     </Modal>
   );
