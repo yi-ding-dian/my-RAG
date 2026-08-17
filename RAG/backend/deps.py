@@ -6,6 +6,8 @@
   JWT 24h 有效期内进 URL，内网企业环境可接受；校验失败统一 401）
 - require_super_admin：非 super_admin → 403
 - require_user_admin：super_admin 或 dept_admin → 403（用户/部门管理）
+- require_super_or_dept_admin：super_admin 或 dept_admin → 403
+  （全局文档管理/审计日志查询等跨部门管理面，调用方再按角色做部门级数据隔离）
 - can_access_kb / can_manage_kb：纯函数（Agent 2 在知识库/文档/会话路由复用）
 """
 from __future__ import annotations
@@ -81,6 +83,20 @@ async def require_user_admin(
     user: UserPublic = Depends(get_current_user),
 ) -> UserPublic:
     """用户/部门管理：super_admin 或 dept_admin（user → 403）"""
+    if user.role not in ("super_admin", "dept_admin"):
+        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+    return user
+
+
+async def require_super_or_dept_admin(
+    user: UserPublic = Depends(get_current_user),
+) -> UserPublic:
+    """全局管理面：super_admin 或 dept_admin（user → 403）
+
+    与 require_user_admin 的区别在语义：本依赖用于跨部门数据查询类管理接口
+    （全局文档 / 审计日志），调用方拿到 user 后再按角色收紧数据范围——
+    dept_admin 强制限定本部门，super_admin 全量。
+    """
     if user.role not in ("super_admin", "dept_admin"):
         raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
     return user

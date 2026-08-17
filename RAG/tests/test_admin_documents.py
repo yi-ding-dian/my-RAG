@@ -1,7 +1,8 @@
-"""超管全局文档管理（GET /api/admin/documents）测试
+"""全局文档管理（GET /api/admin/documents）测试
 
-- 仅 super_admin：user/dept_admin → 403
-- 跨部门/未分配部门文档全量可见，items 组装 kb_name/department_id/department_name
+- 权限：super_admin 全量；dept_admin 200 但强制限定本部门（请求指定其他部门
+  被覆盖，不可越权）；dept_admin 无部门归属 403；user 403；未登录 401
+- 跨部门/未分配部门文档全量可见（超管），items 组装 kb_name/department_id/department_name
 - 过滤：department_id / kb_id / status / keyword（文件名模糊），先过滤后分页
 - 分页：默认 50、上限 200、页码边界、total 为过滤后数量
 - 删除/重命名复用现有 /kbs/{kb_id}/documents 接口：补超管跨部门软删/重命名确认
@@ -9,7 +10,7 @@
 from __future__ import annotations
 
 from conftest import (create_department_and_admin, create_kb, create_user,
-                      upload_and_ingest, upload_doc)
+                      login_headers, upload_and_ingest, upload_doc)
 
 ENV = {}
 
@@ -67,12 +68,72 @@ class TestAdminDocuments:
         assert item["department_id"] is None
         assert item["department_name"] is None
 
-    def test_dept_admin_403(self, client, admin_headers):
-        """dept_admin → 403（仅超级管理员）"""
+    def test_dept_admin_sees_only_own_department(
+            self, client, admin_headers):
+        """dept_admin → 200：仅本部门文档；请求指定其他部门被强制覆盖"""
         env = self._env(client, admin_headers)
         resp = client.get("/api/admin/documents", headers=env["dept_admin_a"])
+        assert resp.status_code == 200
+        data = resp.json()
+        names = [d["original_name"] for d in data["items"]]
+        assert data["total"] == 1 and names == ["A部制度.txt"]
+        # 组装仍带部门信息
+        assert data["items"][0]["department_id"] == env["dept_a"]
+        assert data["items"][0]["department_name"] == "A部门"
+
+    def test_dept_admin_cannot_see_other_departments(
+            self, client, admin_headers):
+        """dept_admin 指定其他部门/未分配部门参数 → 仍强制返回本部门（防越权探测）"""
+        env = self._env(client, admin_headers)
+        for param in (f"department_id={env['dept_b']}",
+                      "department_id=__unassigned__",
+                      "department_id=不存在部门"):
+            resp = client.get(f"/api/admin/documents?{param}",
+                              headers=env["dept_admin_a"])
+            assert resp.status_code == 200, param
+            data = resp.json()
+            names = [d["original_name"] for d in data["items"]]
+            assert data["total"] == 1 and names == ["A部制度.txt"], param
+        # 其他筛选（kb_id 等）仍生效：指定 B 部知识库 → 空（不在本部门）
+        resp = client.get(
+            f"/api/admin/documents?kb_id={env['kb_b']['id']}",
+            headers=env["dept_admin_a"])
+        assert resp.json()["total"] == 0
+
+    def test_dept_admin_without_department_403(self, client, admin_headers):
+        """dept_admin 无部门归属 → 403"""
+        resp = client.post("/api/users", json={
+            "username": "orphan_dept_admin", "password": "dept123456",
+            "display_name": "无部门管理员", "role": "dept_admin",
+        }, headers=admin_headers)
+        assert resp.status_code == 201, resp.text
+        headers = login_headers(client, "orphan_dept_admin", "dept123456")
+        resp = client.get("/api/admin/documents", headers=headers)
         assert resp.status_code == 403
-        assert "超级管理员" in resp.json()["detail"]
+        assert "未归属部门" in resp.json()["detail"]
+
+    def test_dept_admin_filter_and_pagination_apply_after_scope(
+            self, client, admin_headers):
+        """dept_admin 的 keyword/分页在部门限定后生效（total=本部门过滤后数量）"""
+        env = self._env(client, admin_headers)
+        # A 部 2 个文档（补充一个），B 部/全局不受影响
+        upload_doc(client, env["kb_a"]["id"], filename="A部制度2.txt")
+        resp = client.get("/api/admin/documents", headers=env["dept_admin_a"])
+        assert resp.json()["total"] == 2
+        # keyword 命中 1 条
+        resp = client.get("/api/admin/documents?keyword=制度2",
+                          headers=env["dept_admin_a"])
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["original_name"] == "A部制度2.txt"
+        # 分页：page_size=1 → 2 页不重叠
+        p1 = client.get("/api/admin/documents?page=1&page_size=1",
+                        headers=env["dept_admin_a"]).json()
+        p2 = client.get("/api/admin/documents?page=2&page_size=1",
+                        headers=env["dept_admin_a"]).json()
+        assert p1["total"] == 2 and p2["total"] == 2
+        assert len(p1["items"]) == 1 and len(p2["items"]) == 1
+        assert p1["items"][0]["id"] != p2["items"][0]["id"]
 
     def test_user_403(self, client, admin_headers):
         """user → 403"""

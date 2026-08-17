@@ -6,7 +6,8 @@
 - 文档 上传/重命名/URL导入/解析/软删/恢复/彻底删/清空回收站 记录
 - 会话删除/导出记录
 - 配置档案 CRUD/激活/连接测试（成功与否）记录
-- 权限：非 super_admin 查审计 403
+- 权限：user 查审计 403；dept_admin 已放开但只返回本部门用户日志
+  （user_id IN 本部门用户集合；无部门归属 403）；super_admin 全量
 - 查询：分页/action/username/target_type/时间范围过滤/倒序
 - 审计失败不阻塞业务（monkeypatch 审计内部抛错，主操作仍成功）
 
@@ -19,7 +20,8 @@ import json
 
 import pytest
 
-from conftest import create_kb, upload_and_ingest, upload_doc
+from conftest import (create_department_and_admin, create_kb, create_user,
+                      login_headers, upload_and_ingest, upload_doc)
 
 
 # ==================== 工具函数 ====================
@@ -501,15 +503,30 @@ class TestSettingsAudit:
 # ==================== 权限 ====================
 
 class TestAuditPermission:
-    """仅 super_admin 可查审计"""
+    """user 403；dept_admin 已放开（限本部门，见 TestAuditDeptScoped）"""
 
-    def test_non_super_admin_forbidden(self, client, admin_headers,
-                                       dept_admin_headers, user_headers):
-        for headers in (dept_admin_headers, user_headers):
-            resp = client.get("/api/audit/logs", headers=headers)
-            assert resp.status_code == 403
-            resp = client.get("/api/audit/actions", headers=headers)
-            assert resp.status_code == 403
+    def test_user_forbidden(self, client, admin_headers, user_headers):
+        """user 查审计/动作列表 → 403"""
+        resp = client.get("/api/audit/logs", headers=user_headers)
+        assert resp.status_code == 403
+        resp = client.get("/api/audit/actions", headers=user_headers)
+        assert resp.status_code == 403
+
+    def test_dept_admin_allowed(self, client, admin_headers,
+                                dept_admin_headers):
+        """dept_admin 可查审计/动作列表（数据限本部门，见 TestAuditDeptScoped）"""
+        assert client.get("/api/audit/logs",
+                          headers=dept_admin_headers).status_code == 200
+        assert client.get("/api/audit/actions",
+                          headers=dept_admin_headers).status_code == 200
+
+    def test_dept_admin_cannot_delete_audit(self, client, admin_headers,
+                                            dept_admin_headers):
+        """dept_admin 按天删除审计 → 403（仅超管）"""
+        resp = client.delete("/api/audit/logs",
+                             params={"date": "2026-01-01"},
+                             headers=dept_admin_headers)
+        assert resp.status_code == 403
 
     def test_no_token_401(self, client):
         assert client.get("/api/audit/logs").status_code == 401
@@ -522,6 +539,114 @@ class TestAuditPermission:
         assert mapping["kb.create"] == "创建知识库"
         assert mapping["user.create"] == "创建用户"
         assert "auth.login" in mapping and "settings.update" in mapping
+
+
+class TestAuditDeptScoped:
+    """dept_admin 审计按部门过滤：只返回本部门用户的日志（user_id IN 部门用户集合）"""
+
+    def _env(self, client, admin_headers):
+        """两部门：A（dept_admin_a + user_a）、B（dept_admin_b）"""
+        dept_a, dept_admin_a = create_department_and_admin(
+            client, admin_headers, "A审计部门", "audit_dept_a",
+            "dept123456", "A部管理员")
+        dept_b, dept_admin_b = create_department_and_admin(
+            client, admin_headers, "B审计部门", "audit_dept_b",
+            "dept123456", "B部管理员")
+        user_a = create_user(client, admin_headers, dept_a,
+                             "audit_user_a", "user123456", "A部用户")
+        return {"dept_a": dept_a, "dept_admin_a": dept_admin_a,
+                "dept_b": dept_b, "dept_admin_b": dept_admin_b,
+                "user_a": user_a}
+
+    def _seed_ops(self, client, env):
+        """产生跨部门操作日志：user_a 登录、A/B dept_admin 建库、超管建库"""
+        resp = client.post("/api/auth/login", json={
+            "username": "audit_user_a", "password": "user123456"})
+        assert resp.status_code == 200
+        create_kb(client, name="A部审计库", headers=env["dept_admin_a"])
+        create_kb(client, name="B部审计库", headers=env["dept_admin_b"])
+        create_kb(client, name="超管审计库")
+
+    def test_dept_admin_sees_only_department_users(
+            self, client, admin_headers):
+        """A 部管理员只见 A 部用户（自身 + user_a），不可见 B 部/超管"""
+        env = self._env(client, admin_headers)
+        self._seed_ops(client, env)
+        data = _logs(client, env["dept_admin_a"], page_size=200)
+        usernames = {i["username"] for i in data["items"]}
+        assert usernames and usernames <= {"audit_dept_a", "audit_user_a"}
+        # 本部门操作可见：user_a 登录、dept_admin_a 建库
+        assert _find_log(client, env["dept_admin_a"], "auth.login",
+                         username="audit_user_a")
+        assert _find_log(client, env["dept_admin_a"], "kb.create",
+                         username="audit_dept_a")
+        # 其他部门/超管操作不可见
+        assert _find_log(client, env["dept_admin_a"], "kb.create",
+                         username="audit_dept_b") is None
+        assert _find_log(client, env["dept_admin_a"], "kb.create",
+                         username="admin") is None
+
+    def test_dept_admin_b_isolated(self, client, admin_headers):
+        """B 部管理员只见 B 部用户（自身），不可见 A 部"""
+        env = self._env(client, admin_headers)
+        self._seed_ops(client, env)
+        data = _logs(client, env["dept_admin_b"], page_size=200)
+        usernames = {i["username"] for i in data["items"]}
+        assert usernames == {"audit_dept_b"}
+        assert _find_log(client, env["dept_admin_b"], "kb.create",
+                         username="audit_dept_b")
+        assert _find_log(client, env["dept_admin_b"], "auth.login",
+                         username="audit_user_a") is None
+
+    def test_super_admin_sees_all(self, client, admin_headers):
+        """超管全量不变：包含所有部门与超管自身操作"""
+        env = self._env(client, admin_headers)
+        self._seed_ops(client, env)
+        data = _logs(client, admin_headers, page_size=200)
+        usernames = {i["username"] for i in data["items"]}
+        assert {"audit_dept_a", "audit_dept_b", "audit_user_a",
+                "admin"} <= usernames
+
+    def test_pagination_applies_after_dept_scope(self, client,
+                                                 admin_headers):
+        """分页在部门过滤后生效：total=本部门过滤后数量，两页无重叠"""
+        env = self._env(client, admin_headers)
+        self._seed_ops(client, env)
+        # 让 A 部再多几条记录：再登录一次 + 再建一个库
+        client.post("/api/auth/login", json={
+            "username": "audit_user_a", "password": "user123456"})
+        create_kb(client, name="A部审计库2", headers=env["dept_admin_a"])
+        total = _logs(client, env["dept_admin_a"], page_size=200)["total"]
+        assert total >= 4  # 登录×2 + 建库×2
+        p1 = _logs(client, env["dept_admin_a"], page=1, page_size=2)
+        p2 = _logs(client, env["dept_admin_a"], page=2, page_size=2)
+        assert p1["total"] == total and p2["total"] == total
+        ids1 = {i["id"] for i in p1["items"]}
+        ids2 = {i["id"] for i in p2["items"]}
+        assert not (ids1 & ids2)
+
+    def test_username_filter_combines_with_dept_scope(
+            self, client, admin_headers):
+        """username 筛选与部门过滤叠加：跨部门用户名搜不到"""
+        env = self._env(client, admin_headers)
+        self._seed_ops(client, env)
+        data = _logs(client, env["dept_admin_a"], username="audit_dept_b")
+        assert data["total"] == 0
+        data = _logs(client, env["dept_admin_a"], username="audit")
+        usernames = {i["username"] for i in data["items"]}
+        assert usernames and usernames <= {"audit_dept_a", "audit_user_a"}
+
+    def test_dept_admin_without_department_403(self, client, admin_headers):
+        """dept_admin 无部门归属 → 403"""
+        resp = client.post("/api/users", json={
+            "username": "audit_orphan", "password": "dept123456",
+            "display_name": "无部门管理员", "role": "dept_admin",
+        }, headers=admin_headers)
+        assert resp.status_code == 201, resp.text
+        headers = login_headers(client, "audit_orphan", "dept123456")
+        resp = client.get("/api/audit/logs", headers=headers)
+        assert resp.status_code == 403
+        assert "未归属部门" in resp.json()["detail"]
 
 
 # ==================== 查询：分页/过滤/倒序 ====================

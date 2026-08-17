@@ -81,9 +81,10 @@ const menuItems = [
   { key: '/users', icon: <TeamOutlined />, label: '用户管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统配置' },
   { key: '/ext-queries', icon: <LinkOutlined />, label: '外部查询' },
-  /* 超管专属：跨部门全局文档管理（与部门内 /documents 文档管理区分） */
+  /* 超管+部门管理员：全局文档管理（超管跨全部部门 / dept_admin 限本部门，
+     与部门内 /documents 文档管理区分；dept_admin 时标签改「文档管理」，见 filterMenu） */
   { key: '/global-documents', icon: <FileSearchOutlined />, label: '文档管理（全部）' },
-  /* 超管专属：操作审计 + 系统运行日志实时查看 */
+  /* 超管+部门管理员：日志查看（超管操作审计+系统日志 / dept_admin 仅操作审计） */
   { key: '/logs', icon: <AuditOutlined />, label: '日志查看' },
 ];
 
@@ -94,17 +95,27 @@ const roleMeta: Record<User['role'], { color: string; text: string }> = {
 };
 
 /** 菜单过滤：/settings 与 /users 对 super_admin 与 dept_admin 开放（普通用户不可见）；
+    /global-documents 与 /logs 对 super_admin 与 dept_admin 开放（dept_admin 数据限本部门）；
     外部查询仅 super_admin（暴露知识库的敏感配置） */
 const filterMenu = (user: User | null) => {
   const isAdmin = user?.role === 'super_admin' || user?.role === 'dept_admin';
-  return menuItems.filter(item => {
-    if (item.key === '/settings' || item.key === '/users') return isAdmin;
-    if (item.key === '/ext-queries' || item.key === '/global-documents'
-        || item.key === '/logs') {
-      return user?.role === 'super_admin';
-    }
-    return true;
-  });
+  return menuItems
+    .filter(item => {
+      if (item.key === '/settings' || item.key === '/users'
+          || item.key === '/global-documents' || item.key === '/logs') {
+        return isAdmin;
+      }
+      if (item.key === '/ext-queries') {
+        return user?.role === 'super_admin';
+      }
+      return true;
+    })
+    .map(item =>
+      // dept_admin 的全局文档入口标签显示「文档管理」（数据限本部门，不再是"全部"）
+      item.key === '/global-documents' && user?.role === 'dept_admin'
+        ? { ...item, label: '文档管理' }
+        : item,
+    );
 };
 
 /** 侧栏底部主题预设选择器：10 个圆形色块 5×2 网格居中（前 5 浅后 5 深），hover 显示主题名，点击即时切换 */
@@ -405,20 +416,21 @@ const AppLayout: React.FC = () => {
                     </ProtectedRoute>
                   }
                 />
-                {/* 全局文档管理（仅 super_admin）：跨部门查看/重命名/软删所有文档 */}
+                {/* 全局文档管理（super_admin 全量 / dept_admin 限本部门）：
+                    查看/重命名/软删文档 */}
                 <Route
                   path="/global-documents"
                   element={
-                    <ProtectedRoute roles={['super_admin']}>
+                    <ProtectedRoute roles={['super_admin', 'dept_admin']}>
                       <GlobalDocumentsPage />
                     </ProtectedRoute>
                   }
                 />
-                {/* 日志查看（仅 super_admin）：操作审计 + 系统运行日志实时查看 */}
+                {/* 日志查看（super_admin 操作审计+系统日志 / dept_admin 仅操作审计） */}
                 <Route
                   path="/logs"
                   element={
-                    <ProtectedRoute roles={['super_admin']}>
+                    <ProtectedRoute roles={['super_admin', 'dept_admin']}>
                       <LogsPage />
                     </ProtectedRoute>
                   }

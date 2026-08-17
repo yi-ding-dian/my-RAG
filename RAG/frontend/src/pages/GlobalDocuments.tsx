@@ -39,6 +39,7 @@ import {
 import AppEmpty from '../components/AppEmpty';
 import PageHeader from '../components/PageHeader';
 import RenameDocumentModal from '../components/RenameDocumentModal';
+import { useAuth } from '../auth/AuthContext';
 
 const { Text } = Typography;
 
@@ -99,14 +100,19 @@ interface DeptGroup {
 }
 
 /**
- * 超管全局文档管理页（仅 super_admin）：按部门分类查看所有部门的知识库与文档，
- * 支持重命名与软删除。删除为「移入回收站（可恢复）」，回收站入口保留在各部门
- * 知识库内文档管理页（本期不做全局回收站）。
+ * 全局文档管理页（super_admin 全量 / dept_admin 限本部门）：
+ * 按部门分类查看知识库与文档，支持重命名与软删除。删除为「移入回收站（可恢复）」，
+ * 回收站入口保留在各部门知识库内文档管理页（本期不做全局回收站）。
+ * dept_admin：数据已由后端强制限定本部门，页面隐藏「部门」筛选下拉（其余筛选
+ * 保留，如知识库/状态/关键字）；super_admin 保留全部筛选。
  * 分页方案：一次拉当前页（page/page_size，默认 50），当前页数据内按部门分组。
  */
 const GlobalDocumentsPage: React.FC = () => {
   const { message } = AntApp.useApp();
   const { token } = theme.useToken();
+  const { user } = useAuth();
+  // dept_admin：本部门视图（后端强制 department_id，前端隐藏部门筛选）
+  const isDeptAdmin = user?.role === 'dept_admin';
 
   // 筛选条件
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -373,21 +379,27 @@ const GlobalDocumentsPage: React.FC = () => {
   return (
     <div>
       <PageHeader
-        title="文档管理（全部部门）"
-        description="超管跨部门视图：按部门查看所有知识库的文档，可重命名或移入回收站（可在所属知识库回收站恢复）"
+        title={isDeptAdmin ? '文档管理（本部门）' : '文档管理（全部部门）'}
+        description={
+          isDeptAdmin
+            ? '本部门视图：查看本部门知识库的文档，可重命名或移入回收站（可在所属知识库回收站恢复）'
+            : '超管跨部门视图：按部门查看所有知识库的文档，可重命名或移入回收站（可在所属知识库回收站恢复）'
+        }
         extra={
           <>
-            <Select
-              value={departmentId}
-              onChange={setDepartmentId}
-              style={{ width: 180 }}
-              allowClear
-              placeholder="全部部门"
-              options={[
-                ...departments.map(d => ({ value: d.id, label: d.name })),
-                { value: UNASSIGNED, label: '未分配部门' },
-              ]}
-            />
+            {!isDeptAdmin && (
+              <Select
+                value={departmentId}
+                onChange={setDepartmentId}
+                style={{ width: 180 }}
+                allowClear
+                placeholder="全部部门"
+                options={[
+                  ...departments.map(d => ({ value: d.id, label: d.name })),
+                  { value: UNASSIGNED, label: '未分配部门' },
+                ]}
+              />
+            )}
             <Select
               value={kbId}
               onChange={setKbId}

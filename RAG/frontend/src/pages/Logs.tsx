@@ -43,6 +43,7 @@ import {
 import AppEmpty from '../components/AppEmpty';
 import PageHeader from '../components/PageHeader';
 import ResizableTitle from '../components/ResizableTitle';
+import { useAuth } from '../auth/AuthContext';
 import type { ResizeCallbackData } from 'react-resizable';
 
 const { Text } = Typography;
@@ -112,17 +113,21 @@ const recentDates = (): string[] => {
 };
 
 /**
- * 超管日志查看页（仅 super_admin）：
+ * 日志查看页（super_admin 全量 / dept_admin 仅操作审计）：
  * - Tab1 操作审计：样式/筛选/分页与 Users.tsx 审计 Tab 一致；时间范围默认最近
- *   7 天；5s 自动轮询刷新当前页（「自动刷新」开关默认开）；支持按天删除审计记录
- * - Tab2 系统运行日志：按天文件（data/logs/kb-YYYY-MM-DD.log，最近 7 天可切换），
- *   tail 字节游标增量 + 5s 轮询；倒序最新在上；关键字/级别过滤；「清空」清前端
- *   缓存并归位游标；「暂停/继续」开关；日志文件管理（大小/合计/删单天/清空全部，
- *   删除前二次确认）
+ *   7 天；5s 自动轮询刷新当前页（「自动刷新」开关默认开）；按天删除审计记录仅
+ *   super_admin 可见（dept_admin 只读，数据已由后端限本部门人员）
+ * - Tab2 系统运行日志（仅 super_admin）：按天文件（data/logs/kb-YYYY-MM-DD.log，
+ *   最近 7 天可切换），tail 字节游标增量 + 5s 轮询；倒序最新在上；关键字/级别
+ *   过滤；「清空」清前端缓存并归位游标；「暂停/继续」开关；日志文件管理
+ *   （大小/合计/删单天/清空全部，删除前二次确认）
  */
 const LogsPage: React.FC = () => {
   const app = AntApp.useApp();
+  const { user } = useAuth();
   const [tab, setTab] = useState('audit');
+  // 系统日志 Tab 仅 super_admin（dept_admin 无运行日志查看权限，接口 403）
+  const isSuperAdmin = user?.role === 'super_admin';
 
   // 页面固定撑满视口（Content 上下 padding 24×2，与 Chat.tsx 同款布局）：
   // 页头/Tab/筛选栏固定不动，内容区在内部滚动（flex 链见 index.css .logs-page-tabs）
@@ -137,7 +142,11 @@ const LogsPage: React.FC = () => {
     >
       <PageHeader
         title="日志查看"
-        description="超管实时查看：操作审计与系统运行日志（5 秒自动轮询，默认最近 7 天）"
+        description={
+          isSuperAdmin
+            ? '超管实时查看：操作审计与系统运行日志（5 秒自动轮询，默认最近 7 天）'
+            : '本部门人员操作审计（5 秒自动轮询，默认最近 7 天）'
+        }
         style={{ flexShrink: 0 }}
       />
       <Card
@@ -155,10 +164,16 @@ const LogsPage: React.FC = () => {
           activeKey={tab}
           onChange={setTab}
           style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-          items={[
-            { key: 'audit', label: '操作审计', children: <AuditTab app={app} /> },
-            { key: 'system', label: '系统日志', children: <SystemLogTab app={app} /> },
-          ]}
+          items={
+            isSuperAdmin
+              ? [
+                  { key: 'audit', label: '操作审计', children: <AuditTab app={app} /> },
+                  { key: 'system', label: '系统日志', children: <SystemLogTab app={app} /> },
+                ]
+              : [
+                  { key: 'audit', label: '操作审计', children: <AuditTab app={app} /> },
+                ]
+          }
         />
       </Card>
     </div>
@@ -172,6 +187,9 @@ type AppInstance = ReturnType<typeof AntApp.useApp>;
 
 const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
   const { message, modal } = app;
+  const { user } = useAuth();
+  // 按天删除审计记录仅超管（dept_admin 只读：后端 DELETE 仍 403）
+  const canDeleteAudit = user?.role === 'super_admin';
 
   const [actionOptions, setActionOptions] = useState<AuditActionOption[]>([]);
   const [auditFilters, setAuditFilters] = useState<{
@@ -432,13 +450,17 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
         />
         <Button type="primary" onClick={handleSearch}>查询</Button>
         <Button onClick={handleReset}>重置</Button>
-        <DatePicker
-          value={delDate}
-          onChange={setDelDate}
-          placeholder="选择删除日期"
-          style={{ width: 150 }}
-        />
-        <Button danger icon={<DeleteOutlined />} onClick={handleDeleteByDate}>删除该天</Button>
+        {canDeleteAudit && (
+          <>
+            <DatePicker
+              value={delDate}
+              onChange={setDelDate}
+              placeholder="选择删除日期"
+              style={{ width: 150 }}
+            />
+            <Button danger icon={<DeleteOutlined />} onClick={handleDeleteByDate}>删除该天</Button>
+          </>
+        )}
       </Space>
       <Table
         size="middle"
