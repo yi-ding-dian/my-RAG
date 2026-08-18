@@ -34,6 +34,9 @@ def chat_payload(profile: dict) -> dict:
             "max_tokens": chat.get("max_tokens"),
             "system_prompt": chat.get("system_prompt", ""),
             "kg_enhance": chat.get("kg_enhance", True),
+            # 思考模式（聊天问答）：默认 disabled 关闭思考（缺省/旧档案兜底，
+            # 简单延迟敏感任务更快更省 token）
+            "thinking_mode": chat.get("thinking_mode", "disabled"),
         },
     }
 

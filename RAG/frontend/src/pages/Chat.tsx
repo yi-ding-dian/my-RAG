@@ -61,6 +61,10 @@ const ChatPage: React.FC = () => {
   // 流式增量节流（50ms 合并一次 DOM 更新）
   const deltaBufRef = useRef('');
   const flushTimerRef = useRef<number | null>(null);
+  // 本次提问时刻（performance.now()，请求详情"总耗时"基准）
+  const askTimeRef = useRef(0);
+  // 本次生成是否已计算"提问→首字"总耗时（只应计算一次）
+  const totalMsRef = useRef(false);
 
   // ---------- 知识库 ----------
   const loadKbs = useCallback(async () => {
@@ -202,6 +206,20 @@ const ChatPage: React.FC = () => {
 
   const handleDelta = useCallback(
     (text: string) => {
+      // 首个 delta（AI 首字）：计算"提问→首字"总耗时并写入最后一条
+      // assistant 消息（每次增量都会回调，只计算一次）
+      if (!totalMsRef.current && askTimeRef.current) {
+        totalMsRef.current = true;
+        const total_ms = Math.round(performance.now() - askTimeRef.current);
+        setMessages(prev => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === 'assistant') {
+            next[next.length - 1] = { ...last, total_ms };
+          }
+          return next;
+        });
+      }
       deltaBufRef.current += text;
       if (flushTimerRef.current) return;
       flushTimerRef.current = window.setTimeout(flushDelta, 50);
@@ -219,6 +237,27 @@ const ChatPage: React.FC = () => {
       return next;
     });
   }, []);
+
+  // prompt 事件：完整提示词 + 检索/图谱耗时写入最后一条 assistant 消息
+  // （setMessages prev 形式：此时最后一条必为刚 push 的 assistant 消息）
+  const handlePrompt = useCallback(
+    (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number }) => {
+      setMessages(prev => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last && last.role === 'assistant') {
+          next[next.length - 1] = {
+            ...last,
+            prompt: info.prompt,
+            retrieval_ms: info.retrieval_ms,
+            kg_ms: info.kg_ms,
+          };
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   const finishStreaming = useCallback(() => {
     flushDelta();
@@ -288,13 +327,22 @@ const ChatPage: React.FC = () => {
 
       streamingRef.current = true;
       setStreaming(true);
+      // 记录提问时刻（请求详情"总耗时"基准），重置首字计时标记
+      askTimeRef.current = performance.now();
+      totalMsRef.current = false;
 
       abortRef.current = streamChat(
         { kb_id: kbId, query: text, session_id: activeSessionId, top_k: topK },
-        { onMeta: handleMeta, onDelta: handleDelta, onDone: handleDone, onError: handleStreamError },
+        {
+          onMeta: handleMeta,
+          onPrompt: handlePrompt,
+          onDelta: handleDelta,
+          onDone: handleDone,
+          onError: handleStreamError,
+        },
       );
     },
-    [kbId, activeSessionId, topK, handleMeta, handleDelta, handleDone, handleStreamError, message],
+    [kbId, activeSessionId, topK, handleMeta, handlePrompt, handleDelta, handleDone, handleStreamError, message],
   );
 
   // 组件卸载时中止未完成的流
@@ -317,80 +365,96 @@ const ChatPage: React.FC = () => {
             新建
           </Button>
         }
-        style={{ width: 280, display: 'flex', flexDirection: 'column' }}
+        style={{ width: 230, display: 'flex', flexDirection: 'column' }}
         styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
       >
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <List
             dataSource={sessions}
             locale={{ emptyText: <Empty description="暂无会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-            renderItem={item => (
-              <List.Item
-                onClick={() => handleOpenSession(item.id)}
-                className={`session-item${item.id === activeSessionId ? ' session-item--active' : ''}`}
-                style={{ cursor: 'pointer' }}
-                actions={[
-                  <Tooltip key="export" title="导出会话">
-                    <Button
-                      type="text"
-                      size="small"
-                      className="session-export-btn"
-                      icon={<DownloadOutlined />}
-                      onClick={e => {
-                        e.stopPropagation();
-                        handleExportSession(item.id);
-                      }}
-                    />
-                  </Tooltip>,
-                  <Tooltip key="rename" title="重命名">
-                    <Button
-                      type="text"
-                      size="small"
-                      className="session-rename-btn"
-                      icon={<EditOutlined />}
-                      onClick={e => {
-                        e.stopPropagation();
-                        openRenameModal(item);
-                      }}
-                    />
-                  </Tooltip>,
-                  <Tooltip key="del" title="删除会话">
-                    <Popconfirm
-                      title="删除该会话？"
-                      onConfirm={() => handleDeleteSession(item.id)}
-                    >
-                      <Button
-                        type="text"
-                        size="small"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={e => e.stopPropagation()}
-                      />
-                    </Popconfirm>
-                  </Tooltip>,
-                ]}
-              >
-                <List.Item.Meta
-                  avatar={<MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)' }} />}
-                  title={
-                    <Tooltip title={item.title || '未命名会话'} placement="topLeft">
-                      <span
+            renderItem={item => {
+              // 会话名默认最多显示 8 个字符，超出用 ... 省略（悬停 Tooltip 看完整名）
+              const name = item.title || '未命名会话';
+              const shortName = name.length > 8 ? `${name.slice(0, 8)}...` : name;
+              return (
+                <List.Item
+                  onClick={() => handleOpenSession(item.id)}
+                  className={`session-item${item.id === activeSessionId ? ' session-item--active' : ''}`}
+                  style={{ cursor: 'pointer' }}
+                >
+                  {/* 两列布局：左气泡图标，右（第一行会话名 / 第二行条数+操作按钮） */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+                    <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <Tooltip title={name} placement="topLeft">
+                        <span style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}>
+                          {shortName}
+                        </span>
+                      </Tooltip>
+                      <div
                         style={{
-                          fontSize: 13,
-                          display: 'block',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
+                          display: 'flex',
+                          alignItems: 'center',
+                          marginTop: 2,
                         }}
                       >
-                        {item.title || '未命名会话'}
-                      </span>
-                    </Tooltip>
-                  }
-                  description={<span style={{ fontSize: 12 }}>{item.message_count} 条消息</span>}
-                />
-              </List.Item>
-            )}
+                        <span style={{ fontSize: 12, color: token.colorTextTertiary, flexShrink: 0 }}>
+                          {item.message_count} 条消息
+                        </span>
+                        {/* 操作按钮组：重命名 → 导出 → 删除（顺序按用户要求）；与条数标签留 3 个汉字间距 */}
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 2,
+                            marginLeft: '3em',
+                          }}
+                        >
+                          <Tooltip title="重命名">
+                            <Button
+                              type="text"
+                              size="small"
+                              className="session-rename-btn"
+                              icon={<EditOutlined />}
+                              onClick={e => {
+                                e.stopPropagation();
+                                openRenameModal(item);
+                              }}
+                            />
+                          </Tooltip>
+                          <Tooltip title="导出会话">
+                            <Button
+                              type="text"
+                              size="small"
+                              className="session-export-btn"
+                              icon={<DownloadOutlined />}
+                              onClick={e => {
+                                e.stopPropagation();
+                                handleExportSession(item.id);
+                              }}
+                            />
+                          </Tooltip>
+                          <Tooltip title="删除会话">
+                            <Popconfirm
+                              title="删除该会话？"
+                              onConfirm={() => handleDeleteSession(item.id)}
+                            >
+                              <Button
+                                type="text"
+                                size="small"
+                                danger
+                                icon={<DeleteOutlined />}
+                                onClick={e => e.stopPropagation()}
+                              />
+                            </Popconfirm>
+                          </Tooltip>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </List.Item>
+              );
+            }}
           />
         </div>
       </Card>

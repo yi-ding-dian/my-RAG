@@ -4,8 +4,10 @@ import {
   Button,
   Card,
   DatePicker,
+  Empty,
   Form,
   Input,
+  List,
   Modal,
   Popconfirm,
   Select,
@@ -21,6 +23,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
+  ProfileOutlined,
   ReloadOutlined,
   SearchOutlined,
   UserAddOutlined,
@@ -35,11 +38,14 @@ import {
   Department,
   User,
   UserCreateInput,
+  UserMemory,
+  UserMemoryItem,
   UserUpdateInput,
   createDepartment,
   createUser,
   deleteDepartment,
   deleteUser,
+  getUserMemory,
   listAuditActions,
   listAuditLogs,
   listDepartments,
@@ -338,6 +344,28 @@ const UsersPage: React.FC = () => {
     }
   };
 
+  // ---------- 用户画像只读查看（管理员：本人可编辑，管理员只读） ----------
+  const [memoryModalOpen, setMemoryModalOpen] = useState(false);
+  const [memoryView, setMemoryView] = useState<UserMemory | null>(null);
+  const [memoryViewLoading, setMemoryViewLoading] = useState(false);
+  const [memoryViewUser, setMemoryViewUser] = useState<User | null>(null);
+
+  const openMemoryView = async (row: User) => {
+    setMemoryViewUser(row);
+    setMemoryView(null);
+    setMemoryModalOpen(true);
+    setMemoryViewLoading(true);
+    try {
+      const res = await getUserMemory(row.id);
+      setMemoryView(res.data);
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '加载用户画像失败');
+      setMemoryModalOpen(false);
+    } finally {
+      setMemoryViewLoading(false);
+    }
+  };
+
   // ---------- 审计日志（仅 super_admin，路由层已守卫） ----------
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [auditTotal, setAuditTotal] = useState(0);
@@ -549,11 +577,18 @@ const UsersPage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 130,
+      width: 170,
       render: (_, row) => {
         const isSelf = row.id === me?.id;
         return (
           <Space>
+            <Tooltip title="查看画像（只读）">
+              <Button
+                size="small"
+                icon={<ProfileOutlined />}
+                onClick={() => openMemoryView(row)}
+              />
+            </Tooltip>
             <Tooltip title="编辑">
               <Button size="small" icon={<EditOutlined />} onClick={() => openEditUser(row)} />
             </Tooltip>
@@ -901,6 +936,67 @@ const UsersPage: React.FC = () => {
         onCancel={() => setBatchModalOpen(false)}
         onSuccess={() => loadUsers()}
       />
+
+      {/* 查看用户画像（只读；编辑仅本人可在个人设置页操作） */}
+      <Modal
+        title={`用户画像 - ${memoryViewUser?.username ?? ''}`}
+        open={memoryModalOpen}
+        onCancel={() => setMemoryModalOpen(false)}
+        footer={
+          <Button onClick={() => setMemoryModalOpen(false)}>关闭</Button>
+        }
+        width={560}
+      >
+        {memoryViewLoading ? (
+          <div style={{ padding: 24, textAlign: 'center' }}>
+            <Text type="secondary">加载中…</Text>
+          </div>
+        ) : memoryView ? (
+          <div>
+            <Space style={{ marginBottom: 12 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                个性化记忆：
+              </Text>
+              <Tag color={memoryView.memory_enabled ? 'success' : 'default'}>
+                {memoryView.memory_enabled ? '已开启' : '已关闭'}
+              </Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {memoryView.updated_at
+                  ? `最近更新 ${dayjs(memoryView.updated_at).format('YYYY-MM-DD HH:mm:ss')}`
+                  : '暂无更新记录'}
+              </Text>
+            </Space>
+            {memoryView.items.length > 0 ? (
+              <List
+                size="small"
+                dataSource={memoryView.items}
+                rowKey="id"
+                renderItem={(item: UserMemoryItem) => (
+                  <List.Item>
+                    <Space wrap>
+                      <Tag color={item.type === 'profile' ? 'blue' : 'purple'}>
+                        {item.type === 'profile' ? '画像' : '偏好'}
+                      </Tag>
+                      <Text>{item.content}</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        把握度 {Math.round(item.confidence * 100)}%
+                      </Text>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="暂无画像条目"
+              />
+            )}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              管理员仅可查看（只读）；编辑/删除需用户本人登录个人设置页操作
+            </Text>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 };

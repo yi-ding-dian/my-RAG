@@ -224,7 +224,13 @@ class TestStreamKgEnhance:
         assert resp.status_code == 200
         assert "event: delta" in resp.text, "图谱引用兜底应走 LLM 回答"
         assert "event: done" in resp.text
-        assert "未检索到相关内容" not in resp.text
+        # 仅检查 delta 事件内容（prompt 事件含 system 模板原文，会误匹配"未检索到相关内容"）
+        delta_text = "".join(
+            json.loads(b.split("data: ", 1)[1])["text"]
+            for b in resp.text.split("\n\n")
+            if b.startswith("event: delta")
+        )
+        assert "未检索到相关内容" not in delta_text
         assert fake.call_count == 1
 
 

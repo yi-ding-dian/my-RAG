@@ -118,6 +118,7 @@ def _paths(data_dir: Path):
         "KBS_DIR": data_dir / "kbs",
         "DOCUMENTS_DIR": data_dir / "documents",
         "CHAT_DIR": data_dir / "chat",
+        "USER_MEMORY_DIR": data_dir / "user_memory",
         "CHROMA_DIR": data_dir / "chroma",
         # 本地存储后端（STORAGE_BACKEND=local）对象存放目录，与 MinIO 桶 key 同构
         "STORAGE_DIR": data_dir / "storage",
@@ -230,6 +231,12 @@ class ChatConfig(BaseModel):
     # 知识图谱增强：查询时 LLM 抽实体 → 图谱匹配 → 1-hop 邻接扩展，
     # 图谱上下文作为"知识图谱"来源引用注入回答（默认开；无图谱自动跳过零成本）
     kg_enhance: bool = True
+    # 思考模式（聊天问答 LLM 调用）：disabled=关闭思考（默认，更快更省 token）
+    # | enabled_low/enabled_high/enabled_max=开启思考并指定强度。注入方式按
+    # 服务商区分（见 thinking_strategy）：在线 API（api.deepseek.com 等）经
+    # extra_body 控制；本地 Qwen 思考模型 disabled 时注入空 <think> prefill
+    # 跳过思考（LM Studio 忽略 extra_body）
+    thinking_mode: str = "disabled"
 
 
 class ContextualRetrievalConfig(BaseModel):
@@ -303,6 +310,7 @@ PARSED_DIR = _path_map["PARSED_DIR"]
 KBS_DIR = _path_map["KBS_DIR"]
 DOCUMENTS_DIR = _path_map["DOCUMENTS_DIR"]
 CHAT_DIR = _path_map["CHAT_DIR"]
+USER_MEMORY_DIR = _path_map["USER_MEMORY_DIR"]
 CHROMA_DIR = _path_map["CHROMA_DIR"]
 STORAGE_DIR = _path_map["STORAGE_DIR"]
 

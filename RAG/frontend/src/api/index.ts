@@ -8,5 +8,6 @@ export * from './kb';
 export * from './chat';
 export * from './settings';
 export * from './other';
+export * from './userMemory';
 export * from './http';
 export { default } from './http';

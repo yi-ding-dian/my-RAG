@@ -24,7 +24,8 @@ from conftest import _FakeStream, create_department_and_admin, create_kb, \
 GLOBAL = {
     "chat": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 2048,
              "enable_multi_turn": True, "history_rounds": 8,
-             "system_prompt": "全局提示词", "kg_enhance": True},
+             "system_prompt": "全局提示词", "kg_enhance": True,
+             "thinking_mode": "disabled"},
     "retrieval": {"top_k": 5, "similarity_threshold": 0.0},
 }
 
@@ -61,6 +62,17 @@ class TestMergeChatConfig:
         assert merged["retrieval"]["top_k"] == 3
         assert merged["retrieval"]["similarity_threshold"] == 0.45
         assert merged["chat"] == GLOBAL["chat"]
+
+    def test_thinking_mode_override(self):
+        """部门覆盖 thinking_mode（白名单字段，disabled→enabled_low）"""
+        merged = merge_chat_config(GLOBAL, {
+            "chat": {"thinking_mode": "enabled_low"},
+        })
+        assert merged["chat"]["thinking_mode"] == "enabled_low"
+        assert merged["chat"]["temperature"] == 0.7, "未设置字段仍用全局"
+        # 未设置（None）→ 跟随全局默认 disabled
+        merged2 = merge_chat_config(GLOBAL, {"chat": {"thinking_mode": None}})
+        assert merged2["chat"]["thinking_mode"] == "disabled"
 
     def test_null_and_empty_values_do_not_override(self):
         """部门字段值为 None/空串 → 不覆盖（跟随全局）"""

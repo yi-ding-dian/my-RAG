@@ -113,6 +113,20 @@ class TestPostChatSettings:
         assert resp.json()["chat"]["temperature"] == 0.9
         assert get_active_config().chat.temperature == 0.9
 
+    def test_thinking_mode_default_and_save(self, client, admin_headers):
+        """chat.thinking_mode 默认 disabled（关闭思考）；保存 enabled_low 即时生效"""
+        resp = client.get("/api/settings/chat", headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["chat"]["thinking_mode"] == "disabled", \
+            "默认应为关闭思考（简单延迟敏感任务更快更省 token）"
+        resp = client.post("/api/settings/chat", json={
+            "chat": {"thinking_mode": "enabled_low"},
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["chat"]["thinking_mode"] == "enabled_low"
+        assert get_active_config().chat.thinking_mode == "enabled_low", \
+            "保存后 get_active_config 应即时生效"
+
     def test_null_temperature_uses_llm_default(self, client, admin_headers):
         """chat 段显式传 null → 用 LLM 配置默认（先设值再清空）"""
         client.post("/api/settings/chat", json={"chat": {"temperature": 1.2}},

@@ -26,7 +26,7 @@ from backend.db import init_db
 from backend.routers import (admin_documents, audit, auth, chat, departments,
                              documents, ext_query, files, graphs,
                              knowledge_bases, logs, settings, smart_parse,
-                             stats, users)
+                             stats, user_memory, users)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -186,6 +186,8 @@ app.include_router(settings.router)
 app.include_router(files.router)
 app.include_router(auth.router)
 app.include_router(users.router)
+# 用户画像/偏好记忆（本人查看/编辑 + 管理员只读；GET 权限矩阵见路由模块）
+app.include_router(user_memory.router)
 # 用户头像接口独立 router（登录即可，无 require_user_admin 管理依赖）
 app.include_router(users.avatar_router)
 app.include_router(departments.router)

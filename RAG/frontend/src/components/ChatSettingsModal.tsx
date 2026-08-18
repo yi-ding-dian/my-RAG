@@ -10,6 +10,7 @@ import {
   InputNumber,
   Modal,
   Row,
+  Select,
   Slider,
   Space,
   Spin,
@@ -17,6 +18,7 @@ import {
 } from 'antd';
 import {
   asApiError, getChatSettings, updateChatSettings } from '../api/client';
+import type { ThinkingMode } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 
 const { TextArea } = Input;
@@ -38,6 +40,7 @@ interface ChatSettingsFormValues {
   chat_top_p: number; // 0-1
   chat_max_tokens?: number | null; // 可空=跟随模型默认
   chat_system_prompt?: string; // 自定义系统提示词（空串=使用内置默认模板）
+  chat_thinking_mode: ThinkingMode; // 思考模式（默认 disabled=关闭思考）
 }
 
 interface ChatSettingsModalProps {
@@ -88,6 +91,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           chat_top_p: chat?.top_p ?? 0.9,
           chat_max_tokens: chat?.max_tokens ?? undefined,
           chat_system_prompt: chat?.system_prompt ?? '',
+          chat_thinking_mode: chat?.thinking_mode ?? 'disabled',
         });
       })
       .catch((e: unknown) => {
@@ -128,6 +132,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           max_tokens: values.chat_max_tokens ?? null,
           // 空串=恢复内置默认模板（后端空串例外路径）
           system_prompt: values.chat_system_prompt ?? '',
+          thinking_mode: values.chat_thinking_mode,
         },
       });
       message.success('聊天设置已保存，即时生效');
@@ -226,6 +231,24 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
                   ]}
                 >
                   <InputNumber min={1} max={20} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Row gutter={16}>
+              <Col span={12}>
+                <Form.Item
+                  name="chat_thinking_mode"
+                  label="思考模式"
+                  extra="关闭思考更快更省 token（推荐）；本地 Qwen 模型开启思考时保持模型默认强度"
+                >
+                  <Select
+                    options={[
+                      { value: 'disabled', label: '关闭思考' },
+                      { value: 'enabled_low', label: '思考·低强度' },
+                      { value: 'enabled_high', label: '思考·高强度' },
+                      { value: 'enabled_max', label: '思考·最大强度' },
+                    ]}
+                  />
                 </Form.Item>
               </Col>
               <Col span={12}>

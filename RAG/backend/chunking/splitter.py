@@ -398,27 +398,149 @@ class RecursiveChunker:
     递归切分；naive/regex 不传 → 行为与历史完全一致。
     """
 
-    DEFAULT_SEPARATORS = ["\n\n", "\n", "。", "；", "，", " ", ""]
+    DEFAULT_SEPARATORS = ["\n\n", "\n", "。", "；", " ", ""]
 
     def __init__(self, chunk_size: int | None = None, overlap: int | None = None,
                  separators: List[str] | None = None,
                  delimiter: str | None = None,
-                 protected_ranges: List[Tuple[int, int]] | None = None):
+                 protected_ranges: List[Tuple[int, int]] | None = None,
+                 sentence_aware: bool = True):
         cfg = get_active_config().chunking
         self.chunk_size = chunk_size if chunk_size is not None else cfg.chunk_size
         self.overlap = overlap if overlap is not None else cfg.chunk_overlap
         if separators is not None:
             self.separators = separators
         elif delimiter:
-            # 自定义分隔符优先（naive 模式参数），超长段递归退到更细的默认分隔符
-            self.separators = [delimiter, *self.DEFAULT_SEPARATORS]
+            # 自定义分隔符（naive 模式参数，str 或 list）：
+            # - str：自定义优先，超长段递归退到更细的默认分隔符（兼容旧行为）
+            # - list：用户完整自定义分隔符集（删除默认项=该项不参与）；
+            #   空列表/全无效时回退默认，防切分退化
+            if isinstance(delimiter, list):
+                self.separators = [d for d in delimiter
+                                   if isinstance(d, str) and d != ""]
+                if not self.separators:
+                    self.separators = self.DEFAULT_SEPARATORS
+            else:
+                self.separators = [delimiter, *self.DEFAULT_SEPARATORS]
         else:
             self.separators = self.DEFAULT_SEPARATORS
         self.protected_ranges = protected_ranges or []
+        # 句子感知切分：块边界优先落在句子（。！？）之间，单句超长才句内切
+        self._sentence_aware = sentence_aware
+        # 自定义分隔符列表（naive 完整替代默认集）：句子感知时也作为强边界
+        # （分隔符不进块），实现"删默认项/加自定义项"语义
+        self._custom_delimiter_list = delimiter if isinstance(delimiter, list) else None
 
     def chunk(self, text: str) -> List[Chunk]:
-        chunks = self._split_text(text)
+        chunks = self._split_sentence_aware(text) if self._sentence_aware \
+            else self._split_text(text)
         return [c for c in chunks if c.text and c.text.strip()]
+
+    # 句子边界标点（中英文句号/问号/感叹号——强句界；分号/逗号属句内
+    # 分隔符，留给句内递归按分隔符优先级切，避免列举文本过度切碎）
+    _SENTENCE_BOUNDARY_RE = re.compile(
+        r"[^。！？.!?]+[。！？.!?]?")
+
+    def _split_sentence_aware(self, text: str, start: int = 0) -> List[Chunk]:
+        """句子感知切分（方案 B）：先按句子边界（。！？；.!?;）切句子单元，
+        再按 chunk_size 贪心合并连续句子成块——**块边界永远在句子之间**；
+        单句超长（> chunk_size，如无标点长串）才走句内递归切（方案 A 兜底：
+        分隔符优先级 + 硬切回退）。表格/代码块保护区间保持整体成块。
+        """
+        if not text:
+            return []
+        # 表格/代码块保护区间预处理（与 _split_text 同逻辑）
+        if self.protected_ranges and any(
+                ps < start + len(text) and pe > start
+                for ps, pe in self.protected_ranges):
+            segs: List[Tuple[str, int, bool]] = []
+            cursor = start
+            for ps, pe in self.protected_ranges:
+                if pe <= start or ps >= start + len(text):
+                    continue
+                lo, hi = max(ps, start), min(pe, start + len(text))
+                if lo > cursor:
+                    segs.append((text[cursor - start:lo - start], cursor, False))
+                segs.append((text[lo - start:hi - start], lo, True))
+                cursor = hi
+            if cursor < start + len(text):
+                segs.append((text[cursor - start:], cursor, False))
+            final_chunks: List[Chunk] = []
+            for seg_text, seg_start, is_protected in segs:
+                if is_protected:
+                    stripped = seg_text.strip()
+                    if not stripped:
+                        continue
+                    s = seg_start + (len(seg_text) - len(seg_text.lstrip()))
+                    final_chunks.append(Chunk(stripped, s, s + len(stripped)))
+                else:
+                    final_chunks.extend(
+                        self._split_sentence_aware(seg_text, seg_start))
+            return final_chunks
+
+        # 按 \n\n 分段（段落强边界：块不跨段落，\n\n 不保留在块内——
+        # 与 _split_text 的分隔符优先级语义一致），段内再按句子聚合
+        chunks: List[Chunk] = []
+        paras = text.split("\n\n")
+        offset = start
+        for i, para in enumerate(paras):
+            para_start = offset
+            para_len = len(para)
+            offset = para_start + para_len + (2 if i < len(paras) - 1 else 0)
+            if not para.strip():
+                continue
+            # 自定义分隔符列表：先按分隔符（交替正则）切成子段，分隔符不进块
+            # （完整替代默认集的"删/加"语义）；无自定义列表则整段一个子段
+            if self._custom_delimiter_list:
+                pattern = "|".join(
+                    re.escape(d) for d in self._custom_delimiter_list if d)
+                sub_segs: List[Tuple[str, int]] = []
+                if pattern:
+                    cursor = para_start
+                    for m in re.finditer(pattern, para):
+                        sub_segs.append((para[cursor - para_start:m.start()],
+                                         cursor))
+                        cursor = m.end()
+                    sub_segs.append((para[cursor - para_start:], cursor))
+                else:
+                    sub_segs = [(para, para_start)]
+            else:
+                sub_segs = [(para, para_start)]
+            for seg_text, seg_start in sub_segs:
+                if not seg_text.strip():
+                    continue
+                # 句子单元切分（含边界标点；无标点连续文本整体算一个长句子单元）
+                sentences = [
+                    (m.group(), seg_start + m.start())
+                    for m in self._SENTENCE_BOUNDARY_RE.finditer(seg_text)
+                    if m.group().strip()]
+                buf: str = ""
+                buf_start: int = seg_start
+                for s, s_start in sentences:
+                    if len(s) > self.chunk_size:
+                        # 超长单句（无标点长串）：先封缓冲，再句内递归切（方案 A）
+                        if buf:
+                            chunks.append(
+                                Chunk(buf, buf_start, buf_start + len(buf)))
+                            buf = ""
+                        chunks.extend(self._split_text(s, s_start))
+                        continue
+                    if buf and len(buf) + len(s) > self.chunk_size:
+                        # 加下句会超大小 → 封块（块边界在句子之间，不拆句）
+                        chunks.append(
+                            Chunk(buf, buf_start, buf_start + len(buf)))
+                        if self.overlap > 0:
+                            # overlap 续接：取当前块尾部 overlap 字符（同 _split_text）
+                            tail = buf[-self.overlap:]
+                            buf_start = buf_start + len(buf) - self.overlap
+                            buf = tail + s
+                        else:
+                            buf, buf_start = s, s_start
+                    else:
+                        buf += s
+                if buf:
+                    chunks.append(Chunk(buf, buf_start, buf_start + len(buf)))
+        return chunks
 
     def _split_text(self, text: str, start: int = 0) -> List[Chunk]:
         """递归切分，返回 List[Chunk]（偏移相对整个输入文本；start 为全局偏移）"""

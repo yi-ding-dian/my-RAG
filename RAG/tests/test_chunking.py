@@ -104,13 +104,14 @@ class TestRecursiveChunker:
         # 句号是分隔符：除首块外，每块都从完整句子开始（不在句中切入）
         assert all(c.text.startswith("第") for c in chunks[1:])
 
-    def test_separator_priority_semicolon_comma(self):
-        """分隔符优先级：句号缺失时退到分号；超长段递归用更细的逗号再切"""
+    def test_separator_priority_semicolon_no_comma(self):
+        """分隔符优先级：句号缺失退到分号；逗号默认不作分隔符（用户约束），
+        无句号/分号的超长段退化为字符级硬切"""
         text = "短句A；短句B，短句C，短句D"
         chunks = RecursiveChunker(chunk_size=10, overlap=0).chunk(text)
         _assert_offsets(chunks, text)
-        # 一级：；切出 "短句A"（good）与超长段（bad，递归用 ，再切）
-        assert _texts(chunks) == ["短句A", "短句B，短句C", "短句D"]
+        # 一级：；切出 "短句A"（good）与超长段（bad）；逗号不再切分 → 字符兜底
+        assert _texts(chunks) == ["短句A", "短句B，短句C，短句", "D"]
 
     def test_character_split_fallback(self):
         """无任何标点/空白时退化为按字符硬切"""
@@ -312,3 +313,72 @@ class TestGetChunkerFactory:
         """未知 method → ValueError"""
         with pytest.raises(ValueError):
             get_chunker("keyword", {})
+
+
+class TestRecursiveChunkerSentenceAware:
+    """句子感知切分（方案 B）：块边界在句子之间，单句超长才句内切"""
+
+    def test_sentence_boundary_blocks(self):
+        """两句各 30 字符、chunk_size=50 → 各成一块，边界在句号后不拆句"""
+        s1 = "这是第一句话的内容，长度大约三十个字符左右。"
+        s2 = "这是第二句话的内容，同样是三十个字符左右。"
+        text = s1 + s2
+        chunks = RecursiveChunker(chunk_size=40, overlap=0).chunk(text)
+        _assert_offsets(chunks, text)
+        assert _texts(chunks) == [s1, s2]
+
+    def test_sentence_aggregation(self):
+        """三句各 20 字符、chunk_size=45 → 2 块（两句聚合 + 一句）"""
+        sents = [f"第{i}句的内容有二十个字符左右。" for i in range(3)]
+        text = "".join(sents)
+        chunks = RecursiveChunker(chunk_size=30, overlap=0).chunk(text)
+        _assert_offsets(chunks, text)
+        assert len(chunks) == 2
+        joined = "".join(_texts(chunks))
+        assert joined == text
+        assert all(any(s in c.text for s in sents) for c in chunks)
+
+    def test_no_punctuation_long_run(self):
+        """无标点长串（100 个 x）、chunk_size=30 → 句内硬切多块，内容完整"""
+        text = "x" * 100
+        chunks = RecursiveChunker(chunk_size=30, overlap=0).chunk(text)
+        _assert_offsets(chunks, text)
+        assert len(chunks) >= 4
+        assert "".join(_texts(chunks)) == text
+
+    def test_paragraph_boundary_not_crossed(self):
+        """\\n\\n 段落强边界：块不跨段落"""
+        para_a = "段落甲的内容，包含一些逗号与句号。" * 2
+        para_b = "段落乙的内容，同样是三十个字符左右的长度。"
+        text = f"{para_a}\n\n{para_b}"
+        chunks = RecursiveChunker(chunk_size=50, overlap=0).chunk(text)
+        _assert_offsets(chunks, text)
+        assert _texts(chunks) == [para_a, para_b]
+        assert all("\n\n" not in c.text for c in chunks)
+
+    def test_delimiter_list_full_replacement(self):
+        """delimiter 列表：完整替代默认集（只按分号切，句号不再是边界）"""
+        text = ("x" * 30) + ";;" + ("x" * 30) + ";;" + ("x" * 30)
+        chunks = RecursiveChunker(chunk_size=50, overlap=0,
+                                  delimiter=[";;"]).chunk(text)
+        _assert_offsets(chunks, text)
+        assert _texts(chunks) == ["x" * 30, "x" * 30, "x" * 30]
+        assert all(";;" not in c.text for c in chunks)
+
+    def test_delimiter_empty_list_fallback(self):
+        """空 delimiter 列表 → 回退默认分隔符（不退化硬切）"""
+        text = "第一句。第二句。" * 5
+        chunks = RecursiveChunker(chunk_size=100, overlap=0,
+                                  delimiter=[]).chunk(text)
+        _assert_offsets(chunks, text)
+        assert len(chunks) >= 1
+        assert "第一句。" in chunks[0].text
+
+    def test_delimiter_list_sentence_aware_combined(self):
+        """delimiter 列表含句子标点与自定义分隔符：边界按列表切"""
+        text = "甲部分内容。" + "乙部分内容" + "||" + "丙部分内容。"
+        chunks = RecursiveChunker(chunk_size=200, overlap=0,
+                                  delimiter=["。", "||"]).chunk(text)
+        _assert_offsets(chunks, text)
+        assert all("。" not in c.text or c.text.endswith("。") for c in chunks)
+        assert all("||" not in c.text for c in chunks)

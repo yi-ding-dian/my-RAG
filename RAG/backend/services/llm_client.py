@@ -88,6 +88,9 @@ async def llm_completion(client, *, model: str, messages: list,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 extra_body=extra_body,
+                # 显式声明非流式（openai SDK 缺省即 False，语义等价；
+                # mock 客户端按 stream 参数选择响应形态，契约更清晰）
+                stream=False,
             ),
             timeout=timeout,
         )

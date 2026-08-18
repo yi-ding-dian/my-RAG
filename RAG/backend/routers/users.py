@@ -249,6 +249,12 @@ async def delete_user(user_id: str,
         except Exception as e:
             logger.warning("删除用户头像失败 %s: %s",
                            target_public.avatar, str(e)[:150])
+    # 连带删除用户画像文件（data/user_memory/{user_id}.json；不存在静默）
+    try:
+        from backend.services.user_memory_service import get_user_memory_service
+        get_user_memory_service().delete_file(user_id)
+    except Exception as e:
+        logger.warning("删除用户画像文件失败 %s: %s", user_id, str(e)[:150])
     await audit_service.record_action(
         user, action="user.delete", target_type="user",
         target_id=user_id,

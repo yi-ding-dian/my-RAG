@@ -94,7 +94,7 @@ export interface IngestConfig {
   backend?: MinerUBackend;
   chunk_size?: number;
   overlap?: number;
-  delimiter?: string;
+  delimiter?: string | string[];
   split_level?: number;
   regex_pattern?: string;
   /** 父块大小（字符），范围 200-4000，仅 parent_child */
@@ -252,6 +252,14 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   sources?: Source[];
+  /** 请求详情：后端 prompt 事件下发的完整 messages 数组（发给 LLM 的提示词） */
+  prompt?: unknown;
+  /** 请求详情：召回耗时（后端统计，毫秒） */
+  retrieval_ms?: number;
+  /** 请求详情：图谱构建耗时（后端统计，毫秒） */
+  kg_ms?: number;
+  /** 请求详情：提问 → AI 生成首字总耗时（前端计算，毫秒） */
+  total_ms?: number;
   created_at?: string;
   /** 前端会话状态专用：用户点击「停止」中断生成（仅 UI 标注，不落盘） */
   stopped?: boolean;
@@ -288,6 +296,38 @@ export interface Department {
 export interface DepartmentInput {
   name: string;
   description?: string;
+}
+
+// ========== 用户画像 / 偏好记忆 ==========
+
+/** 画像条目类型：profile=身份/背景事实 | preference=偏好 */
+export type UserMemoryType = 'profile' | 'preference';
+
+/** 用户画像条目（GET /api/users/{user_id}/memory 条目） */
+export interface UserMemoryItem {
+  id: string;
+  type: UserMemoryType;
+  content: string;
+  /** 置信度 0-1（LLM 提取条目；手动编辑保留原值） */
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 用户画像响应（GET /api/users/{user_id}/memory） */
+export interface UserMemory {
+  user_id: string;
+  /** 个性化开关（关=不注入 system prompt；对话结束仍定时提取） */
+  memory_enabled: boolean;
+  updated_at: string;
+  items: UserMemoryItem[];
+}
+
+/** 更新载荷（PUT /api/users/{user_id}/memory；enabled 与 items 至少传一个） */
+export interface UserMemoryUpdate {
+  enabled?: boolean;
+  /** 全量替换（带 id=更新既有条目，无 id=新增） */
+  items?: Array<{ id?: string; type: UserMemoryType; content: string }>;
 }
 
 // ========== 知识库标签 / 向量 / 解析 ==========
@@ -469,6 +509,8 @@ export interface StreamChatParams {
 export interface StreamCallbacks {
   /** 收到 event:meta，携带检索来源 */
   onMeta?: (sources: Source[]) => void;
+  /** 收到 event:prompt，携带完整提示词与检索/图谱耗时（请求详情用） */
+  onPrompt?: (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number }) => void;
   /** 收到 event:delta，增量文本 */
   onDelta?: (text: string) => void;
   /** 收到 event:done */
@@ -711,6 +753,8 @@ export interface ChatConfig {
   history_rounds?: number;
   /** 自定义系统提示词（空串=使用内置默认模板；可含 {refs} 占位符替换为检索引用内容） */
   system_prompt?: string;
+  /** 思考模式（聊天问答）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度（在线 DeepSeek 生效；本地 Qwen 模型开启时保持模型默认思考） */
+  thinking_mode?: ThinkingMode;
 }
 
 export interface MySQLConfigProfile {
@@ -801,7 +845,7 @@ export interface DeptLlmConfig {
 }
 
 /**
- * 聊天设置 + LLM 配置载荷（后端白名单：chat 段 6 字段 +
+ * 聊天设置 + LLM 配置载荷（后端白名单：chat 段 7 字段 +
  * retrieval.top_k/similarity_threshold + llm 段 6 字段）
  */
 export interface ChatSettingsPayload {
@@ -823,6 +867,8 @@ export interface ChatSettingsPayload {
     system_prompt: string;
     /** 知识图谱增强（默认 true；查询时图谱上下文作为「知识图谱」来源引用注入） */
     kg_enhance?: boolean;
+    /** 思考模式：disabled=关闭思考（默认）| enabled_low/high/max=开启并指定强度 */
+    thinking_mode?: ThinkingMode;
   };
   /** 合并后的 LLM 配置（全局活跃 + 本部门覆盖；api_key 已脱敏） */
   llm?: DeptLlmConfig;
@@ -842,6 +888,7 @@ export interface ChatSettingsPayload {
       history_rounds?: number;
       system_prompt?: string;
       kg_enhance?: boolean;
+      thinking_mode?: ThinkingMode;
     };
   } | null;
 }

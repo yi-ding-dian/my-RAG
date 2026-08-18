@@ -84,9 +84,41 @@ class TestStream:
         delta_data = json.loads(delta_block.split("data: ", 1)[1].strip())
         assert isinstance(delta_data.get("text"), str)
 
+    def test_stream_prompt_event(self, client, mock_embedding,
+                                 mock_llm, admin_headers):
+        """SSE 事件顺序 meta → prompt → delta → done；prompt 携带完整提示词与耗时"""
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=admin_headers)
+        assert resp.status_code == 200
+        text = resp.text
+        for ev in ("meta", "prompt", "delta", "done"):
+            assert f"event: {ev}" in text, f"缺少事件 {ev}"
+        idx_meta = text.index("event: meta")
+        idx_prompt = text.index("event: prompt")
+        idx_delta = text.index("event: delta")
+        idx_done = text.index("event: done")
+        assert idx_meta < idx_prompt < idx_delta < idx_done, \
+            "事件顺序必须是 meta→prompt→delta→done"
+        # prompt 事件 data：prompt 数组（首条 system / 末条 user 含原问题）+ 耗时整数
+        prompt_block = text.split("event: prompt", 1)[1].split("\n\n", 1)[0]
+        prompt_data = json.loads(prompt_block.split("data: ", 1)[1].strip())
+        msgs = prompt_data["prompt"]
+        assert isinstance(msgs, list) and msgs, "prompt 应为非空 messages 数组"
+        assert msgs[0]["role"] == "system", "第一条应为 system"
+        assert msgs[-1]["role"] == "user", "最后一条应为 user"
+        assert "Python 是什么？" in msgs[-1]["content"], \
+            "最后一条 user 应含原问题文本"
+        assert isinstance(prompt_data["retrieval_ms"], int) \
+            and prompt_data["retrieval_ms"] >= 0, "retrieval_ms 应为非负整数"
+        assert isinstance(prompt_data["kg_ms"], int) \
+            and prompt_data["kg_ms"] >= 0, "kg_ms 应为非负整数"
+
     def test_stream_no_hit_without_llm(self, client, mock_embedding,
                                        mock_llm, admin_headers):
-        """空库无命中：不调用 LLM，直接提示 + done"""
+        """空库无命中：不调用 LLM，直接提示 + done，不发 prompt 事件"""
         state = mock_llm(mode="error")  # 若被调用则流式会抛异常/记录实例
         kb = create_kb(client)
         resp = client.post("/api/chat/stream", json={
@@ -97,6 +129,7 @@ class TestStream:
         assert "event: delta" in text
         assert "event: done" in text
         assert "未检索到相关内容" in text
+        assert "event: prompt" not in text, "无命中未调用 LLM，不应发 prompt 事件"
         assert not state.instances, "无命中时不应创建 LLM 客户端"
 
     def test_stream_llm_error_event(self, client, mock_embedding, mock_llm,
@@ -135,6 +168,119 @@ class TestStream:
             "kb_id": "nonexist", "query": "hi",
         }, headers=admin_headers)
         assert resp.status_code == 404
+
+
+class TestChatThinkingMode:
+    """聊天思考模式：按服务商注入关闭思考（请求层变换，prompt 事件不受影响）
+
+    - 本地模型（conftest LLM_BASE_URL=127.0.0.1 内网）+ disabled（默认）
+      → 发给 LLM 的 messages 末尾注入空 <think> prefill（LM Studio 忽略
+      extra_body，prefill 是本地实测有效的关闭思考方案）
+    - 在线 API（api.deepseek.com）+ disabled → extra_body thinking disabled
+    - 在线 + enabled_low → extra_body thinking enabled + reasoning_effort low
+      （思考强度仅开启时携带）；本地 + enabled_low → 不注入 prefill
+    - prompt 事件仍为组装后原始 messages（不含 prefill/extra_body）
+    """
+
+    @staticmethod
+    def _set_chat_cfg(client, admin_headers, **chat_kwargs):
+        # 一并关 kg_enhance：避免图谱通道 LLM 调用干扰对聊天请求的断言
+        resp = client.post("/api/settings/chat", json={
+            "chat": {"kg_enhance": False, **chat_kwargs},
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+
+    @staticmethod
+    def _set_llm_base_url(client, admin_headers, base_url: str):
+        resp = client.post("/api/settings/chat", json={
+            "llm": {"base_url": base_url},
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+
+    def test_local_disabled_injects_prefill(self, client, mock_embedding,
+                                            mock_llm, admin_headers):
+        """本地模型 + 默认 disabled → messages 末尾注入空 <think> prefill；
+        prompt 事件仍为原始 messages（不含注入）"""
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        state = mock_llm()
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        kwargs = state.instances[-1].last_kwargs
+        msgs = kwargs["messages"]
+        assert msgs[-1]["role"] == "assistant", "末条应为 prefill 注入消息"
+        assert msgs[-1]["content"] == "<think>\n\n</think>"
+        assert msgs[-1]["continue_assistant_turn"] is True
+        assert "extra_body" not in kwargs, "本地 prefill 路径不传 extra_body"
+        assert kwargs["stream"] is True, "流式参数保留"
+        # prompt 事件仍为组装后原始 messages（末条 user，无注入）
+        prompt_block = resp.text.split("event: prompt", 1)[1].split("\n\n", 1)[0]
+        prompt_msgs = json.loads(
+            prompt_block.split("data: ", 1)[1].strip())["prompt"]
+        assert prompt_msgs[-1]["role"] == "user", "prompt 事件不应含 prefill"
+        assert not any(m.get("role") == "assistant"
+                       and m.get("content") == "<think>\n\n</think>"
+                       for m in prompt_msgs), "prompt 事件不应含 prefill 消息"
+
+    def test_online_disabled_extra_body(self, client, mock_embedding,
+                                        mock_llm, admin_headers):
+        """在线 API（api.deepseek.com）+ disabled → extra_body
+        {"thinking": {"type": "disabled"}}，messages 不注入"""
+        self._set_llm_base_url(client, admin_headers,
+                               "https://api.deepseek.com/v1")
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        state = mock_llm()
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        kwargs = state.instances[-1].last_kwargs
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert kwargs["messages"][-1]["role"] == "user", \
+            "在线路径不注入 prefill"
+
+    def test_online_enabled_low_extra_body(self, client, mock_embedding,
+                                           mock_llm, admin_headers):
+        """在线 API + enabled_low → extra_body thinking enabled +
+        reasoning_effort low（思考强度仅开启时携带）"""
+        self._set_llm_base_url(client, admin_headers,
+                               "https://api.deepseek.com/v1")
+        self._set_chat_cfg(client, admin_headers, thinking_mode="enabled_low")
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        state = mock_llm()
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        kwargs = state.instances[-1].last_kwargs
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"},
+                                        "reasoning_effort": "low"}
+        assert kwargs["messages"][-1]["role"] == "user", \
+            "在线开启思考不注入 prefill"
+
+    def test_local_enabled_no_prefill(self, client, mock_embedding,
+                                      mock_llm, admin_headers):
+        """本地模型 + enabled_low → 不注入 prefill（保持模型默认思考，
+        本地 LM Studio 无法控制思考强度）"""
+        self._set_chat_cfg(client, admin_headers, thinking_mode="enabled_low")
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        state = mock_llm()
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        kwargs = state.instances[-1].last_kwargs
+        assert kwargs["messages"][-1]["role"] == "user", \
+            "本地 enabled 不注入 prefill"
+        # 本地 enabled → ExtraBody 请求层语义一致（LM Studio 会忽略，
+        # 保持模型默认思考）
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"},
+                                        "reasoning_effort": "low"}
 
 
 class TestHistory:

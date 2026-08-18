@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -37,6 +38,7 @@ from backend.services.settings_service import (LLM_TEST_TIMEOUT,
                                                SECTION_SCHEMA,
                                                find_llm_item,
                                                get_settings_service,
+                                               is_masked,
                                                mask_api_key,
                                                merge_chat_config,
                                                merge_department_llm)
@@ -317,14 +319,32 @@ async def test_profile(request: Request, profile_id: str,
 @router.post("/llm/test")
 async def test_llm_connection(body: dict,
                               user: UserPublic = Depends(require_user_admin)):
-    """测试单个 LLM 模型连接：GET {base_url}/models（probes.probe_llm），≤5s
+    """测试单个 LLM 模型连接：最小 chat 推理验证（max_tokens=1），≤5s
 
     前端勾选激活模型时先调用：成功才允许激活；失败返回原因由前端提示
     （管理员可确认后强制激活）。只测不写（不对配置做任何变更），
     super_admin / dept_admin 可执行。body 为单个模型条目
     {name, base_url, api_key, model, timeout, ...}。
+
+    - 用真实推理验证（probe_llm_sdk，与档案卡片"连接测试"一致）而非
+      仅 GET /models：服务可达但模型未加载/加载失败时（LM Studio 常见
+      "Failed to load model"），仅探测 /models 会给假阳性"连接成功"。
+    - 脱敏 key 回查：刷新页面后前端拿到的是脱敏值（sk-2a****3b53），
+      直接用脱敏值探测必然 401；api_key 为脱敏值时按 name 从激活档案
+      回查真实 key 再探测（只测不写）。匹配不到 → 明确失败原因。
     """
-    from backend.services.probes import probe_llm
+    from backend.services.probes import probe_llm_sdk
+    if is_masked(body.get("api_key")):
+        _active = get_settings_service().get_active()
+        _models = ((_active or {}).get("llm") or {}).get("models") or []
+        _match = next((m for m in _models
+                       if isinstance(m, dict) and m.get("name") == body.get("name")),
+                      None)
+        if _match and _match.get("api_key"):
+            body = {**body, "api_key": _match["api_key"]}
+        else:
+            return {"ok": False, "reason": "密钥已脱敏且未找到真实密钥，"
+                    "请编辑该模型重新填写后再测试", "latency_ms": 0}
     timeout = LLM_TEST_TIMEOUT
     if isinstance(body, dict):
         try:
@@ -333,7 +353,8 @@ async def test_llm_connection(body: dict,
                 timeout = min(LLM_TEST_TIMEOUT, float(raw))
         except (TypeError, ValueError):
             pass
-    result = await probe_llm(body, timeout=timeout)
+    # probe_llm_sdk 为同步 OpenAI 调用，to_thread 避免阻塞事件循环
+    result = await asyncio.to_thread(probe_llm_sdk, body, timeout=timeout)
     return {"ok": result["ok"], "reason": result["reason"],
             "latency_ms": result["latency_ms"]}
 

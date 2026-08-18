@@ -33,12 +33,14 @@
   - 在线 API（api.deepseek.com 等）→ ExtraBody（原行为，DeepSeek 路径
     完全不变，disabled → {"thinking": {"type": "disabled"}}）
 
-接入点（知识图谱抽取 / 上下文摘要 / 查询实体抽取）：
+接入点（知识图谱抽取 / 上下文摘要 / 查询实体抽取 / 聊天问答）：
 组装 {"messages":[...]} → strategy.apply(payload) →
 client.chat.completions.create(messages=payload["messages"],
 extra_body=payload.get("extra_body"))——extra_body 与 messages 注入统一在
 策略内处理，接入点无需知道具体实现；未来接入新服务商/模型时只需新增策略
-类并在选择函数加分支。聊天对话等其他 LLM 调用不动（有独立 thinking 配置机制）。
+类并在选择函数加分支。聊天问答（chat_service.stream_chat）读取 chat 段
+thinking_mode（默认 disabled）按同一选择函数应用策略；注入属于请求层变换，
+发生在 prompt 事件下发之后，prompt 事件内容保持组装后原始 messages。
 """
 from __future__ import annotations
 

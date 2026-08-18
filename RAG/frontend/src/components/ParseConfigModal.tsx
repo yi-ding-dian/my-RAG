@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   App as AntApp,
+  Button,
   Card,
   Collapse,
   Col,
@@ -13,12 +14,21 @@ import {
   Select,
   Space,
   Spin,
+  Tag,
   Tooltip,
 } from 'antd';
 import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import type { DocumentItem, IngestConfig, MinerUBackend, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../api/client';
 import {
   asApiError, getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../api/client';
+/** 通用切块默认分隔符集（与后端 RecursiveChunker.DEFAULT_SEPARATORS 对应，
+    去掉字符级兜底 "" 与逗号；换行以键盘转义 \n 形式展示与编辑） */
+const DEFAULT_DELIMITERS = ['\n\n', '\n', '。', '；'];
+
+/** 分隔符展示转义：真实换行 → 字面 \n（键盘可输入形式）；编辑输入时反向 */
+const displayDelimiter = (d: string): string => d.replace(/\n/g, '\\n');
+const parseDelimiterInput = (s: string): string => s.replace(/\\n/g, '\n');
+
 import MinerUBackendField from './parse-fields/MinerUBackendField';
 import PagesRangeField from './parse-fields/PagesRangeField';
 import TaskPageSizeField from './parse-fields/TaskPageSizeField';
@@ -32,6 +42,9 @@ interface ParseConfigFormValues {
   method: ParseMethod;
   chunk_size: number;
   overlap: number;
+  /** 通用切块（naive）的自定义分隔符列表：完整替代默认集（删默认项=不参与）；
+    仅当前解析文档生效（存 parser_config.delimiter） */
+  delimiter: string[];
   split_level: number;
   regex_pattern: string;
   parent_chunk_size: number;
@@ -244,6 +257,12 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         method: initMethod,
         chunk_size: toNumber(cfg.chunk_size, isParentChild ? 512 : 800),
         overlap: toNumber(cfg.overlap, isParentChild ? 50 : 100),
+        // 分隔符回填：列表原样；旧字符串值转单元素列表；缺失用默认集
+        delimiter: Array.isArray(cfg.delimiter)
+          ? cfg.delimiter.filter((d: unknown) => typeof d === 'string' && d !== '')
+          : typeof cfg.delimiter === 'string' && cfg.delimiter
+            ? [cfg.delimiter]
+            : DEFAULT_DELIMITERS.slice(),
         split_level: toNumber(cfg.split_level, 2),
         regex_pattern: typeof cfg.regex_pattern === 'string' ? cfg.regex_pattern : '',
         parent_chunk_size: toNumber(cfg.parent_chunk_size, 1024),
@@ -389,6 +408,13 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     }
     if (values.method === 'title') config.split_level = values.split_level;
     if (values.method === 'regex') config.regex_pattern = values.regex_pattern;
+    // 通用切块：分隔符列表与默认不同才提交（完整替代默认集，仅当前解析生效）
+    if (values.method === 'naive') {
+      const list = (values.delimiter ?? []).filter(Boolean);
+      if (list.length && JSON.stringify(list) !== JSON.stringify(DEFAULT_DELIMITERS)) {
+        config.delimiter = list;
+      }
+    }
     // 父子分块：发送子块 + 父块 + 检索模式全部参数；其他方式不发送 parent_* 字段
     if (values.method === 'parent_child') {
       config.parent_chunk_size = values.parent_chunk_size;
@@ -743,6 +769,18 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           </>
         )}
 
+        {/* 通用切块专属：切割分隔符（仅 naive；完整替代默认集——删除默认项=不参与，
+            可添加自定义分隔符；仅当前解析文档生效，存 parser_config.delimiter） */}
+        {method === 'naive' && (
+          <Form.Item
+            name="delimiter"
+            label="切割分隔符"
+            tooltip="通用切块按此分隔符优先级切分；删除默认项=该项不参与；↵ 表示换行。仅当前解析文档生效"
+          >
+            <DelimiterControl />
+          </Form.Item>
+        )}
+
         {/* 包含父标题（A1）：切块后处理——为不含标题的块拼接前缀标题路径，与解析引擎/
             版面识别/文档格式无关，统一显示于切块参数区（不随版面识别隐藏）；
             qa/agentic 同样生效（块内保留标题路径） */}
@@ -856,6 +894,54 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         />
       </Form>
     </Modal>
+  );
+};
+
+/** 切割分隔符受控控件（由 Form.Item name="delimiter" 注入 value/onChange，
+    注册字段保证回填/初始化可靠；Tag 可删（至少保留一个）+ 输入添加 + 重置默认） */
+const DelimiterControl: React.FC<{
+  value?: string[];
+  onChange?: (v: string[]) => void;
+}> = ({ value, onChange }) => {
+  const delimiters: string[] = value ?? DEFAULT_DELIMITERS.slice();
+  const [input, setInput] = useState('');
+
+  const setList = (list: string[]) => {
+    const cleaned = list.filter((d, i) => d !== '' && list.indexOf(d) === i);
+    onChange?.(cleaned.length ? cleaned : DEFAULT_DELIMITERS.slice());
+  };
+  const addDelimiter = () => {
+    const v = parseDelimiterInput(input.trim());
+    if (v) {
+      setList([...delimiters, v]);
+      setInput('');
+    }
+  };
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Space wrap size={[4, 4]}>
+        {delimiters.map((d, i) => (
+          <Tag
+            key={`${i}-${d}`}
+            closable={delimiters.length > 1}
+            onClose={() => setList(delimiters.filter((_, j) => j !== i))}
+          >
+            {displayDelimiter(d) || '（空）'}
+          </Tag>
+        ))}
+      </Space>
+      <Space.Compact style={{ width: '100%' }}>
+        <Input
+          placeholder="输入分隔符（如 。 、 ；；↵ 表示换行）"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onPressEnter={addDelimiter}
+        />
+        <Button onClick={addDelimiter}>添加</Button>
+        <Button onClick={() => setList(DEFAULT_DELIMITERS.slice())}>重置默认</Button>
+      </Space.Compact>
+    </Space>
   );
 };
 

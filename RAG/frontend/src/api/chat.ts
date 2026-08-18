@@ -46,6 +46,19 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
           if (text) callbacks.onDelta?.(text);
         }
         break;
+      case 'prompt': {
+        const info = (typeof data === 'object' && data !== null ? data : {}) as {
+          prompt?: unknown[];
+          retrieval_ms?: number;
+          kg_ms?: number;
+        };
+        callbacks.onPrompt?.({
+          prompt: info.prompt ?? [],
+          retrieval_ms: info.retrieval_ms,
+          kg_ms: info.kg_ms,
+        });
+        break;
+      }
       case 'done': {
         const info = (typeof data === 'object' && data !== null ? data : {}) as {
           session_id?: string;

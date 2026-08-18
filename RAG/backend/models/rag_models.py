@@ -1,7 +1,7 @@
 """RAG 知识库数据模型（字段统一驼峰命名，与前端约定一致）"""
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -115,7 +115,7 @@ class IngestRequest(BaseModel):
     backend: Optional[str] = Field(None, description="MinerU 解析后端: hybrid-auto-engine=混合自动引擎（默认，质量优：表格规范/OCR 准/流程图识别）/pipeline=管线（速度快约 20s，表格可能错乱）/auto=跟随服务端默认（与不传等价，不持久化不透传；仅 MinerU 引擎生效）")
     chunk_size: Optional[int] = Field(None, description="块大小（字符数，默认取活跃配置）")
     overlap: Optional[int] = Field(None, description="重叠字符数（默认取活跃配置）")
-    delimiter: Optional[str] = Field(None, description="仅 naive 用，分隔符（如 \\n\\n，可选）")
+    delimiter: Optional[Union[str, List[str]]] = Field(None, description="仅 naive 用，分隔符（字符串或列表，可选）")
     split_level: Optional[int] = Field(None, description="仅 title 用，标题层级 1-3")
     regex_pattern: Optional[str] = Field(None, description="仅 regex 用，正则表达式")
     parent_chunk_size: Optional[int] = Field(None, description="仅 parent_child 用，父块大小（字符数，默认 1024）")

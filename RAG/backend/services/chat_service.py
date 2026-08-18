@@ -6,6 +6,10 @@
 - 生成参数（chat 段配置优先，None 回退 LLM 段默认）：
   temperature/top_p/max_tokens 覆盖 LLM 配置
 - 多轮开关 enable_multi_turn=False 时不带历史（只发 system + 当前问题）
+- 思考模式 thinking_mode（chat 段配置，默认 disabled 关闭思考）：在线 API
+  （api.deepseek.com 等）经 extra_body 控制 thinking；本地 Qwen 思考模型
+  disabled 时注入空 <think> prefill 跳过思考——请求层变换，不影响 prompt
+  事件内容（prompt 事件仍为组装后原始 messages）
 - 无命中直接告知，不调用 LLM
 - history 截最近 8 轮（配置可调）；会话落盘 data/chat/{session_id}.json 含 sources 快照
 - 标题取问题前 20 字；客户端断开时优雅收尾（已生成文本仍落盘）
@@ -17,6 +21,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +38,7 @@ from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
 from backend.services.settings_service import (merge_chat_config,
                                                merge_department_llm)
+from backend.services.thinking_strategy import get_thinking_strategy
 
 # 历史模块名保留：_llm_to_dict（4 处历史 import：agentic_chunker /
 # contextual_retriever / knowledge_graph_service / ext_query）
@@ -210,7 +216,8 @@ class ChatService:
                           user_id: Optional[str] = None,
                           top_k: Optional[int] = None,
                           dept_config: Optional[dict] = None) -> AsyncIterator[str]:
-        """SSE 流：meta(sources) -> delta(文本) -> done(session_id, message_count) / error
+        """SSE 流：meta(sources) -> prompt(完整提示词+耗时) -> delta(文本)
+        -> done(session_id, message_count) / error
 
         top_k: 检索条数覆盖（None=取配置 retrieval.top_k，聊天页选择器透传）
         dept_config: 当前用户所在部门的完整配置（{"llm": {...},
@@ -220,6 +227,11 @@ class ChatService:
           非空串），其余用全局；检索 top_k/similarity_threshold 同步覆盖；
           llm 段 base_url/api_key/model/temperature/max_tokens/timeout
           字段级覆盖全局 LLM 配置（客户端按合并配置独立缓存）。
+          思考模式 thinking_mode（chat 段，默认 disabled 关闭思考）：在线
+          API（api.deepseek.com 等）经 extra_body 传 thinking enabled/disabled
+          + reasoning_effort；本地 Qwen 思考模型 disabled 时 messages 末尾
+          注入空 <think> prefill 跳过思考（请求层变换，prompt 事件仍为
+          组装后原始 messages，不含注入/extra_body）。
         """
         session = self._load_or_create(session_id, kb_id, message, user_id)
         answer_parts: List[str] = []
@@ -243,6 +255,7 @@ class ChatService:
                         "history_rounds": cfg.chat.history_rounds,
                         "system_prompt": cfg.chat.system_prompt,
                         "kg_enhance": cfg.chat.kg_enhance,
+                        "thinking_mode": cfg.chat.thinking_mode,
                     },
                     "retrieval": {
                         "top_k": cfg.retrieval.top_k,
@@ -259,9 +272,12 @@ class ChatService:
             if eff_top_k is None and dept_retrieval.get("top_k") is not None:
                 eff_top_k = int(dept_retrieval["top_k"])
             eff_min_score = dept_retrieval.get("similarity_threshold")
+            # 检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
+            t_retrieval = time.perf_counter()
             try:
                 sources = await get_retrieval_service().retrieve(
                     kb_id, message, top_k=eff_top_k, min_score=eff_min_score)
+                retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
                 # 可预期失败（Embedding 服务不可用等）：warning 不透传堆栈，
                 # 用户消息语义与历史一致（"检索服务不可用：..."原样透传）
@@ -286,8 +302,11 @@ class ChatService:
             #    编号，前端行内 [n]（sources[n-1]）与面板角标（index+1）同源，
             #    任何地方不得对 sources 重排。
             from backend.services.knowledge_graph_service import build_kg_source
+            # 图谱构建单独计时（毫秒，与检索耗时分开统计）
+            t_kg = time.perf_counter()
             kg_source = await build_kg_source(
                 kb_id, message, merged_chat.get("kg_enhance", True))
+            kg_ms = int(round((time.perf_counter() - t_kg) * 1000))
             if kg_source:
                 sources.append(kg_source)
 
@@ -308,6 +327,9 @@ class ChatService:
                     "session_id": session.id,
                     "message_count": len(session.messages),
                 })
+                # 对话完成 → 异步触发用户画像提取（不阻塞响应）
+                if user_id:
+                    self._schedule_memory_extract(user_id, session.messages)
                 return
 
             # 4) 组装 prompt（引用放在 system；history 截最近 N 轮，
@@ -321,8 +343,23 @@ class ChatService:
             max_tokens = merged_chat["max_tokens"]
             refs = self._build_refs(sources)
             knowledge = self._build_knowledge(sources)
+            # 用户画像注入（仅聊天问答）：memory_enabled 关 / 无条目 → 空串跳过；
+            # 画像段由 _build_system_content 置于引用段之前（自定义模板经
+            # {memory} 占位符控制）。检索测试（/chat/retrieve）不经过本组装，
+            # 天然不注入。
+            memory_context = ""
+            if user_id:
+                try:
+                    from backend.services.user_memory_service import (
+                        get_user_memory_service)
+                    memory_context = get_user_memory_service() \
+                        .build_memory_context(user_id)
+                except Exception as e:
+                    # 画像读取失败不影响问答（warning 降级）
+                    logger.warning("读取用户画像失败（跳过注入）: %s err=%s",
+                                   user_id, str(e)[:150])
             system_content = self._build_system_content(
-                sys_prompt, refs, knowledge)
+                sys_prompt, refs, knowledge, memory_context)
             messages = [{"role": "system", "content": system_content}]
             if enable_multi_turn:
                 rounds = int(history_rounds)
@@ -343,11 +380,21 @@ class ChatService:
                 "3. 不确定是否来自 [引用] 的内容不要标注；[引用] 含"
                 "\"知识图谱\"条目时同样可标注；\n"
                 "4. 用简洁中文转述引用内容，不要原样复制 [引用] 中的"
-                "【知识图谱实体】等标记性原文；回答正文不要输出 Markdown"
-                "格式符号（#、*、- 等标题或列表符号）。】\n\n"
+                "【知识图谱实体】等标记性原文；回答正文不要输出 #、*、- 等"
+                "标题或列表 Markdown 格式符号；但图片标签"
+                "（![](...) 或 <img>）不属于上述禁止符号，必须原样输出"
+                "（图片是知识库原文内容，保留图片才能完整展示配置说明）。】\n\n"
                 f"问题：{message}"
             )
             messages.append({"role": "user", "content": cite_note})
+
+            # 4.5) prompt 事件：LLM 调用前下发完整提示词与检索/图谱耗时
+            # （前端"请求详情"展示；此事件在 delta 之前，生成失败也已送达）
+            yield sse_event("prompt", {
+                "prompt": messages,
+                "retrieval_ms": retrieval_ms,
+                "kg_ms": kg_ms,
+            })
 
             # 5) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
             #    部门 llm 段字段级覆盖全局 LLM——地址/密钥/模型/生成参数，
@@ -358,9 +405,23 @@ class ChatService:
                 _llm_to_dict(get_active_config().llm), dept_llm)
             merged_llm = LLMConfig.from_dict(merged_llm_dict)
             client = self._get_client(merged_llm_dict)
+            # 4.75) 思考模式策略（请求层变换，必须在 prompt 事件之后应用）：
+            # 在线 API（api.deepseek.com 等）→ extra_body 传 thinking
+            # enabled/disabled + reasoning_effort；本地 Qwen 思考模型 disabled
+            # → messages 末尾注入空 <think> prefill 跳过思考（LM Studio 忽略
+            # extra_body）。策略 apply 原地修改 payload（messages 追加 /
+            # extra_body 填充），不影响已下发的 prompt 事件内容（prompt 事件
+            # 在策略应用前按组装后原始 messages 序列化）。thinking_mode 取
+            # 合并后 chat 段配置（部门可覆盖），缺省/None 兜底 "disabled"。
+            thinking_mode = merged_chat.get("thinking_mode") or "disabled"
+            strategy = get_thinking_strategy(merged_llm_dict, thinking_mode)
+            payload = {"messages": messages}
+            strategy.apply(payload)
+            llm_messages = payload["messages"]
+            extra_body = payload.get("extra_body")
             request_kwargs: dict = {
                 "model": merged_llm.model,
-                "messages": messages,
+                "messages": llm_messages,
                 "temperature": (temperature
                                 if temperature is not None
                                 else merged_llm.temperature),
@@ -369,6 +430,8 @@ class ChatService:
                                else merged_llm.max_tokens),
                 "stream": True,
             }
+            if extra_body is not None:
+                request_kwargs["extra_body"] = extra_body
             if top_p is not None:
                 request_kwargs["top_p"] = top_p
             try:
@@ -415,6 +478,9 @@ class ChatService:
                 "session_id": session.id,
                 "message_count": len(session.messages),
             })
+            # 对话完成 → 异步触发用户画像提取（不阻塞响应）
+            if user_id:
+                self._schedule_memory_extract(user_id, session.messages)
         finally:
             # 兜底：异常路径下只要已有文本也落盘（优雅收尾）
             if not saved and answer_parts:
@@ -425,10 +491,14 @@ class ChatService:
 
     @staticmethod
     def _build_system_content(system_prompt: str, refs: str,
-                              knowledge: str = "") -> str:
+                              knowledge: str = "", memory: str = "") -> str:
         """组装 system 内容（配置档案 chat.system_prompt 支持自定义）
 
         占位符规则（{knowledge} 与 {refs} 可并存，各自替换）：
+        - {memory}：用户画像段（可选，仅聊天问答注入）——含 {memory} 时
+          替换为用户画像文本；内置默认模板 / 无占位符自动追加路径下，
+          用户画像自动置于引用段之前（用户先看到画像背景，再是引用）；
+          自定义含占位符模板未写 {memory} 则不注入（模板自行掌控）
         - 含 {knowledge} → 替换为纯知识文本（检索片段原文逐字拼接，
           无 "[引用 n]（来源：xxx）" 包装——用户模板要求原文逐字输出）
         - 含 {refs} → 替换为带来源标注的引用内容（现有格式）
@@ -439,11 +509,16 @@ class ChatService:
         - 空 / 纯空白 → 内置默认模板（现有行为零变化，{refs} 在末尾）
         """
         raw = (system_prompt or "").strip()
+        # 用户画像段：非空时以独立段落置于引用段之前
+        mem_block = f"{memory}\n\n" if memory else ""
         if not raw:
-            return _SYSTEM_PROMPT_TEMPLATE.format(refs=refs)
+            return _SYSTEM_PROMPT_TEMPLATE.format(refs=f"{mem_block}{refs}")
         # 先判定再替换：knowledge 内容本身即使含 "{refs}" 字样也不误判
+        has_memory = "{memory}" in raw
         has_knowledge = "{knowledge}" in raw
         has_refs = "{refs}" in raw
+        if has_memory:
+            raw = raw.replace("{memory}", memory)
         if has_knowledge:
             # 用 str.replace 而非 str.format：用户模板中其他花括号不会触发 KeyError
             raw = raw.replace("{knowledge}", knowledge)
@@ -453,8 +528,9 @@ class ChatService:
             return raw
         # 无占位符：末尾自动追加引用段 + 行内标注规则
         # （保证检索引用必达，防止用户忘写占位符导致模型无引用可依据；
-        #   标注规则保证行内 [n] 指令送达——自定义模板已覆盖内置规则）
-        return f"{raw}\n\n{_CITATION_RULE}\n[引用]\n{refs}"
+        #   标注规则保证行内 [n] 指令送达——自定义模板已覆盖内置规则；
+        #   用户画像（若未用 {memory} 占位符）插在引用段之前）
+        return f"{raw}\n\n{_CITATION_RULE}\n{mem_block}[引用]\n{refs}"
 
     @staticmethod
     def _build_knowledge(sources: List[Source]) -> str:
@@ -494,6 +570,23 @@ class ChatService:
                 text = f"【上下文】{s.context}\n{text}"
             parts.append(f"{head}\n{text}")
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _schedule_memory_extract(user_id: str, messages: List) -> None:
+        """对话完成后异步触发用户画像提取（旁路任务：不阻塞响应）
+
+        - asyncio.create_task 调度（频率控制/并发防护/失败静默均在
+          user_memory_service.extract_and_merge 内处理）
+        - 无运行中事件循环（极端场景）→ warning 降级，不影响对话
+        """
+        try:
+            from backend.services.user_memory_service import (
+                get_user_memory_service)
+            asyncio.create_task(get_user_memory_service().extract_and_merge(
+                user_id, messages))
+        except RuntimeError:
+            logger.warning("用户画像提取调度失败（无运行中事件循环）: %s",
+                           user_id)
 
     def _finalize(self, session: ChatSession, message: str,
                   answer_parts: List[str], sources: List[Source]):

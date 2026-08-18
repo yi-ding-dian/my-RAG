@@ -168,9 +168,10 @@ def _isolated_env():
       collection 天然隔离。
     """
     from backend.config import (CHAT_DIR, DATA_DIR, DOCUMENTS_DIR, KBS_DIR,
-                                PARSED_DIR, STORAGE_DIR, UPLOAD_DIR)
+                                PARSED_DIR, STORAGE_DIR, UPLOAD_DIR,
+                                USER_MEMORY_DIR)
     for d in (UPLOAD_DIR, PARSED_DIR, KBS_DIR, DOCUMENTS_DIR, CHAT_DIR,
-              STORAGE_DIR):
+              STORAGE_DIR, USER_MEMORY_DIR):
         shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True, exist_ok=True)
     for p in list(DATA_DIR.glob("*.json")) + list(DATA_DIR.glob("*.jsonl")):
