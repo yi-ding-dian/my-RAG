@@ -39,6 +39,16 @@ from backend.services.probes import probe_mineru
 
 logger = logging.getLogger(__name__)
 
+
+class ParserUnavailableError(Exception):
+    """解析服务不可用（MinerU/DeepDoc 调用失败、网络错误等）
+
+    可预期失败（解析器不可用/网络故障）：ingestion 层捕获后记 warning
+    （不记堆栈）并写回 failed（任务失败语义不变），错误消息保持原始
+    解析异常文本（mark_failed 文案与历史一致）。
+    """
+
+
 # base64 特征：仅含字母数字 +/+/
 _B64_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
 

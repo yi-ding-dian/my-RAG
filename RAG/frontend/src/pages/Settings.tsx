@@ -10,6 +10,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
+  asApiError,
   listProfiles, createProfile, updateProfile, deleteProfile,
   activateProfile, testProfileConnection, testLlmConnection, getEmbeddingDim,
   getChatSettings, updateChatSettings,
@@ -76,8 +77,47 @@ const allFailed = (msg: string): Record<SectionKey, TestItem> => ({
   minio: { status: 'failed', msg },
 });
 
+/** 档案编辑表单的扁平字段值（antd Form values；字段名 = 表单项 name，
+ *  与 toFormValues 回填键一一对应） */
+interface ProfileFormValues {
+  name: string;
+  embedding_base_url: string;
+  embedding_api_key: string;
+  embedding_model: string;
+  embedding_dimension: number;
+  mineru_url: string;
+  mineru_timeout: number;
+  deepdoc_base_url: string;
+  deepdoc_email: string;
+  deepdoc_password: string;
+  deepdoc_timeout: number;
+  deepdoc_dataset_prefix: string;
+  retrieval_top_k: number;
+  retrieval_enable_hybrid: boolean;
+  rerank_enabled: boolean;
+  rerank_base_url: string;
+  rerank_model: string;
+  rerank_top_n: number;
+  chunk_size: number;
+  chunk_overlap: number;
+  contextual_retrieval_max_full_doc_chars: number;
+  ingestion_concurrency: number;
+  mysql_host: string;
+  mysql_port: number;
+  mysql_user: string;
+  mysql_password: string;
+  mysql_database: string;
+  mysql_url: string;
+  minio_endpoint: string;
+  minio_access_key: string;
+  minio_secret_key: string;
+  minio_bucket: string;
+  minio_secure: boolean;
+  minio_region: string;
+}
+
 // 表单扁平字段 <-> 嵌套档案对象互转
-const toProfileInput = (vals: any, llmSection?: {
+const toProfileInput = (vals: ProfileFormValues, llmSection?: {
   models: LLMModelItem[]; active: number;
 }): ServiceProfileInput => ({
   name: vals.name,
@@ -97,7 +137,7 @@ const toProfileInput = (vals: any, llmSection?: {
     email: vals.deepdoc_email,
     password: vals.deepdoc_password,
     timeout: vals.deepdoc_timeout,
-    dataset_prefix: vals.deepdoc_dataset_prefix || undefined,
+    dataset_prefix: vals.deepdoc_dataset_prefix,
   },
   retrieval: {
     top_k: vals.retrieval_top_k,
@@ -110,6 +150,10 @@ const toProfileInput = (vals: any, llmSection?: {
     },
   },
   chunking: { chunk_size: vals.chunk_size, overlap: vals.chunk_overlap },
+  contextual_retrieval: {
+    max_full_doc_chars: vals.contextual_retrieval_max_full_doc_chars,
+  },
+  ingestion: { concurrency: vals.ingestion_concurrency },
   mysql: {
     host: vals.mysql_host,
     port: vals.mysql_port,
@@ -149,6 +193,9 @@ const toFormValues = (p: ServiceProfile) => ({
   rerank_top_n: p.retrieval?.rerank?.top_n ?? 10,
   chunk_size: p.chunking?.chunk_size,
   chunk_overlap: p.chunking?.overlap,
+  contextual_retrieval_max_full_doc_chars:
+    p.contextual_retrieval?.max_full_doc_chars ?? 20000,
+  ingestion_concurrency: p.ingestion?.concurrency ?? 3,
   mysql_host: p.mysql?.host,
   mysql_port: p.mysql?.port,
   mysql_user: p.mysql?.user,
@@ -244,8 +291,8 @@ const SettingsPage: React.FC = () => {
         llm_max_tokens: llm.max_tokens ?? undefined,
         llm_timeout: llm.timeout ?? undefined,
       });
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '加载本部门 LLM 配置失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '加载本部门 LLM 配置失败');
     } finally {
       setDeptLlmLoading(false);
     }
@@ -273,8 +320,8 @@ const SettingsPage: React.FC = () => {
       });
       message.success('本部门 LLM 配置已保存，对本部门成员即时生效');
       await loadDeptLlm();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '保存本部门 LLM 配置失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '保存本部门 LLM 配置失败');
     } finally {
       setDeptLlmSaving(false);
     }
@@ -361,8 +408,8 @@ const SettingsPage: React.FC = () => {
       } else {
         confirmForce(res.data.reason);
       }
-    } catch (e: any) {
-      confirmForce(e.response?.data?.detail || '网络请求失败，请检查服务是否可达');
+    } catch (e: unknown) {
+      confirmForce(asApiError(e).response?.data?.detail || '网络请求失败，请检查服务是否可达');
     } finally {
       setLlmTestingIdx(null);
     }
@@ -387,6 +434,8 @@ const SettingsPage: React.FC = () => {
       rerank_enabled: false,
       rerank_top_n: 10,
       chunk_size: 800, chunk_overlap: 100,
+      contextual_retrieval_max_full_doc_chars: 20000,
+      ingestion_concurrency: 3,
       // MySQL / MinIO 预填后端默认值（密码类留空，保存时后端用默认或保持原值）
       mysql_host: '127.0.0.1', mysql_port: 5455, mysql_user: 'ragflow',
       mysql_database: 'my_rag',
@@ -410,7 +459,7 @@ const SettingsPage: React.FC = () => {
     setModalOpen(true);
   };
 
-  const doSave = async (vals: any) => {
+  const doSave = async (vals: ProfileFormValues) => {
     setSaving(true);
     try {
       const llmSection = llmModels.length
@@ -425,8 +474,8 @@ const SettingsPage: React.FC = () => {
       }
       setModalOpen(false);
       await loadProfiles();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '保存失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '保存失败');
     } finally {
       setSaving(false);
     }
@@ -473,8 +522,8 @@ const SettingsPage: React.FC = () => {
     try {
       const res = await testProfileConnection(p.id);
       setTestStates(prev => ({ ...prev, [p.id]: toTestItems(res.data) }));
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '测试失败';
+    } catch (e: unknown) {
+      const msg = asApiError(e).response?.data?.detail || '测试失败';
       setTestStates(prev => ({ ...prev, [p.id]: allFailed(msg) }));
     }
   };
@@ -494,8 +543,8 @@ const SettingsPage: React.FC = () => {
       const res = await testProfileConnection(
         editingId, toProfileInput(vals, llmSection));
       setModalTest(toTestItems(res.data));
-    } catch (e: any) {
-      const msg = e.response?.data?.detail || '测试失败';
+    } catch (e: unknown) {
+      const msg = asApiError(e).response?.data?.detail || '测试失败';
       setModalTest(allFailed(msg));
     } finally {
       setModalTesting(false);
@@ -877,6 +926,24 @@ const SettingsPage: React.FC = () => {
                       <Col span={6}>
                         <Form.Item name="chunk_overlap" label="切块重叠（字符）">
                           <InputNumber min={0} max={1000} step={50} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col span={6}>
+                        <Form.Item
+                          name="contextual_retrieval_max_full_doc_chars"
+                          label="上下文检索完整文档阈值（字）"
+                          tooltip="解析文本不超过该字数时，上下文检索增强把完整文档作为摘要生成的上下文（全局视角）；文档超过该字数时效果不佳，不建议使用"
+                        >
+                          <InputNumber min={1000} max={1000000} step={1000} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col span={6}>
+                        <Form.Item
+                          name="ingestion_concurrency"
+                          label="入库并发数"
+                          tooltip="同时解析入库的文档数上限，超出排队等待（并发过高可能打爆解析/向量服务）"
+                        >
+                          <InputNumber min={1} max={10} style={{ width: '100%' }} />
                         </Form.Item>
                       </Col>
                     </Row>

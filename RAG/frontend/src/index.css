@@ -1183,3 +1183,580 @@ mark:not(.citation-highlight) {
   height: 100%;
   cursor: col-resize;
 }
+
+/* ============================================================
+   智能解析引导向导：跟随全局主题（.parse-config-modal / .spw-*）
+   品牌色全部取自主题系统 CSS 变量（--brand-primary / -deep / -soft / -softer / -rgb），
+   暗色适配沿用项目 [data-theme='dark'] 标记（theme.tsx 按 preset.mode 写入）
+   ============================================================ */
+.parse-config-modal .ant-modal-content {
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 24px 48px -12px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.20), 0 8px 16px -8px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+}
+/* 顶部品牌渐变装饰条 */
+.parse-config-modal .ant-modal-header {
+  position: relative;
+  padding: 18px 24px 12px;
+  border-bottom: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+}
+.parse-config-modal .ant-modal-header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 55%, var(--brand-primary-soft, #93c5fd) 100%);
+}
+.parse-config-modal .ant-modal-close {
+  top: 20px;
+}
+/* 标题：渐变图标 + 主副标题 */
+.parse-config-modal .spw-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.parse-config-modal .spw-title-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%);
+  box-shadow: 0 6px 14px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.35);
+  flex-shrink: 0;
+}
+/* 暗色：渐变终点改用提亮档（-soft），保证深底可读 */
+[data-theme='dark'] .parse-config-modal .spw-title-icon {
+  background: linear-gradient(135deg, var(--brand-primary, #3b82f6) 0%, var(--brand-primary-soft, #93c5fd) 100%);
+}
+.parse-config-modal .spw-title-texts {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+  min-width: 0;
+}
+.parse-config-modal .spw-title-text {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ant-color-text);
+}
+.parse-config-modal .spw-title-sub {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 560px;
+}
+
+/* ---------- Footer：Steps 美化 + 渐变主按钮 ---------- */
+.parse-config-modal .spw-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+  padding-top: 12px;
+}
+.parse-config-modal .spw-steps .ant-steps-item-icon {
+  width: 24px;
+  height: 24px;
+  line-height: 22px;
+  font-size: 12px;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+}
+/* 当前步骤：渐变圆点 */
+.parse-config-modal .spw-steps .ant-steps-item-process .ant-steps-item-icon {
+  background: linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%);
+  border: none;
+  box-shadow: 0 4px 10px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.35);
+}
+[data-theme='dark'] .parse-config-modal .spw-steps .ant-steps-item-process .ant-steps-item-icon {
+  background: linear-gradient(135deg, var(--brand-primary, #3b82f6) 0%, var(--brand-primary-soft, #93c5fd) 100%);
+}
+.parse-config-modal .spw-steps .ant-steps-item-process .ant-steps-icon {
+  color: #fff;
+}
+/* 完成步骤：主题勾 + 主题描边 + 连线渐变 */
+.parse-config-modal .spw-steps .ant-steps-item-finish .ant-steps-item-icon {
+  border-color: var(--brand-primary-deep, #1d4ed8);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.08);
+}
+[data-theme='dark'] .parse-config-modal .spw-steps .ant-steps-item-finish .ant-steps-item-icon {
+  border-color: var(--brand-primary-soft, #93c5fd);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+}
+.parse-config-modal .spw-steps .ant-steps-item-finish .ant-steps-icon {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+[data-theme='dark'] .parse-config-modal .spw-steps .ant-steps-item-finish .ant-steps-icon {
+  color: var(--brand-primary-soft, #93c5fd);
+}
+.parse-config-modal .spw-steps .ant-steps-item-finish > .ant-steps-item-container > .ant-steps-item-tail::after {
+  background: linear-gradient(90deg, var(--brand-primary, #2563eb), var(--brand-primary-deep, #1d4ed8));
+  height: 2px;
+}
+/* 当前步骤标题加粗 */
+.parse-config-modal .spw-steps .ant-steps-item-process .ant-steps-item-title {
+  font-weight: 600;
+}
+/* 渐变主按钮（下一步/确定解析） */
+.parse-config-modal .spw-footer .ant-btn-primary {
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%);
+  box-shadow: 0 6px 14px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.28);
+}
+[data-theme='dark'] .parse-config-modal .spw-footer .ant-btn-primary {
+  background: linear-gradient(135deg, var(--brand-primary, #3b82f6) 0%, var(--brand-primary-soft, #93c5fd) 100%);
+}
+/* hover：显式渐变提亮（antd 按钮 hover 用 background 简写，若不覆盖会盖掉渐变） */
+.parse-config-modal .spw-footer .ant-btn-primary:not(:disabled):hover {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand-primary, #2563eb) 90%, white) 0%, color-mix(in srgb, var(--brand-primary-deep, #1d4ed8) 90%, white) 100%);
+  box-shadow: 0 8px 18px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.40);
+}
+[data-theme='dark'] .parse-config-modal .spw-footer .ant-btn-primary:not(:disabled):hover {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand-primary, #3b82f6) 78%, white) 0%, color-mix(in srgb, var(--brand-primary-soft, #93c5fd) 78%, white) 100%);
+}
+.parse-config-modal .spw-footer .ant-btn-primary:disabled {
+  background: var(--ant-color-primary-bg);
+  box-shadow: none;
+}
+
+/* ---------- 步骤切换淡入 ---------- */
+.spw-fade {
+  animation: spwFade 0.22s ease both;
+}
+@keyframes spwFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 通用：图标容器 ---------- */
+.spw-p-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+  flex-shrink: 0;
+}
+/* 语义色图标（非品牌色）保留原值；violet 变体并入主题品牌色 */
+.spw-p-icon--success { color: #16a34a; background: rgba(22, 163, 74, 0.10); }
+.spw-p-icon--danger  { color: #ef4444; background: rgba(239, 68, 68, 0.10); }
+.spw-p-icon--teal    { color: #0d9488; background: rgba(13, 148, 136, 0.10); }
+.spw-p-icon--amber   { color: #d97706; background: rgba(217, 119, 6, 0.12); }
+.spw-p-icon--violet  { color: var(--brand-primary-deep, #1d4ed8); background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12); }
+[data-theme='dark'] .spw-p-icon {
+  color: var(--brand-primary-soft, #93c5fd);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.18);
+}
+[data-theme='dark'] .spw-p-icon--success { color: #4ade80; background: rgba(74, 222, 128, 0.15); }
+[data-theme='dark'] .spw-p-icon--danger  { color: #f87171; background: rgba(248, 113, 113, 0.15); }
+[data-theme='dark'] .spw-p-icon--teal    { color: #2dd4bf; background: rgba(45, 212, 191, 0.15); }
+[data-theme='dark'] .spw-p-icon--amber   { color: #fbbf24; background: rgba(251, 191, 36, 0.14); }
+[data-theme='dark'] .spw-p-icon--violet  { color: var(--brand-primary-soft, #93c5fd); background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.16); }
+
+/* ---------- Step1：画像卡片网格 ---------- */
+.spw-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.spw-portrait-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.08);
+  min-width: 0;
+}
+.spw-portrait-card--wide { grid-column: span 2; }
+/* 暗色卡片背景：antd 容器色混 10% 品牌色（深浅随主题暗色算法，且带主题色相） */
+[data-theme='dark'] .spw-portrait-card {
+  background: color-mix(in srgb, var(--ant-color-bg-container, #141414) 90%, var(--brand-primary, #3b82f6) 10%);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+.spw-p-body { min-width: 0; }
+.spw-p-label {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  margin-bottom: 4px;
+  letter-spacing: 0.3px;
+}
+.spw-p-value {
+  font-size: 13px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.spw-p-value .ant-tag { margin-inline-end: 0; }
+
+/* ---------- Step1：推荐解析路径（渐变卡片） ---------- */
+.spw-recommend {
+  position: relative;
+  border-radius: 12px;
+  padding: 14px 16px 14px 20px;
+  background: linear-gradient(135deg, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10) 0%, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14) 100%);
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.28);
+  overflow: hidden;
+}
+.spw-recommend::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(180deg, var(--brand-primary, #2563eb), var(--brand-primary-deep, #1d4ed8));
+}
+.spw-recommend-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand-primary, #2563eb);
+  margin-bottom: 6px;
+}
+[data-theme='dark'] .spw-recommend-title { color: var(--brand-primary-soft, #93c5fd); }
+.spw-recommend-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%);
+  box-shadow: 0 4px 10px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.30);
+}
+[data-theme='dark'] .spw-recommend-chip {
+  background: linear-gradient(135deg, var(--brand-primary, #3b82f6) 0%, var(--brand-primary-soft, #93c5fd) 100%);
+}
+.spw-recommend-reason {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* ---------- Step2：切块方式大卡片单选 ---------- */
+.spw-methods-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.spw-method-card {
+  border-radius: 12px !important;
+}
+.spw-method-card .ant-radio {
+  display: none;
+}
+.spw-method-inner {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+  background: var(--ant-color-bg-container);
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  height: 100%;
+  box-sizing: border-box;
+}
+.spw-method-card:hover .spw-method-inner {
+  border-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.45);
+  box-shadow: 0 4px 12px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+  transform: translateY(-1px);
+}
+/* 选中：渐变描边 + 浅渐变背景 + 主题色左侧指示条 */
+.spw-method-card.ant-radio-wrapper-checked .spw-method-inner {
+  border-color: transparent;
+  background: linear-gradient(135deg, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.08) 0%, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12) 100%);
+  box-shadow: 0 0 0 1.5px var(--brand-primary-deep, #1d4ed8), 0 6px 16px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.16);
+}
+[data-theme='dark'] .spw-method-card.ant-radio-wrapper-checked .spw-method-inner {
+  box-shadow: 0 0 0 1.5px var(--brand-primary-soft, #93c5fd), 0 6px 16px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.22);
+}
+.spw-method-card.ant-radio-wrapper-checked .spw-method-inner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--brand-primary, #2563eb), var(--brand-primary-deep, #1d4ed8));
+}
+[data-theme='dark'] .spw-method-card.ant-radio-wrapper-checked .spw-method-inner::before {
+  background: linear-gradient(180deg, var(--brand-primary, #3b82f6), var(--brand-primary-soft, #93c5fd));
+}
+.spw-method-card .spw-method-inner {
+  position: relative;
+}
+.spw-method-body { min-width: 0; }
+.spw-method-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.spw-method-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ant-color-text);
+}
+.spw-method-desc {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+/* 徽标：推荐=渐变、可选=淡蓝 */
+.spw-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.spw-badge--rec {
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%);
+  box-shadow: 0 3px 8px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.30);
+}
+[data-theme='dark'] .spw-badge--rec {
+  background: linear-gradient(135deg, var(--brand-primary, #3b82f6) 0%, var(--brand-primary-soft, #93c5fd) 100%);
+}
+.spw-badge--opt {
+  color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+}
+[data-theme='dark'] .spw-badge--opt { color: var(--brand-primary-soft, #93c5fd); }
+
+/* ---------- Step3：开关卡片 + 分组 ---------- */
+.spw-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--ant-color-text-tertiary);
+  margin: 2px 0 -4px;
+}
+.spw-toggle-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+  background: #f8fafc;
+}
+[data-theme='dark'] .spw-toggle-card {
+  background: color-mix(in srgb, var(--ant-color-bg-container, #141414) 90%, var(--brand-primary, #3b82f6) 10%);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+.spw-toggle-body { flex: 1; min-width: 0; }
+.spw-toggle-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.spw-toggle-desc {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  line-height: 1.5;
+}
+.spw-toggle-card .ant-switch-checked {
+  background: linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%);
+}
+[data-theme='dark'] .spw-toggle-card .ant-switch-checked {
+  background: linear-gradient(135deg, var(--brand-primary, #3b82f6) 0%, var(--brand-primary-soft, #93c5fd) 100%);
+}
+.spw-toggle-card .ant-switch:hover:not(.ant-switch-disabled) {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.45);
+}
+/* 小 chip（推荐开启/可选/互斥） */
+.spw-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.spw-chip--rec {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+}
+.spw-chip--opt {
+  color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+}
+.spw-chip--warn {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.12);
+}
+[data-theme='dark'] .spw-chip--rec { color: #4ade80; background: rgba(74, 222, 128, 0.15); }
+[data-theme='dark'] .spw-chip--opt { color: var(--brand-primary-soft, #93c5fd); background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.18); }
+[data-theme='dark'] .spw-chip--warn { color: #fbbf24; background: rgba(251, 191, 36, 0.14); }
+/* LLM 配置卡片 */
+.spw-llm-card {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+[data-theme='dark'] .spw-llm-card {
+  background: color-mix(in srgb, var(--ant-color-bg-container, #141414) 90%, var(--brand-primary, #3b82f6) 10%);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+.spw-llm-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ant-color-text);
+  margin-bottom: 4px;
+}
+.spw-llm-hint {
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* ---------- Step4：配置摘要标签云行 ---------- */
+.spw-summary-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.06);
+  margin-bottom: 8px;
+}
+.spw-summary-item:last-child { margin-bottom: 0; }
+[data-theme='dark'] .spw-summary-item {
+  background: color-mix(in srgb, var(--ant-color-bg-container, #141414) 90%, var(--brand-primary, #3b82f6) 10%);
+  border-color: rgba(148, 163, 184, 0.10);
+}
+.spw-summary-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ant-color-text-secondary);
+  white-space: nowrap;
+}
+.spw-summary-value {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+/* ---------- 微调（多模态复核建议）：对比度 / 徽标 / 分组标题 / hover ---------- */
+/* Step2 选中态描述文字加深（浅紫底上保证可读性） */
+.spw-method-card.ant-radio-wrapper-checked .spw-method-desc {
+  color: var(--ant-color-text);
+  opacity: 0.75;
+}
+/* "可选"徽标：加边框提升视觉权重 */
+.spw-badge--opt {
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.35);
+}
+/* 分组标题：左侧渐变短线 + 加深 */
+.spw-group-title {
+  position: relative;
+  padding-left: 10px;
+  color: var(--ant-color-text-secondary);
+  margin: 4px 0 -2px;
+}
+.spw-group-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--brand-primary, #2563eb), var(--brand-primary-deep, #1d4ed8));
+}
+/* 推荐路径卡片：说明文字加深、行距 */
+.spw-recommend-reason {
+  color: var(--ant-color-text);
+  opacity: 0.72;
+  line-height: 1.6;
+}
+/* Step4 摘要行 hover 反馈（暗示可返回修改） */
+.spw-summary-item {
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+.spw-summary-item:hover {
+  background: linear-gradient(135deg, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.06) 0%, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.08) 100%);
+  border-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.25);
+}
+
+/* ---------- 暗色主题下向导细节优化（多模态复核建议） ---------- */
+/* 卡片内 Tag：暗色下加文字色边框提升辨识度 */
+[data-theme='dark'] .spw-portrait-card .ant-tag,
+[data-theme='dark'] .spw-toggle-card .ant-tag,
+[data-theme='dark'] .spw-llm-card .ant-tag,
+[data-theme='dark'] .spw-summary-item .ant-tag {
+  border-color: currentColor;
+  border-width: 1px;
+}
+/* 推荐解析路径：暗色下标题/说明提亮（品牌色走主题变量） */
+[data-theme='dark'] .spw-recommend {
+  background: linear-gradient(135deg, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.20) 0%, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.26) 100%);
+  border-color: color-mix(in srgb, var(--brand-primary-soft, #93c5fd) 40%, transparent);
+}
+[data-theme='dark'] .spw-recommend-title {
+  color: var(--brand-primary-softer, #bfdbfe);
+  font-weight: 700;
+}
+[data-theme='dark'] .spw-recommend-reason {
+  color: #cdd2ea;
+  opacity: 1;
+}
+
+/* ---------- 暗色最终微调（多模态 9/10 收尾建议） ---------- */
+/* 步骤条未完成连线：暗色下提亮 */
+[data-theme='dark'] .parse-config-modal .spw-steps .ant-steps-item-wait > .ant-steps-item-container > .ant-steps-item-tail::after {
+  background: #39404f;
+}
+/* 暗色下画像/开关卡片边框提亮，增强层级 */
+[data-theme='dark'] .spw-portrait-card,
+[data-theme='dark'] .spw-toggle-card,
+[data-theme='dark'] .spw-llm-card {
+  border-color: rgba(148, 163, 184, 0.22);
+}
+/* 推荐路径说明再提亮 */
+[data-theme='dark'] .spw-recommend-reason {
+  color: #dbe0f5;
+}

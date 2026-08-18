@@ -20,7 +20,8 @@ import {
 } from 'antd';
 import { LockOutlined, SafetyOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { avatarUrl, changePassword, deleteAvatar, uploadAvatar } from '../api/client';
+import {
+  asApiError, avatarUrl, changePassword, deleteAvatar, uploadAvatar } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import type { User } from '../auth/token';
 import { THEME_PRESETS, useTheme } from '../theme';
@@ -70,8 +71,8 @@ const ProfilePage: React.FC = () => {
       setAvatarFailed(false);
       message.success('头像已更新，聊天中将同步显示');
       await refreshUser(); // 刷新全局 user（localStorage 同步持久化），聊天页即时生效
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '上传头像失败，请重试');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '上传头像失败，请重试');
     } finally {
       setUploading(false);
     }
@@ -85,8 +86,8 @@ const ProfilePage: React.FC = () => {
       setAvatarFailed(false);
       message.success('已恢复默认头像');
       await refreshUser();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '恢复默认头像失败，请重试');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '恢复默认头像失败，请重试');
     } finally {
       setRemoving(false);
     }
@@ -103,8 +104,8 @@ const ProfilePage: React.FC = () => {
       message.success('密码修改成功，请重新登录');
       // 现有后端 changePassword 不返回新 token，统一退出引导重新登录
       window.setTimeout(() => logout(), 800);
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '修改密码失败，请重试');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '修改密码失败，请重试');
     } finally {
       setSubmitting(false);
     }

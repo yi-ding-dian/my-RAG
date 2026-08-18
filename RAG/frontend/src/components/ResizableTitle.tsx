@@ -10,7 +10,7 @@ import type { ResizeCallbackData } from 'react-resizable';
  * 未配置 width 的列（width 为 0/undefined）直接返回普通 <th>，不包裹。
  */
 const ResizableTitle = (
-  props: React.HTMLAttributes<any> & {
+  props: React.HTMLAttributes<HTMLTableCellElement> & {
     onResize: (e: React.SyntheticEvent<Element>, data: ResizeCallbackData) => void;
     width: number;
   },

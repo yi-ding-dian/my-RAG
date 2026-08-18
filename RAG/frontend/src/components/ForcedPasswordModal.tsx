@@ -8,7 +8,8 @@
 import React, { useEffect, useState } from 'react';
 import { App as AntApp, Form, Input, Modal, Typography } from 'antd';
 import { LockOutlined, SafetyOutlined } from '@ant-design/icons';
-import { changePassword } from '../api/client';
+import {
+  asApiError, changePassword } from '../api/client';
 
 const { Text } = Typography;
 
@@ -46,8 +47,8 @@ const ForcedPasswordModal: React.FC<Props> = ({ open, onSuccess }) => {
       await changePassword(values.old_password, values.new_password);
       message.success('密码修改成功');
       onSuccess();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '修改密码失败，请重试');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '修改密码失败，请重试');
     } finally {
       setSubmitting(false);
     }

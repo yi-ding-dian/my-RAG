@@ -40,8 +40,10 @@ from openai import AsyncOpenAI
 
 from backend.chunking.splitter import (
     Chunk, _iter_headings, find_protected_ranges)
-from backend.config import get_active_config
+from backend.config import LLMConfig, get_active_config
 from backend.services.chat_service import _llm_to_dict
+from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,
+                                         get_llm_client, llm_completion)
 from backend.services.settings_service import llm_cfg_for_parser
 from backend.services.thinking_strategy import get_thinking_strategy
 
@@ -317,24 +319,12 @@ def restore_heading_prefix(original_text: str,
 
 # ==================== LLM 客户端（key 比对自动重建） ====================
 
-_client: Optional[AsyncOpenAI] = None
-_client_key: Optional[str] = None
-
-
 def _get_client(llm_cfg: Optional[dict] = None) -> AsyncOpenAI:
-    """按 LLM 配置 key 比对自动重建客户端（与 contextual_retriever 同款模式）"""
-    global _client, _client_key
-    if llm_cfg is None:
-        llm_cfg = _llm_to_dict(get_active_config().llm)
-    key = json.dumps(llm_cfg, sort_keys=True, ensure_ascii=False)
-    if _client is None or _client_key != key:
-        _client = AsyncOpenAI(
-            base_url=llm_cfg.get("base_url", ""),
-            api_key=llm_cfg.get("api_key", ""),
-            timeout=float(llm_cfg.get("timeout") or 60),
-        )
-        _client_key = key
-    return _client
+    """按 LLM 配置 key 比对自动重建客户端（委托统一工厂 get_llm_client）
+
+    保留模块级函数名（test_agentic_chunking 等测试 monkeypatch 依赖）。
+    """
+    return get_llm_client(llm_cfg)
 
 
 # ==================== 响应解析（纯函数） ====================
@@ -399,11 +389,13 @@ async def agentic_chunk(text: str, cfg: Optional[dict] = None,
 
     # 解析 LLM 模型：cfg.parse_llm_model 指定（Agentic 分块专用模型，
     # 从激活档案模型列表查完整配置）→ 覆盖；未指定/查不到 → 激活模型
+    # （调用点保持 dict 传递：_get_client 的测试 monkeypatch 兼容）
     llm_cfg = _llm_to_dict(get_active_config().llm)
     override = llm_cfg_for_parser(cfg.get("parse_llm_model"))
     if override:
         llm_cfg = {**llm_cfg, **override}
-    if not (llm_cfg.get("base_url") and llm_cfg.get("model")):
+    llm_cfg_obj = LLMConfig.from_dict(llm_cfg)
+    if not (llm_cfg_obj.base_url and llm_cfg_obj.model):
         raise AgenticChunkError("LLM 未配置（base_url/model 为空），"
                                 "无法 Agentic 分块")
 
@@ -420,20 +412,22 @@ async def agentic_chunk(text: str, cfg: Optional[dict] = None,
     }
     strategy.apply(payload)
     try:
-        resp = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=llm_cfg.get("model") or "",
-                messages=payload["messages"],
-                max_tokens=_MAX_TOKENS,
-                temperature=0.0,
-                extra_body=payload.get("extra_body"),
-            ),
-            timeout=timeout,
+        # 统一调用包装：超时 → LLMTimeoutError；调用失败 → LLMRequestError
+        # （消息 = 原始错误文本，AgenticChunkError 文案与历史一致）
+        resp = await llm_completion(
+            client, model=llm_cfg_obj.model, messages=payload["messages"],
+            max_tokens=_MAX_TOKENS, temperature=0.0,
+            extra_body=payload.get("extra_body"), timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except LLMTimeoutError:
         raise AgenticChunkError(
             f"Agentic 分块 LLM 调用超时（>{timeout:g}s），回退其他切块方式")
+    except LLMRequestError as e:
+        # 可预期失败（网络/限流/HTTP 错误）：回退 title 切块语义不变
+        raise AgenticChunkError(
+            f"Agentic 分块 LLM 调用失败: {str(e)[:150]}")
     except Exception as e:
+        # 兜底（未知异常）：同样包装 AgenticChunkError（回退语义不变）
         raise AgenticChunkError(
             f"Agentic 分块 LLM 调用失败: {str(e)[:150]}")
 

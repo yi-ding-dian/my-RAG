@@ -4,6 +4,7 @@ import { BookOutlined, LockOutlined, UserOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { APP_VERSION } from '../constants';
+import { asApiError } from '../api/client';
 
 interface LoginFormValues {
   username: string;
@@ -82,8 +83,8 @@ const LoginPage: React.FC = () => {
       }
       message.success('登录成功');
       navigate(from, { replace: true });
-    } catch (e: any) {
-      setError(e.response?.data?.detail || '登录失败，请检查用户名与密码后重试');
+    } catch (e: unknown) {
+      setError(asApiError(e).response?.data?.detail || '登录失败，请检查用户名与密码后重试');
     } finally {
       setLoading(false);
     }

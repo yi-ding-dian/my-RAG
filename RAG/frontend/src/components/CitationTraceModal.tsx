@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Modal, Spin } from 'antd';
 import type { DocumentDetail, Source } from '../api/client';
-import { getDocument } from '../api/client';
+import { asApiError, getDocument } from '../api/client';
 import ChunkCompareView from './ChunkCompareView';
 
 interface CitationTraceModalProps {
@@ -62,7 +62,7 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
       .catch(e => {
         if (cancelled) return;
         // 404=文档已删除/不存在；403/其他=无权限或服务异常
-        const status = (e as any)?.response?.status;
+        const status = asApiError(e).response?.status;
         setError(
           status === 404
             ? '文档不存在或已删除，无法定位原文'

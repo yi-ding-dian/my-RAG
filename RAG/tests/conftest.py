@@ -102,7 +102,9 @@ def reset_services():
     ingestion_service._ingestion_service = None
     # 后台任务并发信号量惰性绑定首次使用的事件循环，跨测试 loop 串用会
     # 报 "Future attached to a different loop" → 每测试重建
+    # （配置值标记同步清零：配置改动测试后残留值不影响下次重建）
     ingestion_service._ingest_semaphore = None
+    ingestion_service._ingest_semaphore_value = 0
     from backend.services import dim_check
     dim_check._rebuild_semaphore = None
     retrieval_service._retrieval_service = None

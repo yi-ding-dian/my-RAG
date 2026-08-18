@@ -32,7 +32,6 @@ const MinerUBackendField: React.FC<MinerUBackendFieldProps> = ({
         </span>
       }
       initialValue={initialValue}
-      extra="自动=跟随服务端默认（混合自动引擎）；混合自动引擎质量优（表格规范/OCR 准/流程图识别）；管线速度快约 20s，但表格可能错乱"
     >
       <Select
         options={[

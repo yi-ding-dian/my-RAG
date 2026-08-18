@@ -14,6 +14,23 @@ import { useTheme } from '../theme';
 echarts.use([GraphChart, TooltipComponent, LegendComponent, LabelLayout, CanvasRenderer]);
 
 /**
+ * ECharts 回调参数的最小收窄结构（formatter/click 参数为库内部联合类型，
+ * 不做精确推断，仅取用到的字段；取代原 `(p: any)` 的 unknown + 守卫）。
+ */
+interface GraphCallbackParams {
+  dataType?: string;
+  data?: {
+    entity?: GraphEntity;
+    relation?: GraphRelation;
+    sourceName?: string;
+    targetName?: string;
+  };
+  name?: string;
+}
+const asGraphCallbackParams = (p: unknown): GraphCallbackParams =>
+  typeof p === 'object' && p !== null ? (p as GraphCallbackParams) : {};
+
+/**
  * 知识图谱 Tab（切块详情弹窗内）：
  * - 关系图（ECharts graph 力导向图）：节点 = 实体（大小按出现次数、颜色按类型），
  *   连线 = 关系（线宽按 weight、hover 连线显示关系类型），可拖拽 / 滚轮缩放；
@@ -346,9 +363,10 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
         backgroundColor: isDark ? '#1f1f1f' : 'rgba(255,255,255,0.96)',
         borderColor: isDark ? '#434343' : '#d9d9d9',
         textStyle: { color: isDark ? '#e6e6e6' : '#333' },
-        formatter: (p: any) => {
-          if (p.dataType === 'node') {
-            const e: GraphEntity = p.data?.entity;
+        formatter: (p: unknown) => {
+          const d = asGraphCallbackParams(p);
+          if (d.dataType === 'node') {
+            const e = d.data?.entity;
             if (!e) return '';
             return [
               `<b>${e.name}</b>`,
@@ -358,11 +376,11 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
               .filter(Boolean)
               .join('<br/>');
           }
-          if (p.dataType === 'edge') {
-            const r: GraphRelation = p.data?.relation;
+          if (d.dataType === 'edge') {
+            const r = d.data?.relation;
             if (!r) return '';
             return [
-              `<b>${p.data.sourceName} → ${r.type} → ${p.data.targetName}</b>`,
+              `<b>${d.data?.sourceName} → ${r.type} → ${d.data?.targetName}</b>`,
               `强度：${r.weight}（关联 ${r.chunk_refs.length} 个切块）`,
               r.description ? `描述：${r.description}` : '',
             ]
@@ -407,7 +425,10 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
             fontSize: 11,
             color: isDark ? '#d6d6d6' : '#3f3f3f',
             // 长名称截断，避免标签铺满图面
-            formatter: (p: any) => (p.name && p.name.length > 10 ? `${p.name.slice(0, 10)}…` : p.name ?? ''),
+            formatter: (p: unknown) => {
+              const name = asGraphCallbackParams(p).name;
+              return name && name.length > 10 ? `${name.slice(0, 10)}…` : name ?? '';
+            },
           },
           // 名称标签重叠时自动隐藏（LabelLayout，节点多时保持可读）
           labelLayout: { hideOverlap: true },
@@ -428,8 +449,9 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
     if (!el || !graphOption) return;
     const chart: ECharts = echarts.init(el);
     chart.setOption(graphOption);
-    const onClick = (p: any) => {
-      if (p?.dataType === 'node' && p.data?.entity) setActiveEntity(p.data.entity as GraphEntity);
+    const onClick = (p: unknown) => {
+      const d = asGraphCallbackParams(p);
+      if (d.dataType === 'node' && d.data?.entity) setActiveEntity(d.data.entity);
     };
     chart.on('click', onClick);
     const ro = new ResizeObserver(() => chart.resize());

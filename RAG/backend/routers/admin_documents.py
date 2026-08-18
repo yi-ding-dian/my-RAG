@@ -41,18 +41,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/documents", tags=["超管文档管理"])
 
 # 状态筛选合法值（与 documents.py 的 _VALID_LIST_STATUS 语义完全一致：
-# parsed 为历史中间态归入「待解析」；unparsed 映射 uploaded+parsed 两态）
+# parsed 为历史中间态归入「待解析」；unparsed 映射 uploaded+parsed 两态；
+# pending_confirm=Agentic 超限待确认，归入「失败」筛选组）
 _VALID_LIST_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed",
-                      "unparsed", "all"}
+                      "pending_confirm", "unparsed", "all"}
 
 # 未分配部门的分组标识（department_id 为 null 的知识库）
 UNASSIGNED_DEPT_KEY = "__unassigned__"
 
 
 def _match_status(doc_status: str, status: str) -> bool:
-    """状态筛选匹配（unparsed = uploaded + parsed，与部门内文档列表一致）"""
+    """状态筛选匹配（unparsed = uploaded + parsed，failed 组含
+    pending_confirm 待确认，与部门内文档列表语义一致）"""
     if status in ("uploaded", "unparsed"):
         return doc_status in ("uploaded", "parsed")
+    if status == "failed":
+        return doc_status in ("failed", "pending_confirm")
     return doc_status == status
 
 
@@ -87,7 +91,8 @@ async def list_admin_documents(
             raise HTTPException(
                 status_code=400,
                 detail=f"非法状态筛选: {status}"
-                f"（支持: uploaded/parsing/parsed/ingested/failed/unparsed/all）")
+                f"（支持: uploaded/parsing/parsed/ingested/failed/"
+                f"pending_confirm/unparsed/all）")
         if status == "all":
             status = None  # all = 全部，等同不传
 

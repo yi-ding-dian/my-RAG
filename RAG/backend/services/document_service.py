@@ -1,11 +1,14 @@
 """文档元数据服务：data/documents/{doc_id}.json 持久化 + 状态机
 
-状态机: uploaded -> parsing -> parsed -> ingested / failed
+状态机: uploaded -> parsing -> parsed -> ingested / failed / pending_confirm
 - parsing  解析中（MinerU/降级提取）
 - parsed   解析完成，文本已落盘 data/parsed/（历史流程中间态；
            新流程解析+入库一步完成，parsing 可直接到 ingested）
 - ingested 切块+向量化完成
 - failed   任一步骤失败，error 写回（可重试触发）
+- pending_confirm  待确认（Agentic 分块 1 万~5 万字超限未确认：
+           不算失败，error 带提示与 agentic_confirm=true 指引；
+           "确认继续"带确认标记重提 → 重新解析入库，或换方式重解析）
 """
 from __future__ import annotations
 
@@ -23,7 +26,8 @@ from backend.models.rag_models import DocumentItem
 logger = logging.getLogger(__name__)
 
 # 支持的文档状态
-VALID_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed"}
+VALID_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed",
+                "pending_confirm"}
 
 # 支持的文件扩展名
 SUPPORTED_EXTS = {".txt", ".md", ".pdf", ".docx"}
@@ -34,10 +38,15 @@ _RECOVER_ERROR = "服务重启，解析中断，请重新解析"
 # 状态机合法迁移
 _TRANSITIONS = {
     "uploaded": {"parsing"},
-    "parsing": {"parsed", "ingested", "failed"},  # ingested: 新流程解析+入库一步完成（parsed 保留兼容历史数据）
+    "parsing": {"parsed", "ingested", "failed", "pending_confirm"},
+    # ingested: 新流程解析+入库一步完成（parsed 保留兼容历史数据）；
+    # pending_confirm: Agentic 分块超限（1 万~5 万字）未确认 → 待确认
     "parsed": {"ingested", "failed"},
     "ingested": {"parsing"},   # 允许重新入库（先清旧向量）
     "failed": {"parsing"},     # 失败后允许重试
+    "pending_confirm": {"parsing", "ingested"},
+    # 待确认后允许重新解析（确认继续带 agentic_confirm=true 重提走
+    # parsing 正常流转；ingested 保留兼容直接迁移）
 }
 
 
@@ -245,9 +254,11 @@ class DocumentService:
         return [d.id for d in stuck]
 
     def is_ingestable(self, doc_id: str) -> bool:
-        """防重复触发：仅 uploaded/failed/ingested 可触发 ingest"""
+        """防重复触发：仅 uploaded/failed/ingested/pending_confirm 可触发
+        ingest（pending_confirm 为 Agentic 超限待确认，可确认继续或重解析）"""
         doc = self.get(doc_id)
-        return doc is not None and doc.status in ("uploaded", "failed", "ingested")
+        return doc is not None and doc.status in (
+            "uploaded", "failed", "ingested", "pending_confirm")
 
     # ---------- 重命名 ----------
 

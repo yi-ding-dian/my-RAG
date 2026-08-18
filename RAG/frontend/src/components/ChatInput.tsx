@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Button, Input, Typography, theme } from 'antd';
+import type { TextAreaRef } from 'antd/es/input/TextArea';
 import { SendOutlined, StopOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
@@ -20,7 +21,7 @@ interface ChatInputProps {
 const ChatInput: React.FC<ChatInputProps> = ({ onSend, onStop, streaming = false, disabled = false }) => {
   const { token } = theme.useToken();
   const [value, setValue] = useState('');
-  const taRef = useRef<any>(null);
+  const taRef = useRef<TextAreaRef>(null);
 
   const doSend = () => {
     const text = value.trim();

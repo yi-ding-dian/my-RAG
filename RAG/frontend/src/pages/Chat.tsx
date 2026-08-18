@@ -4,6 +4,7 @@ import { DeleteOutlined, DownloadOutlined, EditOutlined, FolderOpenOutlined, Mes
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
+  asApiError,
   ChatMessage,
   ChatSession,
   KnowledgeBase,
@@ -146,8 +147,8 @@ const ChatPage: React.FC = () => {
     try {
       await exportSession(id);
       message.success('会话已导出');
-    } catch (e: any) {
-      message.error(e?.message || '导出会话失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).message || '导出会话失败');
     }
   };
 
@@ -173,8 +174,8 @@ const ChatPage: React.FC = () => {
       message.success('会话已重命名');
       setRenameTarget(null);
       if (kbId) await loadSessions(kbId);
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '重命名失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '重命名失败');
     } finally {
       setRenaming(false);
     }

@@ -14,14 +14,16 @@ from conftest import create_kb, upload_and_ingest, upload_doc
 class TestDocumentStatusFilter:
 
     def _setup(self, client, admin_headers, mock_embedding):
-        """构造 5 个不同状态的文档：
-        d1=uploaded / d2=parsed（历史中间态）/ d3=ingested / d4=failed / d5=parsing"""
+        """构造 6 个不同状态的文档：
+        d1=uploaded / d2=parsed（历史中间态）/ d3=ingested / d4=failed /
+        d5=parsing / d6=pending_confirm（Agentic 超限待确认）"""
         kb = create_kb(client)
         d1 = upload_doc(client, kb["id"], filename="待解析.txt")
         d2 = upload_doc(client, kb["id"], filename="已解析.txt")
         d3 = upload_and_ingest(client, kb["id"], filename="已入库.txt")
         d4 = upload_doc(client, kb["id"], filename="失败.txt")
         d5 = upload_doc(client, kb["id"], filename="解析中.txt")
+        d6 = upload_doc(client, kb["id"], filename="待确认.txt")
         svc = get_document_service()
         # 状态机合法迁移构造历史/异常状态
         svc.transition(d2["id"], "parsing")
@@ -29,9 +31,12 @@ class TestDocumentStatusFilter:
         svc.transition(d4["id"], "parsing")
         svc.transition(d4["id"], "failed")
         svc.transition(d5["id"], "parsing")
+        svc.transition(d6["id"], "parsing")
+        svc.transition(d6["id"], "pending_confirm",
+                       error="文档约 1.2 万字，确认继续请重试")
         return kb, {"uploaded": d1["id"], "parsed": d2["id"],
                     "ingested": d3["id"], "failed": d4["id"],
-                    "parsing": d5["id"]}
+                    "parsing": d5["id"], "pending_confirm": d6["id"]}
 
     def _ids(self, payload):
         return [d["id"] for d in payload]
@@ -49,9 +54,18 @@ class TestDocumentStatusFilter:
         r = self._list(client, kb["id"], admin_headers, "&status=ingested")
         assert r["total"] == 1 and self._ids(r["items"]) == [ids["ingested"]]
         r = self._list(client, kb["id"], admin_headers, "&status=failed")
-        assert r["total"] == 1 and self._ids(r["items"]) == [ids["failed"]]
+        # 「失败」筛选组含 pending_confirm 待确认（同为异常/挂起态）
+        assert r["total"] == 2
+        assert sorted(self._ids(r["items"])) == sorted(
+            [ids["failed"], ids["pending_confirm"]])
         r = self._list(client, kb["id"], admin_headers, "&status=parsing")
         assert r["total"] == 1 and self._ids(r["items"]) == [ids["parsing"]]
+        # pending_confirm 单独筛选（后端契约支持，前端筛选用 failed 组）
+        r = self._list(client, kb["id"], admin_headers, "&status=pending_confirm")
+        assert r["total"] == 1
+        assert self._ids(r["items"]) == [ids["pending_confirm"]]
+        # 待确认文档 error 提示随列表返回（前端状态列 tooltip 展示原因）
+        assert "约 1.2 万字" in r["items"][0]["error"]
 
     def test_status_uploaded_includes_parsed(self, client, admin_headers,
                                              mock_embedding):
@@ -92,12 +106,12 @@ class TestDocumentStatusFilter:
         """不传 status → 全部；status=all 等价"""
         kb, ids = self._setup(client, admin_headers, mock_embedding)
         r = self._list(client, kb["id"], admin_headers)
-        assert r["total"] == 5 and len(r["items"]) == 5
+        assert r["total"] == 6 and len(r["items"]) == 6
         r = self._list(client, kb["id"], admin_headers, "&status=all")
-        assert r["total"] == 5 and len(r["items"]) == 5
+        assert r["total"] == 6 and len(r["items"]) == 6
         # 空字符串等价不传
         r = self._list(client, kb["id"], admin_headers, "&status=")
-        assert r["total"] == 5
+        assert r["total"] == 6
 
     def test_invalid_status_400(self, client, admin_headers, mock_embedding):
         """非法 status → 400（不落空返回）"""

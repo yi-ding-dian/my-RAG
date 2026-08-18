@@ -28,6 +28,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
+  asApiError,
   AuditActionOption,
   AuditLog,
   AuditLogQuery,
@@ -239,8 +240,8 @@ const UsersPage: React.FC = () => {
       }
       setUserModalOpen(false);
       await loadUsers();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || (editingUser ? '更新失败' : '创建失败'));
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || (editingUser ? '更新失败' : '创建失败'));
     } finally {
       setSubmitting(false);
     }
@@ -254,8 +255,8 @@ const UsersPage: React.FC = () => {
       await updateUser(row.id, { department_id: deptId || null });
       message.success('部门已更新');
       await loadUsers();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '更新部门失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '更新部门失败');
     } finally {
       setUpdatingId(null);
     }
@@ -267,8 +268,8 @@ const UsersPage: React.FC = () => {
       await updateUser(row.id, { status: checked ? 'active' : 'disabled' });
       message.success(checked ? '已启用' : '已禁用');
       await loadUsers();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '更新状态失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '更新状态失败');
     } finally {
       setUpdatingId(null);
     }
@@ -279,8 +280,8 @@ const UsersPage: React.FC = () => {
       await deleteUser(row.id);
       message.success(`用户「${row.display_name}」已删除`);
       await loadUsers();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '删除失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '删除失败');
     }
   };
 
@@ -320,8 +321,8 @@ const UsersPage: React.FC = () => {
       }
       setDeptModalOpen(false);
       await loadDepartments();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || (editingDept ? '更新失败' : '创建失败'));
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || (editingDept ? '更新失败' : '创建失败'));
     } finally {
       setSubmitting(false);
     }
@@ -332,8 +333,8 @@ const UsersPage: React.FC = () => {
       await deleteDepartment(d.id);
       message.success(`部门「${d.name}」已删除`);
       await Promise.all([loadDepartments(), loadUsers()]);
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '删除失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '删除失败');
     }
   };
 

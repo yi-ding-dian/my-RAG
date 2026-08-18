@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { App as AntApp, Form, Input, Modal } from 'antd';
-import { importDocumentFromUrl } from '../api/client';
+import {
+  asApiError, importDocumentFromUrl } from '../api/client';
 
 interface UrlImportModalProps {
   open: boolean;
@@ -40,8 +41,8 @@ const UrlImportModal: React.FC<UrlImportModalProps> = ({
       form.resetFields();
       onSuccess();
       onCancel();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || 'URL 导入失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || 'URL 导入失败');
     } finally {
       setImporting(false);
     }

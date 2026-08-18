@@ -25,7 +25,8 @@ from backend.db import init_db
 # 注意: routers.settings 模块名与 config.settings 同名，必须用别名避免遮蔽
 from backend.routers import (admin_documents, audit, auth, chat, departments,
                              documents, ext_query, files, graphs,
-                             knowledge_bases, logs, settings, stats, users)
+                             knowledge_bases, logs, settings, smart_parse,
+                             stats, users)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -198,6 +199,8 @@ app.include_router(ext_query.admin_router)
 app.include_router(ext_query.ext_router)
 # 知识图谱（入库时 LLM 抽取实体-关系构建，存储 data/storage/graphs/{kb_id}.json）
 app.include_router(graphs.router)
+# 智能解析引导（文档画像分析，独立模块；向导生成配置后复用 documents.ingest）
+app.include_router(smart_parse.router)
 
 
 @app.get("/api/health")

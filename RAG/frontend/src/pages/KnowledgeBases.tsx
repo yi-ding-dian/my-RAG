@@ -20,6 +20,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons';
 import {
+  asApiError,
   KnowledgeBase,
   RebuildTaskStatus,
   TagCount,
@@ -145,8 +146,8 @@ const KnowledgeBasesPage: React.FC = () => {
       await updateKbTags(kb.id, (kb.tags ?? []).filter(t => t !== tag));
       await load();
       await loadTags();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '移除标签失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '移除标签失败');
     }
   };
 
@@ -181,8 +182,8 @@ const KnowledgeBasesPage: React.FC = () => {
       setDraftTags([]);
       await load();
       await loadTags();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || (editingKb ? '更新失败' : '创建失败'));
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || (editingKb ? '更新失败' : '创建失败'));
     } finally {
       setSubmitting(false);
     }
@@ -193,8 +194,8 @@ const KnowledgeBasesPage: React.FC = () => {
       await deleteKb(kb.id);
       message.success(`知识库「${kb.name}」已删除`);
       await load();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '删除失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '删除失败');
     }
   };
 
@@ -214,8 +215,8 @@ const KnowledgeBasesPage: React.FC = () => {
         errors: [],
       });
       setRebuildKb(kb);
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '启动重建失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '启动重建失败');
     }
   };
 

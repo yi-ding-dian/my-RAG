@@ -15,7 +15,8 @@ import {
   Spin,
   Switch,
 } from 'antd';
-import { getChatSettings, updateChatSettings } from '../api/client';
+import {
+  asApiError, getChatSettings, updateChatSettings } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 
 const { TextArea } = Input;
@@ -89,10 +90,10 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           chat_system_prompt: chat?.system_prompt ?? '',
         });
       })
-      .catch((e: any) => {
+      .catch((e: unknown) => {
         if (cancelled) return;
         // 透传后端中文错误（如"没有激活的配置档案"），不再误显误导文案
-        setLoadError(e.response?.data?.detail || '加载聊天设置失败');
+        setLoadError(asApiError(e).response?.data?.detail || '加载聊天设置失败');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -131,8 +132,8 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
       });
       message.success('聊天设置已保存，即时生效');
       onCancel();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '保存聊天设置失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '保存聊天设置失败');
     } finally {
       setSaving(false);
     }

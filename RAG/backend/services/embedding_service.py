@@ -13,28 +13,37 @@ from typing import List
 from openai import AsyncOpenAI
 
 from backend.config import get_active_config
+from backend.services.llm_client import get_llm_client
 
 logger = logging.getLogger(__name__)
+
+
+class EmbeddingError(Exception):
+    """Embedding 调用失败（重试后仍失败）
+
+    可预期失败（服务不可用/超时/限流等）：调用方捕获后按业务降级或写回
+    明确错误（ingestion mark_failed / retrieval 包装 RetrievalUnavailableError）。
+    重试后仍失败属服务故障，日志级别 error。
+    """
 
 
 class EmbeddingService:
 
     def __init__(self):
-        self._client: AsyncOpenAI | None = None
-        self._client_key: str | None = None
+        pass
 
     def _get_client(self) -> AsyncOpenAI:
-        """按配置 key 比对自动重建：前端改 Embedding 配置（地址/密钥/模型）后即时生效，无需重启"""
+        """按配置 key 比对自动重建（委托统一工厂 get_llm_client）
+
+        EmbeddingConfig → 4 字段 dict + 显式 timeout 覆盖：缓存 key 为 4
+        字段 JSON 序列化，任一字段（地址/密钥/模型/超时）变化即重建——
+        与历史 `|` 拼接 key 的重建时机完全等价。保留实例方法签名。
+        """
         cfg = get_active_config().embedding
-        key = f"{cfg.base_url}|{cfg.api_key}|{cfg.model}|{cfg.timeout}"
-        if self._client is None or self._client_key != key:
-            self._client = AsyncOpenAI(
-                base_url=cfg.base_url,
-                api_key=cfg.api_key,
-                timeout=cfg.timeout,
-            )
-            self._client_key = key
-        return self._client
+        return get_llm_client(
+            {"base_url": cfg.base_url, "api_key": cfg.api_key,
+             "model": cfg.model, "timeout": cfg.timeout},
+            timeout=cfg.timeout)
 
     def _truncate(self, text: str) -> str:
         cfg = get_active_config().embedding
@@ -69,7 +78,8 @@ class EmbeddingService:
                     logger.warning("embedding 调用失败，重试: %s", e)
                     continue
                 logger.error("embedding 调用失败（重试后）: %s", e)
-                raise
+                raise EmbeddingError(
+                    f"embedding 调用失败（重试后）: {e}") from e
 
 
 _embedding_service: EmbeddingService | None = None

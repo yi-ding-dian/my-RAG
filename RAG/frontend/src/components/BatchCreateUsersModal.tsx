@@ -22,6 +22,7 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
+  asApiError,
   Department,
   createDepartment,
   createUser,
@@ -150,13 +151,13 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
             department_id: deptId,
           });
           ok.push(row.username);
-        } catch (e: any) {
-          failed.push({ username: row.username, reason: e.response?.data?.detail || '创建失败' });
+        } catch (e: unknown) {
+          failed.push({ username: row.username, reason: asApiError(e).response?.data?.detail || '创建失败' });
         }
         setProgress({ done: i + 1, total: validRows.length });
       }
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '加载部门列表失败，本次未建号');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '加载部门列表失败，本次未建号');
     } finally {
       setRunning(false);
       setProgress(null);

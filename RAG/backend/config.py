@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -74,6 +75,9 @@ class Settings(BaseSettings):
     # 会话
     CHAT_HISTORY_ROUNDS: int = 8
 
+    # 入库并发数（后台解析任务并发上限的出厂默认，配置档案可覆盖）
+    INGEST_CONCURRENCY: int = 3
+
     # ---- 数据库（MySQL，多租户 users/departments/kbs 三表）----
     MYSQL_HOST: str = "127.0.0.1"
     MYSQL_PORT: int = 5455
@@ -130,6 +134,27 @@ class LLMConfig(BaseModel):
     temperature: float
     max_tokens: int
     timeout: float
+
+    @classmethod
+    def from_dict(cls, data: Optional[dict]) -> "LLMConfig":
+        """dict → LLMConfig 兼容转换（历史裸 dict 调用点的类型化入口）
+
+        - dict 可能含 LLMConfig 没有的扩展字段（部门合并产物/模型列表条目）
+          → 只取已知字段，忽略未知
+        - base_url/api_key/model 缺省或 None → ""（客户端构造语义与裸 dict
+          的 .get(key, "") 一致）；temperature/max_tokens/timeout 缺省或
+          None/0 → 出厂默认（0.3/4096/60，与历史 `float(x or 60)` 兜底一致）
+        - None/空 dict 输入 → 出厂默认（防御脏数据）
+        """
+        data = data or {}
+        return cls(
+            base_url=data.get("base_url") or "",
+            api_key=data.get("api_key") or "",
+            model=data.get("model") or "",
+            temperature=float(data.get("temperature") or 0.3),
+            max_tokens=int(data.get("max_tokens") or 4096),
+            timeout=float(data.get("timeout") or 60.0),
+        )
 
 
 class EmbeddingConfig(BaseModel):
@@ -207,6 +232,28 @@ class ChatConfig(BaseModel):
     kg_enhance: bool = True
 
 
+class ContextualRetrievalConfig(BaseModel):
+    """上下文检索增强配置（入库切块后处理，运行时动态读取）
+
+    - max_full_doc_chars：完整文档视角阈值（字符，默认 20000）。解析文本
+      <= 阈值时，摘要生成把完整文档作为上下文（全局视角，替代文档名+前
+      1500 字符截断）；超过阈值 → 提示效果不佳，任务失败建议换用其他切块
+      方式或关闭增强（见 contextual_retriever.DocTooLongError）
+    """
+    max_full_doc_chars: int = 20000
+
+
+class IngestionConfig(BaseModel):
+    """入库并发配置（后台解析任务并发上限，超管在系统配置页可调，即时生效）
+
+    - concurrency：同时解析入库的文档数上限（默认 3，范围 1~10）。
+      超出上限的任务在信号量队列等待，避免批量解析打爆 MinerU/embedding；
+      运行时由 ingestion_service 每次 acquire 前实时读取，改动即生效
+      （信号量按配置值惰性重建，见 _get_ingest_semaphore）
+    """
+    concurrency: int = 3
+
+
 class MySQLConfig(BaseModel):
     """MySQL 连接配置（url 非空时优先使用，测试覆盖 sqlite 用）"""
     host: str = "127.0.0.1"
@@ -236,6 +283,9 @@ class ServiceConfig(BaseModel):
     retrieval: RetrievalConfig
     chunking: ChunkingConfig
     chat: ChatConfig
+    contextual_retrieval: ContextualRetrievalConfig = Field(
+        default_factory=ContextualRetrievalConfig)
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     mysql: MySQLConfig
     minio: MinIOConfig
 
@@ -293,6 +343,9 @@ def build_default_config() -> ServiceConfig:
             chunk_overlap=settings.CHUNK_OVERLAP,
         ),
         chat=ChatConfig(history_rounds=settings.CHAT_HISTORY_ROUNDS),
+        # 入库并发数：.env INGEST_CONCURRENCY 出厂默认（配置档案可覆盖）
+        ingestion=IngestionConfig(
+            concurrency=max(1, int(settings.INGEST_CONCURRENCY))),
         mysql=MySQLConfig(
             host=settings.MYSQL_HOST,
             port=settings.MYSQL_PORT,

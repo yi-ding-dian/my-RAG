@@ -18,7 +18,7 @@ from typing import List, Optional
 from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.chunking.splitter import Chunk
@@ -55,9 +55,10 @@ _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB
 _MAX_PREVIEW_PDF_BYTES = 50 * 1024 * 1024  # PDF 在线预览上限 50MB
 
 # 文档列表状态筛选合法值（空/缺省 = 全部；parsed 为历史中间态，归入
-# 「待解析」；unparsed 为前端「未入库」筛选 value，映射 uploaded+parsed 两态）
+# 「待解析」；unparsed 为前端「未入库」筛选 value，映射 uploaded+parsed 两态；
+# pending_confirm=Agentic 超限待确认，归入「失败」筛选组（同为异常/挂起态））
 _VALID_LIST_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed",
-                      "unparsed", "all"}
+                      "pending_confirm", "unparsed", "all"}
 
 
 def _get_doc_or_404(kb_id: str, doc_id: str) -> DocumentItem:
@@ -329,12 +330,17 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
                 status_code=400,
                 detail=f"非法状态筛选: {status}"
                        f"（支持: uploaded/parsing/parsed/ingested/failed/"
-                       f"unparsed/all）")
+                       f"pending_confirm/unparsed/all）")
         if status != "all":
             if status in ("uploaded", "unparsed"):
                 # 「待解析/未入库」= uploaded + 历史「已解析」中间态，
                 # 两者均可触发入库解析（前端筛选 value 用 unparsed）
                 docs = [d for d in docs if d.status in ("uploaded", "parsed")]
+            elif status == "failed":
+                # 「失败」筛选组 = failed + pending_confirm（Agentic 超限
+                # 待确认：异常/挂起态一组，前端「失败」标签下可见待确认文档）
+                docs = [d for d in docs
+                        if d.status in ("failed", "pending_confirm")]
             else:
                 docs = [d for d in docs if d.status == status]
     if page is None or page_size is None or page_size <= 0:
@@ -486,6 +492,58 @@ async def get_document_raw(kb_id: str, doc_id: str,
     # txt/md/url：网页/文本内容（二进制解码容错，非法字节替换）
     return Response(content=data.decode("utf-8", errors="replace"),
                     media_type="text/plain; charset=utf-8")
+
+
+# 下载响应 Content-Type（按文档类型给准确 MIME；未知类型统一二进制流）
+_DOWNLOAD_MEDIA_TYPES = {
+    "pdf": "application/pdf",
+    "docx": ("application/vnd.openxmlformats-officedocument."
+             "wordprocessingml.document"),
+    "txt": "text/plain; charset=utf-8",
+    "md": "text/markdown; charset=utf-8",
+    "url": "text/markdown; charset=utf-8",  # URL 网页导入的原始 .md 文本
+}
+
+
+@router.get("/{doc_id}/download")
+async def download_document(kb_id: str, doc_id: str,
+                            db: AsyncSession = Depends(get_db),
+                            user: UserPublic = Depends(get_current_user)):
+    """下载文档原始文件（can_access_kb；下载算读取，无权限 404 伪装）
+
+    - 文件来源：对象存储（MinIO/本地，key=uploads/{doc.name}）优先；
+      存储不可用（异常）回退本地副本 data/uploads/{doc.name}（上传/URL
+      导入时存储与本地副本双写，内容一致）；两者均无 → 404
+    - 返回 attachment 下载：文件名用展示名 original_name
+      （Content-Disposition RFC 5987 UTF-8'' 编码，中文安全）
+    - 与预览（/raw）解耦：不限制类型/大小，任何非回收站状态均可下载
+      （含未解析文档）；回收站文档不可下载（404 伪装）
+    """
+    await kb_or_404(db, kb_id, user)
+    doc = _get_doc_or_404(kb_id, doc_id)
+    if doc.deleted:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    doc_svc = get_document_service()
+    media_type = _DOWNLOAD_MEDIA_TYPES.get(
+        (doc.file_type or "").lower().lstrip("."), "application/octet-stream")
+    storage = get_storage_service()
+    try:
+        data = await storage.read_bytes(f"uploads/{doc.name}")
+    except Exception as e:
+        # 存储不可用（MinIO 网络/对象缺失等）→ 回退本地副本
+        logger.warning("下载: 存储读取失败，回退本地副本 %s: %s",
+                       doc_id, str(e)[:150])
+        upload_path = doc_svc.get_upload_path(doc)
+        if not upload_path.exists() or not upload_path.is_file():
+            raise HTTPException(status_code=404, detail="文件不存在或已被清理")
+        return FileResponse(path=upload_path, media_type=media_type,
+                            filename=doc.original_name)
+    filename = quote(doc.original_name)
+    return Response(
+        content=data, media_type=media_type,
+        headers={
+            "Content-Disposition":
+                f"attachment; filename*=UTF-8''{filename}"})
 
 
 @router.get("/{doc_id}", response_model=DocumentDetail)

@@ -42,10 +42,12 @@ from typing import Dict, List, Optional
 
 from openai import AsyncOpenAI
 
-from backend.config import STORAGE_DIR, get_active_config
+from backend.config import LLMConfig, STORAGE_DIR, get_active_config
 from backend.models.rag_models import Source
 from backend.services.settings_service import llm_cfg_for_parser
 from backend.services.chat_service import _llm_to_dict
+from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,
+                                         get_llm_client, llm_completion)
 from backend.services.thinking_strategy import (
     build_thinking_extra_body, get_thinking_strategy,
 )  # noqa: F401  （build_thinking_extra_body re-export：对外引用兼容，见模块注释）
@@ -474,26 +476,16 @@ def _locate_ref(chunk_text: str, entity_name: str,
 
 # ==================== LLM 抽取 ====================
 
-# 独立 LLM 客户端（key 比对自动重建：配置变化即重建，无需重启，与
-# contextual_retriever/chat_service 同款模式）
-_client: Optional[AsyncOpenAI] = None
-_client_key: Optional[str] = None
+# 独立 LLM 客户端（key 比对自动重建：配置变化即重建，无需重启；实现统一
+# 在 llm_client.get_llm_client，缓存为模块级 key→client 字典）
 
 
 def _get_client(llm_cfg: Optional[dict] = None) -> AsyncOpenAI:
-    """按 LLM 配置 key 比对自动重建客户端"""
-    global _client, _client_key
-    if llm_cfg is None:
-        llm_cfg = _llm_to_dict(get_active_config().llm)
-    key = json.dumps(llm_cfg, sort_keys=True, ensure_ascii=False)
-    if _client is None or _client_key != key:
-        _client = AsyncOpenAI(
-            base_url=llm_cfg.get("base_url", ""),
-            api_key=llm_cfg.get("api_key", ""),
-            timeout=float(llm_cfg.get("timeout") or 60),
-        )
-        _client_key = key
-    return _client
+    """按 LLM 配置 key 比对自动重建客户端（委托统一工厂 get_llm_client）
+
+    保留模块级函数名（test_parse_llm_model 等测试 monkeypatch 依赖）。
+    """
+    return get_llm_client(llm_cfg)
 
 
 async def _extract_one(sem: asyncio.Semaphore, index: int, chunk_text: str,
@@ -506,6 +498,9 @@ async def _extract_one(sem: asyncio.Semaphore, index: int, chunk_text: str,
     """
     async with sem:
         try:
+            # 消费处类型化：dict → LLMConfig（扩展字段忽略）；_get_client
+            # 调用点仍传原 dict（测试 recorder 断言 dict 结构兼容）
+            cfg = LLMConfig.from_dict(llm_cfg)
             client = _get_client(llm_cfg)
             payload = {
                 "messages": [
@@ -516,15 +511,11 @@ async def _extract_one(sem: asyncio.Semaphore, index: int, chunk_text: str,
             }
             if strategy is not None:
                 strategy.apply(payload)
-            resp = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model=llm_cfg.get("model") or "",
-                    messages=payload["messages"],
-                    max_tokens=_MAX_TOKENS,
-                    temperature=0.1,
-                    extra_body=payload.get("extra_body"),
-                ),
-                timeout=timeout,
+            # 统一调用包装：超时 → LLMTimeoutError；调用失败 → LLMRequestError
+            resp = await llm_completion(
+                client, model=cfg.model, messages=payload["messages"],
+                max_tokens=_MAX_TOKENS, temperature=0.1,
+                extra_body=payload.get("extra_body"), timeout=timeout,
             )
             try:
                 content = (resp.choices[0].message.content or "").strip()
@@ -546,11 +537,17 @@ async def _extract_one(sem: asyncio.Semaphore, index: int, chunk_text: str,
                 logger.info("知识图谱抽取为空结果，跳过: chunk#%d", index)
                 return None
             return {"index": index, "extraction": extraction}
-        except asyncio.TimeoutError:
+        except LLMTimeoutError:
             logger.warning("知识图谱抽取超时（>%.0fs），跳过: chunk#%d",
                            timeout, index)
             return None
+        except LLMRequestError as e:
+            # 可预期失败（网络/限流/HTTP 错误）：warning，单块失败跳过不阻塞
+            logger.warning("知识图谱抽取失败，跳过: chunk#%d err=%s",
+                           index, str(e)[:150])
+            return None
         except Exception as e:
+            # 兜底（未知异常）：同样跳过不阻塞，信息保留
             logger.warning("知识图谱抽取失败，跳过: chunk#%d err=%s",
                            index, str(e)[:150])
             return None
@@ -585,11 +582,13 @@ async def build_graph_for_doc(kb_id: str, doc_id: str, doc_name: str,
         return dict(_EMPTY_STATS)
     # 解析 LLM 模型：parser_config.parse_llm_model 指定（图谱抽取专用模型，
     # 从激活档案模型列表查完整配置）→ 覆盖；未指定/查不到 → 激活模型
+    # （调用点保持 dict 传递：_get_client 的测试 recorder 断言 dict 结构）
     llm_cfg = _llm_to_dict(get_active_config().llm)
     override = llm_cfg_for_parser(cfg.get("parse_llm_model"))
     if override:
         llm_cfg = {**llm_cfg, **override}
-    if not (llm_cfg.get("base_url") and llm_cfg.get("model")):
+    llm_cfg_obj = LLMConfig.from_dict(llm_cfg)
+    if not (llm_cfg_obj.base_url and llm_cfg_obj.model):
         logger.warning("LLM 未配置（base_url/model 为空），跳过知识图谱构建")
         return dict(_EMPTY_STATS)
     # 思考关闭策略：按模型服务商/部署方式选择（在线 DeepSeek → extra_body
@@ -786,7 +785,8 @@ async def extract_query_entities(query: str) -> List[str]:
         return []
     try:
         llm_cfg = _llm_to_dict(get_active_config().llm)
-        if not (llm_cfg.get("base_url") and llm_cfg.get("model")):
+        llm_cfg_obj = LLMConfig.from_dict(llm_cfg)
+        if not (llm_cfg_obj.base_url and llm_cfg_obj.model):
             logger.warning("LLM 未配置（base_url/model 为空），跳过查询实体抽取")
             return []
         client = _get_client(llm_cfg)
@@ -801,25 +801,26 @@ async def extract_query_entities(query: str) -> List[str]:
             ],
         }
         strategy.apply(payload)
-        resp = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=llm_cfg.get("model") or "",
-                messages=payload["messages"],
-                max_tokens=_QUERY_MAX_TOKENS,
-                temperature=0.1,
-                extra_body=payload.get("extra_body"),
-            ),
-            timeout=_QUERY_TIMEOUT,
+        # 统一调用包装：超时 → LLMTimeoutError；调用失败 → LLMRequestError
+        resp = await llm_completion(
+            client, model=llm_cfg_obj.model, messages=payload["messages"],
+            max_tokens=_QUERY_MAX_TOKENS, temperature=0.1,
+            extra_body=payload.get("extra_body"), timeout=_QUERY_TIMEOUT,
         )
         try:
             content = (resp.choices[0].message.content or "").strip()
         except Exception:
             content = ""
         return parse_query_entities(content)
-    except asyncio.TimeoutError:
+    except LLMTimeoutError:
         logger.warning("查询实体抽取超时（>%.0fs），图谱通道跳过", _QUERY_TIMEOUT)
         return []
+    except LLMRequestError as e:
+        # 可预期失败（网络/限流/HTTP 错误）：warning，图谱通道静默降级
+        logger.warning("查询实体抽取失败，图谱通道跳过: %s", str(e)[:150])
+        return []
     except Exception as e:
+        # 兜底（未知异常）：同样静默降级，信息保留
         logger.warning("查询实体抽取失败，图谱通道跳过: %s", str(e)[:150])
         return []
 

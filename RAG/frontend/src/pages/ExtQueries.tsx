@@ -23,6 +23,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import {
+  asApiError,
   ExtQuery,
   ExtQueryConfig,
   KnowledgeBase,
@@ -208,8 +209,8 @@ const ExtQueriesPage: React.FC = () => {
           link: extQueryLink(res.data.id, res.data.token),
         });
       }
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || (editing ? '更新失败' : '创建失败'));
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || (editing ? '更新失败' : '创建失败'));
     } finally {
       setSubmitting(false);
     }
@@ -223,8 +224,8 @@ const ExtQueriesPage: React.FC = () => {
         title: '访问令牌已重置（旧链接已失效）',
         link: extQueryLink(item.id, res.data.token),
       });
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '重置令牌失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '重置令牌失败');
     }
   };
 
@@ -233,8 +234,8 @@ const ExtQueriesPage: React.FC = () => {
       const res = await toggleExtQuery(item.id);
       message.success(res.data.enabled ? '已启用' : '已停用（链接立即失效）');
       await load();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '操作失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '操作失败');
     }
   };
 
@@ -243,8 +244,8 @@ const ExtQueriesPage: React.FC = () => {
       await deleteExtQuery(item.id);
       message.success(`外部查询「${item.name}」已删除`);
       await load();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '删除失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '删除失败');
     }
   };
 

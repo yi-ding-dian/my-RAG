@@ -22,15 +22,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Dict, List, Optional
 
-from openai import AsyncOpenAI
+from openai import (APIConnectionError, APIStatusError, APITimeoutError,
+                    AsyncOpenAI, RateLimitError)
 
-from backend.config import CHAT_DIR, get_active_config
+from backend.config import CHAT_DIR, LLMConfig, get_active_config
 from backend.models.rag_models import (ChatHistoryItem, ChatMessage,
                                        ChatSession, Source)
+from backend.services.llm_client import get_llm_client, llm_to_dict
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
 from backend.services.settings_service import (merge_chat_config,
                                                merge_department_llm)
+
+# 历史模块名保留：_llm_to_dict（4 处历史 import：agentic_chunker /
+# contextual_retriever / knowledge_graph_service / ext_query）
+_llm_to_dict = llm_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -71,20 +77,6 @@ def sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-_LLM_CONFIG_KEYS = ("base_url", "api_key", "model", "temperature",
-                    "max_tokens", "timeout")
-
-
-def _llm_to_dict(llm_cfg) -> dict:
-    """LLM 配置对象 → dict（merge_department_llm 入参；dict 直接透传）"""
-    if isinstance(llm_cfg, dict):
-        return {k: llm_cfg.get(k) for k in _LLM_CONFIG_KEYS}
-    try:
-        return llm_cfg.model_dump()  # pydantic v2 BaseModel
-    except AttributeError:
-        return {k: getattr(llm_cfg, k, None) for k in _LLM_CONFIG_KEYS}
-
-
 class ChatService:
 
     def __init__(self):
@@ -95,23 +87,15 @@ class ChatService:
     # ---------- 客户端 ----------
 
     def _get_client(self, llm_cfg: Optional[dict] = None) -> AsyncOpenAI:
-        """按 LLM 配置 key 比对自动重建：配置（地址/密钥/模型）变化即重建，无需重启
+        """按 LLM 配置 key 比对自动重建（委托统一工厂 get_llm_client）
 
         llm_cfg：合并后的 LLM 配置 dict（base_url/api_key/model/timeout，
-        merge_department_llm 输出）；None = 使用全局活跃配置。缓存 key 为
-        合并配置的 JSON 序列化——部门配置变化（含 api_key）即重建独立 client。
+        merge_department_llm 输出）或 LLMConfig；None = 使用全局活跃配置。
+        缓存 key 为合并配置的 JSON 序列化（统一工厂实现，与历史一致）——
+        部门配置变化（含 api_key）即重建独立 client。保留实例方法签名
+        （conftest / 测试 monkeypatch ChatService._get_client 依赖）。
         """
-        if llm_cfg is None:
-            llm_cfg = _llm_to_dict(get_active_config().llm)
-        key = json.dumps(llm_cfg, sort_keys=True, ensure_ascii=False)
-        if self._client is None or self._client_key != key:
-            self._client = AsyncOpenAI(
-                base_url=llm_cfg.get("base_url", ""),
-                api_key=llm_cfg.get("api_key", ""),
-                timeout=float(llm_cfg.get("timeout") or 60),
-            )
-            self._client_key = key
-        return self._client
+        return get_llm_client(llm_cfg)
 
     # ---------- 会话持久化 ----------
 
@@ -278,12 +262,16 @@ class ChatService:
             try:
                 sources = await get_retrieval_service().retrieve(
                     kb_id, message, top_k=eff_top_k, min_score=eff_min_score)
+            except RetrievalUnavailableError as e:
+                # 可预期失败（Embedding 服务不可用等）：warning 不透传堆栈，
+                # 用户消息语义与历史一致（"检索服务不可用：..."原样透传）
+                logger.warning("检索服务不可用: %s", e)
+                yield sse_event("error", {"message": str(e)})
+                return
             except Exception as e:
-                logger.exception("检索失败: %s", e)
-                if isinstance(e, RetrievalUnavailableError):
-                    yield sse_event("error", {"message": str(e)})
-                else:
-                    yield sse_event("error", {"message": f"检索失败: {e}"})
+                # 兜底（未知异常）：不记堆栈，信息保留
+                logger.error("检索失败: %s", e)
+                yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
 
             # 2) 知识图谱增强通道（与普通检索并行注入：LLM 抽实体 → 图谱匹配
@@ -363,19 +351,22 @@ class ChatService:
 
             # 5) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
             #    部门 llm 段字段级覆盖全局 LLM——地址/密钥/模型/生成参数，
-            #    _get_client 按合并配置独立缓存，部门切换即重建）
-            llm_cfg = get_active_config().llm
-            merged_llm = merge_department_llm(_llm_to_dict(llm_cfg), dept_llm)
-            client = self._get_client(merged_llm)
+            #    _get_client 按合并配置独立缓存，部门切换即重建；
+            #    调用点传合并 dict（conftest mock_llm 记录并断言 dict 结构），
+            #    内部消费经 LLMConfig.from_dict 类型化（扩展字段忽略）
+            merged_llm_dict = merge_department_llm(
+                _llm_to_dict(get_active_config().llm), dept_llm)
+            merged_llm = LLMConfig.from_dict(merged_llm_dict)
+            client = self._get_client(merged_llm_dict)
             request_kwargs: dict = {
-                "model": merged_llm["model"],
+                "model": merged_llm.model,
                 "messages": messages,
                 "temperature": (temperature
                                 if temperature is not None
-                                else merged_llm["temperature"]),
+                                else merged_llm.temperature),
                 "max_tokens": (max_tokens
                                if max_tokens is not None
-                               else merged_llm["max_tokens"]),
+                               else merged_llm.max_tokens),
                 "stream": True,
             }
             if top_p is not None:
@@ -396,8 +387,20 @@ class ChatService:
                     self._finalize(session, message, answer_parts, sources)
                     saved = True
                 raise
+            except (APITimeoutError, APIConnectionError, RateLimitError,
+                    APIStatusError) as e:
+                # 可预期失败：LLM 服务超时/断连/限流/HTTP 错误 → warning
+                # 不记堆栈；用户消息语义与历史一致（"LLM 调用失败: ..."）
+                logger.warning("LLM 流式调用失败（LLM 服务异常）: %s", e)
+                err_msg = f"LLM 调用失败: {e}"
+                answer_parts.append(err_msg)
+                self._finalize(session, message, answer_parts, sources)
+                saved = True
+                yield sse_event("error", {"message": err_msg})
+                return
             except Exception as e:
-                logger.exception("LLM 流式调用失败: %s", e)
+                # 兜底（未知异常）：不记堆栈，信息保留
+                logger.error("LLM 流式调用失败: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
                 self._finalize(session, message, answer_parts, sources)

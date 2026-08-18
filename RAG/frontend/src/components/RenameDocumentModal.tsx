@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { App as AntApp, Form, Input, Modal } from 'antd';
 import type { DocumentItem } from '../api/client';
-import { renameDocument } from '../api/client';
+import {
+  asApiError, renameDocument } from '../api/client';
 
 interface RenameDocumentModalProps {
   open: boolean;
@@ -55,8 +56,8 @@ const RenameDocumentModal: React.FC<RenameDocumentModalProps> = ({
       message.success('文档已重命名');
       onSuccess();
       onCancel();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '重命名失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '重命名失败');
     } finally {
       setSaving(false);
     }

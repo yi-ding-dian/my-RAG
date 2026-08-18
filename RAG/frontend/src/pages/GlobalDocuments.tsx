@@ -26,6 +26,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import {
+  asApiError,
   Department,
   DocumentStatus,
   GlobalDocumentItem,
@@ -52,6 +53,8 @@ const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   parsed: { color: 'warning', text: '已解析' },
   ingested: { color: 'success', text: '已入库' },
   failed: { color: 'error', text: '失败' },
+  // Agentic 分块超限待确认：不算失败，橙色 Tag（与部门内文档页一致）
+  pending_confirm: { color: 'orange', text: '待确认' },
 };
 
 /** 状态筛选（与部门内文档管理 M3 语义统一：「未入库」= uploaded+parsed） */
@@ -238,8 +241,8 @@ const GlobalDocumentsPage: React.FC = () => {
       await deleteDocument(doc.kb_id, doc.id);
       message.success('已移入回收站（可恢复）');
       void load(true);
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '删除失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '删除失败');
     }
   };
 
@@ -274,7 +277,11 @@ const GlobalDocumentsPage: React.FC = () => {
           ) : (
             <Tag color={meta.color}>{meta.text}</Tag>
           );
-        return status === 'failed' && row.error ? <Tooltip title={row.error}>{tag}</Tooltip> : tag;
+        return (status === 'failed' || status === 'pending_confirm') && row.error ? (
+          <Tooltip title={row.error}>{tag}</Tooltip>
+        ) : (
+          tag
+        );
       },
     },
     {

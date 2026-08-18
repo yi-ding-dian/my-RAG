@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -81,10 +81,13 @@ from backend.services.agentic_chunker import (AgenticChunkError,
                                               agentic_chunk)
 from backend.services.contextual_retriever import enrich_chunks
 from backend.services.document_service import get_document_service
-from backend.services.embedding_service import get_embedding_service
+from backend.services.embedding_service import (EmbeddingError,
+                                                get_embedding_service)
 from backend.services.dim_check import VectorDimensionError
 from backend.services.knowledge_graph_service import build_graph_for_doc
-from backend.services.parser_client import get_parser_client
+from backend.services.llm_client import LLMRequestError, LLMTimeoutError
+from backend.services.parser_client import (ParserUnavailableError,
+                                            get_parser_client)
 from backend.services.parser_probe import probe_parsers
 from backend.services.parser_images import rewrite_image_refs
 from backend.services.storage_service import get_storage_service
@@ -92,19 +95,36 @@ from backend.services.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
 
-# 后台入库任务并发上限（默认 3，环境变量 INGEST_CONCURRENCY 可调）：
-# 批量解析同时打爆 MinerU/embedding 时限制并行任务数。
+# 后台入库任务并发上限（系统配置 ingestion.concurrency，默认 3，超管在
+# Settings 页可调，改动即时生效；.env INGEST_CONCURRENCY 仅作出厂默认，
+# 由 build_default_config 读取）：批量解析同时打爆 MinerU/embedding 时
+# 限制并行任务数。
 # 信号量惰性创建并绑定首次 acquire 时的运行事件循环（asyncio.Semaphore
-# 3.10+ 懒绑定 loop）；conftest 重置 _ingest_semaphore 避免跨测试 loop 串用。
-_INGEST_CONCURRENCY = max(1, int(os.environ.get("INGEST_CONCURRENCY", "3")))
+# 3.10+ 懒绑定 loop）；conftest 重置 _ingest_semaphore/_ingest_semaphore_value
+# 避免跨测试 loop 串用。
 _ingest_semaphore: Optional[asyncio.Semaphore] = None
+# 当前信号量绑定的配置值（配置变更时按新值重建信号量，见 _get_ingest_semaphore）
+_ingest_semaphore_value: int = 0
+
+
+def _ingest_concurrency() -> int:
+    """实时读系统配置的入库并发数（每次调用读取，改配置即生效；防御性兜底 ≥1）"""
+    return max(1, int(get_active_config().ingestion.concurrency))
 
 
 def _get_ingest_semaphore() -> asyncio.Semaphore:
-    """惰性获取全局入库信号量（首次调用绑定当前事件循环）"""
-    global _ingest_semaphore
-    if _ingest_semaphore is None:
-        _ingest_semaphore = asyncio.Semaphore(_INGEST_CONCURRENCY)
+    """惰性获取全局入库信号量（首次调用绑定当前事件循环）
+
+    动态生效设计：asyncio.Semaphore 创建后不可变，因此每次 acquire 前比对
+    当前系统配置值，变化 → 按新值重建信号量（以配置值为 key，旧信号量随
+    GC 释放）。并发语义保持：新任务按新上限排队等待；持有中的任务按各自
+    获取时的信号量计数继续，不会出现计数错乱。
+    """
+    global _ingest_semaphore, _ingest_semaphore_value
+    target = _ingest_concurrency()
+    if _ingest_semaphore is None or _ingest_semaphore_value != target:
+        _ingest_semaphore = asyncio.Semaphore(target)
+        _ingest_semaphore_value = target
     return _ingest_semaphore
 
 # 切块参数合法范围（任务书契约：chunk_size 50~20000，title split_level 1~3，
@@ -372,13 +392,37 @@ _PREVIEW_LIMIT = 20
 _PREVIEW_CHAR = 500
 # Agentic 智能分块文本长度两档上限（用户约束：LLM 全量读取成本随长度
 # 上升——1 万~5 万字需前端确认后继续（agentic_confirm=true），超过 5 万字
-# 直接拒绝；校验在解析出文本后、切块前，失败写回 failed）
+# 直接拒绝；校验在解析出文本后、切块前：1 万~5 万字未确认 → 文档进入
+# pending_confirm 待确认状态（不算失败，error 带提示），确认后重提入库）
 _MAX_AGENTIC_TEXT_CHARS = 10000
 _MAX_AGENTIC_TEXT_CHARS_HARD = 50000
 
 
 class _IngestCancelled(Exception):
     """入库任务被用户取消（路由 cancel 接口置标记，任务检查点抛出）"""
+
+
+class _AgenticConfirmRequired(Exception):
+    """Agentic 分块 1 万~5 万字超限且未带 agentic_confirm
+
+    与普通失败区分：捕获后文档进入 pending_confirm 待确认状态（不写
+    failed、不计入失败），error 带字数提示与 agentic_confirm=true 指引，
+    前端"确认继续"带确认标记重提入库。
+    """
+
+
+@dataclass
+class _IngestChunkStage:
+    """切块阶段产物（_ingest 各阶段间的共享状态）
+
+    用参数传递/返回值而非实例属性：入库任务并发执行（多文档并行入库），
+    任务局部状态存实例属性会互相串扰。
+    """
+    chunk_objects: List[Chunk]
+    parent_chunks: List[Chunk]
+    child_parent_map: Dict[int, int]
+    agentic_labels: Dict[int, str]
+    raw_chunk_texts: List[str]
 
 
 class IngestionService:
@@ -411,8 +455,8 @@ class IngestionService:
         method/params: 切块方式与参数（不传则沿用文档已有配置或默认，
         见 resolve_parser_config）；校验失败（非法 method / regex 无 pattern /
         参数越界）在任务内写回 status=failed + error（路由层同步 400 双保险）
-        并发上限：模块级信号量（INGEST_CONCURRENCY，默认 3），
-        批量解析不会同时打爆 MinerU/embedding 服务。
+        并发上限：模块级信号量（系统配置 ingestion.concurrency，默认 3，
+        超管可调，改配置即时生效），批量解析不会同时打爆 MinerU/embedding。
         """
         # 信号量在整个任务期间持有（含排队等待），并发解析数不会超过上限
         async with _get_ingest_semaphore():
@@ -465,315 +509,434 @@ class IngestionService:
         # 1) uploaded -> parsing
         doc_svc.transition(doc_id, "parsing")
         try:
-            # 1.5) 原始文件从对象存储下载到 data/uploads/（供解析器读 Path）
-            storage = get_storage_service()
-            upload_path = doc_svc.get_upload_path(doc)
-            try:
-                await storage.download_to(f"uploads/{doc.name}", upload_path)
-            except Exception as e:
-                # 存储不可用/对象不存在：本地已有文件（历史数据/本地副本）则直接用
-                if not upload_path.exists() or upload_path.stat().st_size == 0:
-                    raise RuntimeError(f"原始文件不可用（存储读取失败: {e}）") from e
-                logger.warning("存储下载失败，使用本地文件 %s: %s",
-                               upload_path.name, str(e)[:150])
+            # 2) 解析阶段（下载 → 探测降级 → 解析 → 取消检查点1 →
+            #    图片上传 → 落盘）
+            text, parse_method = await self._stage_parse(
+                doc, doc_id, parser_config, probe)
+            # 3) 切块阶段（QA 规范性检测 → 切块 → 父标题前缀）
+            stage = await self._stage_chunk(
+                doc, doc_id, parser_id, parser_config,
+                qa_force_continue, text)
+            # 4) 增强阶段（上下文检索摘要 → 知识图谱，两者失败不阻塞入库）
+            contexts, kg_status, kg_error = await self._stage_enhance(
+                doc, doc_id, parser_config, stage, text)
+            # 5) 向量化阶段（空块校验 → 取消检查点2a → embedding →
+            #    取消检查点2b → 维度校验 → 清旧向量 → 写入 + BM25 失效）
+            await self._stage_vectorize(
+                doc, doc_id, parser_id, parser_config, contexts, stage)
+            # 6) 完成阶段（解析配置/chunks_meta/图谱状态落库 + 统计日志）
+            await self._stage_finalize(
+                doc, doc_id, parser_id, parser_config, parse_method,
+                contexts, stage, kg_status, kg_error)
+        except _AgenticConfirmRequired as e:
+            # Agentic 分块 1 万~5 万字超限未确认：不算失败 → 文档进入
+            # pending_confirm 待确认状态（状态列橙色"待确认" + error 提示，
+            # 不计入失败统计；"确认继续"带 agentic_confirm=true 重提入库）
+            logger.info(
+                "Agentic 分块需确认: %s (%s) 提示=%s（agentic_confirm=true 可继续）",
+                doc.original_name, doc_id, str(e))
+            doc_svc.transition(doc_id, "pending_confirm", error=str(e))
+        except _IngestCancelled:
+            # 用户取消解析（检查点命中）：写回 failed + 取消原因，不打堆栈
+            logger.info("入库任务已取消: %s (%s)", doc.original_name, doc_id)
+            doc_svc.mark_failed(doc_id, "用户取消解析")
+        except ParserUnavailableError as e:
+            # 可预期失败（解析服务不可用/调用失败）：warning 不记堆栈；
+            # 错误消息 = 原始解析异常文本（mark_failed 文案与历史一致）
+            logger.warning("入库失败（解析服务不可用）: %s (%s)", doc_id, e)
+            doc_svc.mark_failed(doc_id, str(e))
+        except EmbeddingError as e:
+            # 可预期失败（Embedding 服务不可用/超时，重试后仍失败）：
+            # warning 不记堆栈，任务失败语义不变
+            logger.warning("入库失败（Embedding 服务不可用）: %s (%s)",
+                           doc_id, e)
+            doc_svc.mark_failed(doc_id, str(e))
+        except VectorDimensionError as e:
+            # 可预期失败（更换 embedding 模型后维度不匹配）：warning，
+            # 任务失败语义不变（提示更换模型或重建向量）
+            logger.warning("入库失败（向量维度不匹配）: %s (%s)", doc_id, e)
+            doc_svc.mark_failed(doc_id, str(e))
+        except (LLMTimeoutError, LLMRequestError) as e:
+            # 可预期失败（LLM 超时/限流/网络错误冒泡到任务层）：warning
+            # 不记堆栈，任务失败语义不变
+            logger.warning("入库失败（LLM 调用失败）: %s (%s)", doc_id, e)
+            doc_svc.mark_failed(doc_id, str(e))
+        except Exception as e:
+            # 兜底（未知异常）：不记堆栈，信息保留
+            logger.error("入库失败: %s (%s)", doc_id, e)
+            doc_svc.mark_failed(doc_id, str(e))
 
-            # 2) 解析（引擎选择：显式 deepdoc 或 layout_recognize=DeepDOC 且
-            # engine=auto 都走 DeepDoc——与前端 ParseConfigModal 联动一致；
-            # 其余：auto 探测降级 / mineru 强制 / plain 直提；
-            # 解析配置透传：表格/公式/图片/语言/页码，见 _PARSER_PARSE_OPTS）
-            # 解析前可用性检测 + 自动降级（pdf/docx，外部解析器场景）：
-            # deepdoc 不可用 → mineru → plain；mineru 不可用 → plain；
-            # 降级说明写进 parser_config["degrade"]（随文档元数据返回，前端
-            # 可在 ingest 响应/文档详情读取），parser_config 同时记录实际使用
-            # 的 layout_recognize/parser_engine（重跑沿用实际配置，避免再次降级）
-            parser = get_parser_client()
-            engine = resolve_parser_engine(parser_config)
-            parse_opts = {k: parser_config[k] for k in _PARSER_PARSE_OPTS
-                          if k in parser_config}
-            if engine == "deepdoc":
-                parse_opts = {}  # DeepDoc 无 MinerU 解析参数（表格/图片开关不适用）
-            parse_degrade: Optional[str] = None
-            file_type = (doc.file_type or "").lower().lstrip(".")
-            if engine != "plain" and file_type in ("pdf", "docx"):
-                if probe is None:
-                    probe = await probe_parsers(
-                        mineru_timeout=3.0, deepdoc_timeout=5.0)
-                if engine == "deepdoc" and not probe["deepdoc"]["available"]:
-                    reason = probe["deepdoc"]["reason"] or "无响应"
-                    if probe["mineru"]["available"]:
-                        engine = "mineru"
-                        parser_config["parser_engine"] = "mineru"
-                        parser_config["layout_recognize"] = "MinerU"
-                        parse_opts = {k: parser_config[k]
-                                      for k in _PARSER_PARSE_OPTS
-                                      if k in parser_config}
-                        parse_degrade = (
-                            f"DeepDoc 服务不可用（{reason}），已自动切换 MinerU 解析")
-                    else:
-                        engine = "plain"
-                        parser_config["parser_engine"] = "plain"
-                        parser_config["layout_recognize"] = "PlainText"
-                        parse_opts = {}
-                        parse_degrade = (
-                            f"DeepDoc 服务不可用（{reason}），MinerU 也不可用"
-                            f"（{probe['mineru']['reason'] or '无响应'}），"
-                            f"已降级纯文本提取")
-                elif engine in ("auto", "mineru") \
-                        and not probe["mineru"]["available"]:
-                    reason = probe["mineru"]["reason"] or "无响应"
+    async def _stage_parse(self, doc, doc_id: str, parser_config: dict,
+                           probe) -> Tuple[str, str]:
+        """解析阶段：下载原始文件 → 探测降级 → 解析 → 取消检查点1 →
+        图片上传 → 落盘；返回 (text, parse_method)。
+
+        parser_config 原地修改（降级说明/实际引擎随文档元数据持久化）；
+        解析器调用失败包装 ParserUnavailableError（消息 = 原始异常文本，
+        mark_failed 文案与历史一致）。
+        """
+        doc_svc = get_document_service()
+        storage = get_storage_service()
+        # 1.5) 原始文件从对象存储下载到 data/uploads/（供解析器读 Path）
+        upload_path = doc_svc.get_upload_path(doc)
+        try:
+            await storage.download_to(f"uploads/{doc.name}", upload_path)
+        except Exception as e:
+            # 存储不可用/对象不存在：本地已有文件（历史数据/本地副本）则直接用
+            if not upload_path.exists() or upload_path.stat().st_size == 0:
+                raise RuntimeError(f"原始文件不可用（存储读取失败: {e}）") from e
+            logger.warning("存储下载失败，使用本地文件 %s: %s",
+                           upload_path.name, str(e)[:150])
+
+        # 2) 解析（引擎选择：显式 deepdoc 或 layout_recognize=DeepDOC 且
+        # engine=auto 都走 DeepDoc——与前端 ParseConfigModal 联动一致；
+        # 其余：auto 探测降级 / mineru 强制 / plain 直提；
+        # 解析配置透传：表格/公式/图片/语言/页码，见 _PARSER_PARSE_OPTS）
+        # 解析前可用性检测 + 自动降级（pdf/docx，外部解析器场景）：
+        # deepdoc 不可用 → mineru → plain；mineru 不可用 → plain；
+        # 降级说明写进 parser_config["degrade"]（随文档元数据返回，前端
+        # 可在 ingest 响应/文档详情读取），parser_config 同时记录实际使用
+        # 的 layout_recognize/parser_engine（重跑沿用实际配置，避免再次降级）
+        parser = get_parser_client()
+        engine = resolve_parser_engine(parser_config)
+        parse_opts = {k: parser_config[k] for k in _PARSER_PARSE_OPTS
+                      if k in parser_config}
+        if engine == "deepdoc":
+            parse_opts = {}  # DeepDoc 无 MinerU 解析参数（表格/图片开关不适用）
+        parse_degrade: Optional[str] = None
+        file_type = (doc.file_type or "").lower().lstrip(".")
+        if engine != "plain" and file_type in ("pdf", "docx"):
+            if probe is None:
+                probe = await probe_parsers(
+                    mineru_timeout=3.0, deepdoc_timeout=5.0)
+            if engine == "deepdoc" and not probe["deepdoc"]["available"]:
+                reason = probe["deepdoc"]["reason"] or "无响应"
+                if probe["mineru"]["available"]:
+                    engine = "mineru"
+                    parser_config["parser_engine"] = "mineru"
+                    parser_config["layout_recognize"] = "MinerU"
+                    parse_opts = {k: parser_config[k]
+                                  for k in _PARSER_PARSE_OPTS
+                                  if k in parser_config}
+                    parse_degrade = (
+                        f"DeepDoc 服务不可用（{reason}），已自动切换 MinerU 解析")
+                else:
                     engine = "plain"
                     parser_config["parser_engine"] = "plain"
                     parser_config["layout_recognize"] = "PlainText"
                     parse_opts = {}
                     parse_degrade = (
-                        f"MinerU 服务不可用（{reason}），已切换纯文本提取")
-            if parse_degrade:
-                parser_config["degrade"] = parse_degrade
+                        f"DeepDoc 服务不可用（{reason}），MinerU 也不可用"
+                        f"（{probe['mineru']['reason'] or '无响应'}），"
+                        f"已降级纯文本提取")
+            elif engine in ("auto", "mineru") \
+                    and not probe["mineru"]["available"]:
+                reason = probe["mineru"]["reason"] or "无响应"
+                engine = "plain"
+                parser_config["parser_engine"] = "plain"
+                parser_config["layout_recognize"] = "PlainText"
+                parse_opts = {}
+                parse_degrade = (
+                    f"MinerU 服务不可用（{reason}），已切换纯文本提取")
+        if parse_degrade:
+            parser_config["degrade"] = parse_degrade
+        try:
             text, images, parse_method = await parser.parse(
                 upload_path, doc.file_type,
                 engine=engine,
                 **parse_opts)
-            if not text or not text.strip():
-                raise RuntimeError(
-                    "解析结果为空（扫描版 PDF 或无文本内容），请检查解析服务后重试")
-
-            # 取消检查点 1：解析已完成、尚未上传图片/落盘/切块——用户取消
-            # 后不再做后续耗时处理（解析服务调用本身无法中途打断，已白跑）
-            self._raise_if_cancelled(doc_id)
-
-            # 2.5) 解析图片上传存储 + markdown 引用替换
-            # 上传前先清该文档旧解析图片（re-ingest 防残留孤儿对象；
-            # 即使本次解析无图也清理，失败仅 warning 不阻断入库）
-            try:
-                await storage.delete_prefix(f"images/{doc.id}/")
-            except Exception as e:
-                logger.warning("清理旧解析图片失败 %s: %s",
-                               doc.id, str(e)[:150])
-            if images:
-                text = await self._upload_images(doc, text, images)
-
-            # 3) 解析文本落盘 data/parsed/{doc_id}.md
-            # （新流程无 parsed 中间态：解析+入库一步完成，直接到 ingested）
-            parsed_path = doc_svc.get_parsed_path(doc)
-            parsed_path.write_text(text, encoding="utf-8")
-            logger.info("解析完成: %s (%s) %d 字符%s", doc.original_name,
-                        parse_method, len(text),
-                        f"，图片 {len(images)} 张" if images else "")
-
-            # 3.7) QA 规范性检测（仅 qa 方式，切块前）：问答对占比（问答对/
-            # 总段落，与 QaChunker 切块同口径）低于 50% 且未强制 → 任务失败，
-            # 错误信息带检测详情（占比/对数/段数，前端据此弹"确认继续入库"，
-            # 确认后带 qa_force_continue=true 重新提交）；强制标记跳过检测
-            if parser_id == "qa" and not qa_force_continue:
-                stats = analyze_qa_format(text)
-                if not is_qa_format_valid(stats):
-                    ratio = (stats.qa_pairs / stats.total_paragraphs
-                             if stats.total_paragraphs else 0.0)
-                    raise RuntimeError(
-                        f"QA 问答格式检测未通过：问答对占比 {ratio:.1%}"
-                        f"（{stats.qa_pairs} 对 / {stats.total_paragraphs} 段），"
-                        f"未达到 50% 规范要求。确认文档符合预期可强制继续入库"
-                        f"（qa_force_continue=true）")
-
-            # 4) 切块（按用户选择的切块方式与参数；用替换后文本保证图片引用可加载）
-            chunk_objects: List[Chunk] = []
-            parent_chunks: List[Chunk] = []
-            child_parent_map: Dict[int, int] = {}
-            # Agentic 分块标签（仅 method=agentic 成功时填充；无标签的块不带
-            # 该字段，chunks_meta.label 可选）
-            agentic_labels: Dict[int, str] = {}
-            if parser_id == "agentic":
-                # Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签（论述类/
-                # 事实类/操作类/数据类/其他，实现与失败语义见 agentic_chunker）。
-                # 两档校验（超限 → ValueError 任务失败，前端据此提示/弹确认）：
-                # >5 万字直接拒绝（不支持 Agentic 分块）；1 万~5 万字且未带
-                # agentic_confirm → 失败带字数提示（前端确认后带
-                # agentic_confirm=true 重新提交），带确认 → 跳过校验直接分块；
-                # LLM 失败/超时/对齐全失败 → 回退 title 切块（warning 注明
-                # 原因，不阻塞入库）；思考关闭策略复用 thinking_strategy
-                if len(text) > _MAX_AGENTIC_TEXT_CHARS_HARD:
-                    raise ValueError(
-                        "文档超过 5 万字，不支持 Agentic 分块，"
-                        "请换用其他切块方式")
-                if len(text) > _MAX_AGENTIC_TEXT_CHARS \
-                        and not parser_config.get("agentic_confirm"):
-                    raise ValueError(
-                        f"文档约 {len(text)/10000:.1f} 万字，"
-                        f"Agentic 分块成本较高，确认继续请重试"
-                        f"（agentic_confirm=true）")
-                try:
-                    agentic_chunks, labels = await agentic_chunk(
-                        text, parser_config)
-                    agentic_labels = {i: labels[i]
-                                      for i in range(len(labels))}
-                    chunk_objects = agentic_chunks
-                except AgenticChunkError as e:
-                    logger.warning(
-                        "Agentic 切块失败，回退标题切块: %s (%s) 原因=%s",
-                        doc.original_name, doc_id, str(e))
-                    chunk_objects = get_chunker("title",
-                                                parser_config).chunk(text)
-            elif parser_id == "parent_child":
-                # 父子分块：子块入库，父块作上下文写进 metadata
-                splitter = get_chunker(parser_id, parser_config)
-                result: ParentChildChunkResult = splitter.chunk_parent_child(text)
-                chunk_objects = result.children
-                parent_chunks = result.parents
-                child_parent_map = result.child_parent_map
-            else:
-                chunk_objects = get_chunker(parser_id, parser_config).chunk(text)
-
-            # 4.5) 父标题前缀（enable_heading_in_content）：为不含标题的块拼接
-            # 其前最近的标题链（如 "第一章 > 1.1"），块文本自带标题行则跳过；
-            # 仅改块文本，char_start/char_end 保持原文偏移（归属/定位不受影响）
-            # 原始块文本在加前缀前保留：父标题只用于展示，知识图谱实体偏移
-            # 以原文为准（与 chunks_meta 偏移契约一致）
-            raw_chunk_texts: List[str] = [c.text for c in chunk_objects]
-            if parser_config.get("enable_heading_in_content"):
-                chunk_objects = add_heading_paths(chunk_objects, text)
-
-            # 4.7) 上下文检索增强（contextual_retrieval）：切块后为每个块调用
-            # LLM 生成简短上下文摘要（激活模型，并发限流 3，失败/超时跳过——
-            # 绝不阻塞入库）。摘要只用于向量化与检索展示：chunks_meta.text
-            # 保持原文（偏移契约不破坏），摘要存 chunks_meta.context 字段
-            contexts: Dict[int, str] = {}
-            if parser_config.get("contextual_retrieval"):
-                for item in await enrich_chunks(
-                        chunk_objects, text, parser_config,
-                        doc_name=doc.original_name):
-                    ctx = (item.get("context") or "").strip()
-                    if ctx:
-                        contexts[int(item["index"])] = ctx
-                logger.info("上下文摘要生成: %s (%d/%d 块)", doc.original_name,
-                            len(contexts), len(chunk_objects))
-
-            # 4.8) 知识图谱（knowledge_graph）：切块后为每个块调用激活 LLM
-            # 抽取实体与关系，合并进 data/storage/graphs/{kb_id}.json（幂等：
-            # 重入库先清该文档旧引用再合并；失败/超时跳过对应块——绝不阻塞
-            # 入库）。用原始块文本（父标题前缀只用于展示，实体偏移以原文为
-            # 准，与 chunks_meta 偏移契约一致）。构建成功 → graph_status=ready，
-            # 失败 → failed + graph_error（随 transition ingested 写回文档元数据）
-            kg_status: Optional[str] = None  # None=未开开关（graph_status 保持原值）
-            kg_error: Optional[str] = None
-            if parser_config.get("knowledge_graph"):
-                try:
-                    kg_stats = await build_graph_for_doc(
-                        doc.kb_id, doc_id, doc.original_name,
-                        chunk_objects, raw_texts=raw_chunk_texts,
-                        cfg=parser_config)
-                    if kg_stats.get("extracted"):
-                        logger.info(
-                            "知识图谱构建: %s (%s) 抽取 %d/%d 块 → 实体 %d / 关系 %d",
-                            doc.original_name, doc_id, kg_stats["extracted"],
-                            kg_stats["chunks"], kg_stats["entities"],
-                            kg_stats["relations"])
-                    kg_status = "ready"
-                except Exception as e:
-                    # 图谱构建失败不阻塞入库（与上下文检索增强同策略）
-                    logger.warning("知识图谱构建失败（不阻塞入库）: %s err=%s",
-                                   doc_id, str(e)[:150])
-                    kg_status = "failed"
-                    kg_error = str(e)[:500]
-
-            chunks: List[str] = [c.text for c in chunk_objects]
-            if not chunks:
-                raise RuntimeError("切块结果为空")
-
-            # 取消检查点 2a：切块/图谱/摘要已完成、向量化开始前——命中则中止，
-            # 跳过耗时的 embedding，立即结束（状态由 _IngestCancelled 写 failed）
-            self._raise_if_cancelled(doc_id)
-
-            # 5) 向量化 + 入库（入库前先清旧向量——对任何切块方式都执行，幂等）
-            emb_svc = get_embedding_service()
-            # 向量化文本：有摘要的块用 "【上下文】摘要\n原文"（检索质量提升的
-            # 核心）；入库 Chroma documents 也用该增强文本——检索命中返回的
-            # text 天然含摘要（引用/预览显示），BM25 索引与向量重建（collection
-            # 保真路径）自动一致；chunks_meta.text 仍是原文（偏移契约不变）
-            embed_texts = [
-                f"【上下文】{contexts[i]}\n{c.text}" if i in contexts else c.text
-                for i, c in enumerate(chunk_objects)
-            ]
-            embeddings = await emb_svc.embed(embed_texts)
-            # 取消检查点 2b：嵌入完成后、向量写入前——命中则不写向量库
-            # （嵌入白算可接受，向量库保持干净，不污染检索）
-            self._raise_if_cancelled(doc_id)
-            vec = get_vector_store()
-            # 5.5) 维度冲突防护（P0）：collection 已有旧维度向量（更换 embedding
-            # 模型后），新维度写入 Chroma 会报错；这里提前校验，失败中止入库并
-            # 写回友好 error（而不是 add 报错后给晦涩异常）。校验在删旧向量之前，
-            # 维度不匹配时不破坏已有向量。
-            current_dim = vec.get_embedding_dimension(doc.kb_id)
-            if embeddings and current_dim is not None \
-                    and current_dim != len(embeddings[0]):
-                raise VectorDimensionError(
-                    f"Embedding 模型维度不匹配（collection {current_dim} 维 vs "
-                    f"模型 {len(embeddings[0])} 维），请更换模型或重建向量")
-            vec.delete_by_document(doc.kb_id, doc_id)
-            metadatas = []
-            for i, c in enumerate(chunk_objects):
-                meta = {
-                    "document_id": doc_id,
-                    "document_name": doc.original_name,
-                    "chunk_index": i,
-                    "char_start": c.char_start,
-                    "char_end": c.char_end,
-                }
-                # 上下文摘要随块入库（截断防 Chroma metadata 单值超限），
-                # 检索时透传到 Source.context / 引用拼接
-                if i in contexts:
-                    meta["context"] = contexts[i][:_CONTEXT_META_LIMIT]
-                if parser_id == "parent_child":
-                    # 父块索引（-1 表示无父块，此时父块文本=子块自身）；
-                    # 父块全文 + 检索模式随子块入库，检索时直接读取
-                    parent_idx = child_parent_map.get(i, -1)
-                    meta["parent_chunk_index"] = parent_idx
-                    # 父块全文随子块入库作检索上下文；章节父块可能数千字，
-                    # 按 8000 截断防 Chroma metadata 单值超限（展示侧另有 2000 截断）
-                    meta["parent_text"] = (
-                        parent_chunks[parent_idx].text if 0 <= parent_idx < len(parent_chunks)
-                        else c.text)[:_PARENT_TEXT_META_LIMIT]
-                    meta["retrieval_mode"] = parser_config.get("retrieval_mode", "parent")
-                metadatas.append(meta)
-            vec.add(doc.kb_id, doc_id, doc.original_name, embed_texts,
-                    embeddings, metadatas=metadatas)
-            # 混合检索 BM25 索引失效（下次检索自动重建；函数内导入防循环依赖）
-            from backend.services.retrieval_service import get_retrieval_service
-            get_retrieval_service().invalidate_bm25(doc.kb_id)
-
-            # 6) 完成：解析配置持久化到文档元数据（重跑沿用）；
-            # chunks_meta 存完整列表（text+偏移，详情接口读），chunk_preview 兼容保留；
-            # 图谱状态随入库写回（kg_status=None 即开关关，保持文档原值不清空）
-            # Agentic 超限确认标记为"本次提交确认"语义：入库前剔除，不持久化到
-            # 文档 parser_config（重跑仍需再次确认；防旧配置带确认标记绕过校验）
-            parser_config.pop("agentic_confirm", None)
-            transition_kwargs = {
-                "parse_method": parse_method,
-                "chunk_count": len(chunks),
-                "chunk_preview": [c[:_PREVIEW_CHAR] for c in chunks[:_PREVIEW_LIMIT]],
-                "chunks_meta": [
-                    {"text": c.text, "char_start": c.char_start,
-                     "char_end": c.char_end,
-                     **({"context": contexts[i]} if i in contexts else {}),
-                     **({"label": agentic_labels[i]}
-                        if i in agentic_labels else {})}
-                    for i, c in enumerate(chunk_objects)],
-                "parser_id": parser_id,
-                "parser_config": parser_config,
-            }
-            if kg_status is not None:
-                transition_kwargs["graph_status"] = kg_status
-                if kg_status == "failed":
-                    transition_kwargs["graph_error"] = kg_error
-            doc_svc.transition(doc_id, "ingested", **transition_kwargs)
-            logger.info("入库完成: %s (%s) chunks=%d method=%s", doc.original_name,
-                        doc_id, len(chunks), parser_id)
-        except _IngestCancelled:
-            # 用户取消解析（检查点命中）：写回 failed + 取消原因，不打堆栈
-            logger.info("入库任务已取消: %s (%s)", doc.original_name, doc_id)
-            doc_svc.mark_failed(doc_id, "用户取消解析")
+        except ParserUnavailableError:
+            raise
         except Exception as e:
-            logger.exception("入库失败: %s (%s)", doc_id, e)
-            doc_svc.mark_failed(doc_id, str(e))
+            # 可预期失败（解析器不可用/网络错误）：类型化异常（消息 =
+            # 原始异常文本），外层捕获记 warning + 写回 failed
+            raise ParserUnavailableError(str(e)) from e
+        if not text or not text.strip():
+            raise RuntimeError(
+                "解析结果为空（扫描版 PDF 或无文本内容），请检查解析服务后重试")
+
+        # 取消检查点 1：解析已完成、尚未上传图片/落盘/切块——用户取消
+        # 后不再做后续耗时处理（解析服务调用本身无法中途打断，已白跑）
+        self._raise_if_cancelled(doc_id)
+
+        # 2.5) 解析图片上传存储 + markdown 引用替换
+        # 上传前先清该文档旧解析图片（re-ingest 防残留孤儿对象；
+        # 即使本次解析无图也清理，失败仅 warning 不阻断入库）
+        try:
+            await storage.delete_prefix(f"images/{doc.id}/")
+        except Exception as e:
+            logger.warning("清理旧解析图片失败 %s: %s",
+                           doc.id, str(e)[:150])
+        if images:
+            text = await self._upload_images(doc, text, images)
+
+        # 3) 解析文本落盘 data/parsed/{doc_id}.md
+        # （新流程无 parsed 中间态：解析+入库一步完成，直接到 ingested）
+        parsed_path = doc_svc.get_parsed_path(doc)
+        parsed_path.write_text(text, encoding="utf-8")
+        logger.info("解析完成: %s (%s) %d 字符%s", doc.original_name,
+                    parse_method, len(text),
+                    f"，图片 {len(images)} 张" if images else "")
+        return text, parse_method
+
+    async def _stage_chunk(self, doc, doc_id: str, parser_id: str,
+                           parser_config: dict, qa_force_continue: bool,
+                           text: str) -> _IngestChunkStage:
+        """切块阶段：QA 规范性检测 → 切块（agentic 两档校验 / parent_child
+        / 其他）→ 父标题前缀。返回 _IngestChunkStage。
+
+        空块校验不在本阶段：保持原"图谱构建完成后才校验"的顺序语义
+        （校验在 _stage_vectorize 开头）。
+        """
+        # 3.7) QA 规范性检测（仅 qa 方式，切块前）：问答对占比（问答对/
+        # 总段落，与 QaChunker 切块同口径）低于 50% 且未强制 → 任务失败，
+        # 错误信息带检测详情（占比/对数/段数，前端据此弹"确认继续入库"，
+        # 确认后带 qa_force_continue=true 重新提交）；强制标记跳过检测
+        if parser_id == "qa" and not qa_force_continue:
+            stats = analyze_qa_format(text)
+            if not is_qa_format_valid(stats):
+                ratio = (stats.qa_pairs / stats.total_paragraphs
+                         if stats.total_paragraphs else 0.0)
+                raise RuntimeError(
+                    f"QA 问答格式检测未通过：问答对占比 {ratio:.1%}"
+                    f"（{stats.qa_pairs} 对 / {stats.total_paragraphs} 段），"
+                    f"未达到 50% 规范要求。确认文档符合预期可强制继续入库"
+                    f"（qa_force_continue=true）")
+
+        # 4) 切块（按用户选择的切块方式与参数；用替换后文本保证图片引用可加载）
+        chunk_objects: List[Chunk] = []
+        parent_chunks: List[Chunk] = []
+        child_parent_map: Dict[int, int] = {}
+        # Agentic 分块标签（仅 method=agentic 成功时填充；无标签的块不带
+        # 该字段，chunks_meta.label 可选）
+        agentic_labels: Dict[int, str] = {}
+        if parser_id == "agentic":
+            # Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签（论述类/
+            # 事实类/操作类/数据类/其他，实现与失败语义见 agentic_chunker）。
+            # 两档校验：>5 万字直接拒绝（ValueError → 任务失败 failed，
+            # 不支持 Agentic 分块）；1 万~5 万字且未带 agentic_confirm →
+            # _AgenticConfirmRequired → 文档进入 pending_confirm 待确认
+            # 状态（不算失败，error 带字数提示，前端"确认继续"带
+            # agentic_confirm=true 重新提交），带确认 → 跳过校验直接分块；
+            # LLM 失败/超时/对齐全失败 → 回退 title 切块（warning 注明
+            # 原因，不阻塞入库）；思考关闭策略复用 thinking_strategy
+            if len(text) > _MAX_AGENTIC_TEXT_CHARS_HARD:
+                raise ValueError(
+                    "文档超过 5 万字，不支持 Agentic 分块，"
+                    "请换用其他切块方式")
+            if len(text) > _MAX_AGENTIC_TEXT_CHARS \
+                    and not parser_config.get("agentic_confirm"):
+                raise _AgenticConfirmRequired(
+                    f"文档约 {len(text)/10000:.1f} 万字，"
+                    f"Agentic 分块成本较高，确认继续请重试"
+                    f"（agentic_confirm=true）")
+            try:
+                agentic_chunks, labels = await agentic_chunk(
+                    text, parser_config)
+                agentic_labels = {i: labels[i]
+                                  for i in range(len(labels))}
+                chunk_objects = agentic_chunks
+            except AgenticChunkError as e:
+                logger.warning(
+                    "Agentic 切块失败，回退标题切块: %s (%s) 原因=%s",
+                    doc.original_name, doc_id, str(e))
+                chunk_objects = get_chunker("title",
+                                            parser_config).chunk(text)
+        elif parser_id == "parent_child":
+            # 父子分块：子块入库，父块作上下文写进 metadata
+            splitter = get_chunker(parser_id, parser_config)
+            result: ParentChildChunkResult = splitter.chunk_parent_child(text)
+            chunk_objects = result.children
+            parent_chunks = result.parents
+            child_parent_map = result.child_parent_map
+        else:
+            chunk_objects = get_chunker(parser_id, parser_config).chunk(text)
+
+        # 4.5) 父标题前缀（enable_heading_in_content）：为不含标题的块拼接
+        # 其前最近的标题链（如 "第一章 > 1.1"），块文本自带标题行则跳过；
+        # 仅改块文本，char_start/char_end 保持原文偏移（归属/定位不受影响）
+        # 原始块文本在加前缀前保留：父标题只用于展示，知识图谱实体偏移
+        # 以原文为准（与 chunks_meta 偏移契约一致）
+        raw_chunk_texts: List[str] = [c.text for c in chunk_objects]
+        if parser_config.get("enable_heading_in_content"):
+            chunk_objects = add_heading_paths(chunk_objects, text)
+
+        return _IngestChunkStage(
+            chunk_objects=chunk_objects, parent_chunks=parent_chunks,
+            child_parent_map=child_parent_map,
+            agentic_labels=agentic_labels, raw_chunk_texts=raw_chunk_texts)
+
+    async def _stage_enhance(self, doc, doc_id: str, parser_config: dict,
+                             stage: _IngestChunkStage,
+                             text: str) -> Tuple[Dict[int, str],
+                                                 Optional[str],
+                                                 Optional[str]]:
+        """增强阶段：上下文检索摘要 + 知识图谱（两者失败均不阻塞入库）。
+
+        返回 (contexts, kg_status, kg_error)：kg_status=None 表示未开开关
+        （graph_status 保持原值）；kg_error 仅 kg_status=failed 时非 None。
+        """
+        # 4.7) 上下文检索增强（contextual_retrieval）：切块后为每个块调用
+        # LLM 生成简短上下文摘要（激活模型，并发限流 3，失败/超时跳过——
+        # 单块失败绝不阻塞入库）。完整文档视角：解析文本 <= 系统配置
+        # 阈值（contextual_retrieval.max_full_doc_chars，默认 2 万字，
+        # 每次调用实时读配置不缓存）→ 完整文档作文档背景；超过阈值 →
+        # enrich_chunks 抛 DocTooLongError（整文档超限 = 任务失败，区别于
+        # 单块失败跳过），异常冒泡到任务外层写回 failed 带明确提示。
+        # 摘要只用于向量化与检索展示：chunks_meta.text 保持原文（偏移
+        # 契约不破坏），摘要存 chunks_meta.context 字段
+        contexts: Dict[int, str] = {}
+        if parser_config.get("contextual_retrieval"):
+            for item in await enrich_chunks(
+                    stage.chunk_objects, text, parser_config,
+                    doc_name=doc.original_name):
+                ctx = (item.get("context") or "").strip()
+                if ctx:
+                    contexts[int(item["index"])] = ctx
+            logger.info("上下文摘要生成: %s (%d/%d 块)", doc.original_name,
+                        len(contexts), len(stage.chunk_objects))
+
+        # 4.8) 知识图谱（knowledge_graph）：切块后为每个块调用激活 LLM
+        # 抽取实体与关系，合并进 data/storage/graphs/{kb_id}.json（幂等：
+        # 重入库先清该文档旧引用再合并；失败/超时跳过对应块——绝不阻塞
+        # 入库）。用原始块文本（父标题前缀只用于展示，实体偏移以原文为
+        # 准，与 chunks_meta 偏移契约一致）。构建成功 → graph_status=ready，
+        # 失败 → failed + graph_error（随 transition ingested 写回文档元数据）
+        kg_status: Optional[str] = None  # None=未开开关（graph_status 保持原值）
+        kg_error: Optional[str] = None
+        if parser_config.get("knowledge_graph"):
+            try:
+                kg_stats = await build_graph_for_doc(
+                    doc.kb_id, doc_id, doc.original_name,
+                    stage.chunk_objects, raw_texts=stage.raw_chunk_texts,
+                    cfg=parser_config)
+                if kg_stats.get("extracted"):
+                    logger.info(
+                        "知识图谱构建: %s (%s) 抽取 %d/%d 块 → 实体 %d / 关系 %d",
+                        doc.original_name, doc_id, kg_stats["extracted"],
+                        kg_stats["chunks"], kg_stats["entities"],
+                        kg_stats["relations"])
+                kg_status = "ready"
+            except Exception as e:
+                # 图谱构建失败不阻塞入库（与上下文检索增强同策略）
+                logger.warning("知识图谱构建失败（不阻塞入库）: %s err=%s",
+                               doc_id, str(e)[:150])
+                kg_status = "failed"
+                kg_error = str(e)[:500]
+        return contexts, kg_status, kg_error
+
+    async def _stage_vectorize(self, doc, doc_id: str, parser_id: str,
+                               parser_config: dict,
+                               contexts: Dict[int, str],
+                               stage: _IngestChunkStage) -> None:
+        """向量化 + 入库：空块校验 → 取消检查点2a → embedding →
+        取消检查点2b → 维度校验 → 清旧向量 → 写入 + BM25 失效"""
+        chunk_objects = stage.chunk_objects
+        chunks: List[str] = [c.text for c in chunk_objects]
+        if not chunks:
+            raise RuntimeError("切块结果为空")
+
+        # 取消检查点 2a：切块/图谱/摘要已完成、向量化开始前——命中则中止，
+        # 跳过耗时的 embedding，立即结束（状态由 _IngestCancelled 写 failed）
+        self._raise_if_cancelled(doc_id)
+
+        # 5) 向量化 + 入库（入库前先清旧向量——对任何切块方式都执行，幂等）
+        emb_svc = get_embedding_service()
+        # 向量化文本：有摘要的块用 "【上下文】摘要\n原文"（检索质量提升的
+        # 核心）；入库 Chroma documents 也用该增强文本——检索命中返回的
+        # text 天然含摘要（引用/预览显示），BM25 索引与向量重建（collection
+        # 保真路径）自动一致；chunks_meta.text 仍是原文（偏移契约不变）
+        embed_texts = [
+            f"【上下文】{contexts[i]}\n{c.text}" if i in contexts else c.text
+            for i, c in enumerate(chunk_objects)
+        ]
+        embeddings = await emb_svc.embed(embed_texts)
+        # 取消检查点 2b：嵌入完成后、向量写入前——命中则不写向量库
+        # （嵌入白算可接受，向量库保持干净，不污染检索）
+        self._raise_if_cancelled(doc_id)
+        vec = get_vector_store()
+        # 5.5) 维度冲突防护（P0）：collection 已有旧维度向量（更换 embedding
+        # 模型后），新维度写入 Chroma 会报错；这里提前校验，失败中止入库并
+        # 写回友好 error（而不是 add 报错后给晦涩异常）。校验在删旧向量之前，
+        # 维度不匹配时不破坏已有向量。
+        current_dim = vec.get_embedding_dimension(doc.kb_id)
+        if embeddings and current_dim is not None \
+                and current_dim != len(embeddings[0]):
+            raise VectorDimensionError(
+                f"Embedding 模型维度不匹配（collection {current_dim} 维 vs "
+                f"模型 {len(embeddings[0])} 维），请更换模型或重建向量")
+        vec.delete_by_document(doc.kb_id, doc_id)
+        metadatas = []
+        for i, c in enumerate(chunk_objects):
+            meta = {
+                "document_id": doc_id,
+                "document_name": doc.original_name,
+                "chunk_index": i,
+                "char_start": c.char_start,
+                "char_end": c.char_end,
+            }
+            # 上下文摘要随块入库（截断防 Chroma metadata 单值超限），
+            # 检索时透传到 Source.context / 引用拼接
+            if i in contexts:
+                meta["context"] = contexts[i][:_CONTEXT_META_LIMIT]
+            if parser_id == "parent_child":
+                # 父块索引（-1 表示无父块，此时父块文本=子块自身）；
+                # 父块全文 + 检索模式随子块入库，检索时直接读取
+                parent_idx = stage.child_parent_map.get(i, -1)
+                meta["parent_chunk_index"] = parent_idx
+                # 父块全文随子块入库作检索上下文；章节父块可能数千字，
+                # 按 8000 截断防 Chroma metadata 单值超限（展示侧另有 2000 截断）
+                meta["parent_text"] = (
+                    stage.parent_chunks[parent_idx].text
+                    if 0 <= parent_idx < len(stage.parent_chunks)
+                    else c.text)[:_PARENT_TEXT_META_LIMIT]
+                meta["retrieval_mode"] = parser_config.get(
+                    "retrieval_mode", "parent")
+            metadatas.append(meta)
+        vec.add(doc.kb_id, doc_id, doc.original_name, embed_texts,
+                embeddings, metadatas=metadatas)
+        # 混合检索 BM25 索引失效（下次检索自动重建；函数内导入防循环依赖）
+        from backend.services.retrieval_service import get_retrieval_service
+        get_retrieval_service().invalidate_bm25(doc.kb_id)
+
+    async def _stage_finalize(self, doc, doc_id: str, parser_id: str,
+                              parser_config: dict, parse_method: str,
+                              contexts: Dict[int, str],
+                              stage: _IngestChunkStage,
+                              kg_status: Optional[str],
+                              kg_error: Optional[str]) -> None:
+        """完成阶段：解析配置持久化到文档元数据（重跑沿用）；
+        chunks_meta 存完整列表（text+偏移，详情接口读），chunk_preview
+        兼容保留；图谱状态随入库写回（kg_status=None 即开关关，保持文档
+        原值不清空）。"""
+        doc_svc = get_document_service()
+        chunk_objects = stage.chunk_objects
+        chunks: List[str] = [c.text for c in chunk_objects]
+        # Agentic 超限确认标记为"本次提交确认"语义：入库前剔除，不持久化到
+        # 文档 parser_config（重跑仍需再次确认；防旧配置带确认标记绕过校验）
+        parser_config.pop("agentic_confirm", None)
+        transition_kwargs = {
+            "parse_method": parse_method,
+            "chunk_count": len(chunks),
+            "chunk_preview": [c[:_PREVIEW_CHAR] for c in chunks[:_PREVIEW_LIMIT]],
+            "chunks_meta": [
+                {"text": c.text, "char_start": c.char_start,
+                 "char_end": c.char_end,
+                 **({"context": contexts[i]} if i in contexts else {}),
+                 **({"label": stage.agentic_labels[i]}
+                    if i in stage.agentic_labels else {})}
+                for i, c in enumerate(chunk_objects)],
+            "parser_id": parser_id,
+            "parser_config": parser_config,
+        }
+        if kg_status is not None:
+            transition_kwargs["graph_status"] = kg_status
+            if kg_status == "failed":
+                transition_kwargs["graph_error"] = kg_error
+        doc_svc.transition(doc_id, "ingested", **transition_kwargs)
+        logger.info("入库完成: %s (%s) chunks=%d method=%s", doc.original_name,
+                    doc_id, len(chunks), parser_id)
+
 
     async def _upload_images(self, doc, text: str, images: List[dict]) -> str:
         """上传有字节的解析图片，替换 markdown 引用为鉴权代理 URL；返回替换后文本

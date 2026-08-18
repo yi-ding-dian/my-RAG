@@ -87,7 +87,9 @@ def _patch_active_llm_online(monkeypatch):
     online = SimpleNamespace(
         llm=LLMConfig(base_url="https://api.deepseek.com/v1",
                       api_key="test-key", model="deepseek-chat",
-                      temperature=0.3, max_tokens=8192, timeout=60.0))
+                      temperature=0.3, max_tokens=8192, timeout=60.0),
+        # 完整文档阈值段（enrich_chunks 每次调用实时读取）
+        contextual_retrieval=SimpleNamespace(max_full_doc_chars=20000))
     monkeypatch.setattr(
         "backend.services.contextual_retriever.get_active_config",
         lambda: online)

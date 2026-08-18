@@ -26,6 +26,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs, { Dayjs } from 'dayjs';
 import {
+  asApiError,
   AuditActionOption,
   AuditLog,
   AuditLogQuery,
@@ -285,8 +286,8 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
           message.success(res.data.message);
           setDelDate(null);
           void load(false);
-        } catch (e: any) {
-          message.error(e.response?.data?.detail || '删除失败');
+        } catch (e: unknown) {
+          message.error(asApiError(e).response?.data?.detail || '删除失败');
         }
       },
     });
@@ -599,8 +600,8 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
             void fetchTailRef.current(true);
           }
           await loadFiles();
-        } catch (e: any) {
-          message.error(e.response?.data?.detail || '删除失败');
+        } catch (e: unknown) {
+          message.error(asApiError(e).response?.data?.detail || '删除失败');
         }
       },
     });
@@ -621,8 +622,8 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
           setLines([]);
           offsetRef.current = -1;
           await loadFiles();
-        } catch (e: any) {
-          message.error(e.response?.data?.detail || '删除失败');
+        } catch (e: unknown) {
+          message.error(asApiError(e).response?.data?.detail || '删除失败');
         }
       },
     });
@@ -665,8 +666,8 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       a.remove();
       URL.revokeObjectURL(url);
       message.success(`已开始下载 ${file.filename}`);
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || e.message || '下载失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || asApiError(e).message || '下载失败');
     }
   };
 

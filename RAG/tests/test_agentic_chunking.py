@@ -477,7 +477,7 @@ class TestIngestAgentic:
         while True:
             doc = client.get(f"/api/kbs/{kb_id}/documents/{doc_id}",
                              headers=headers).json()
-            if doc["status"] in ("ingested", "failed"):
+            if doc["status"] in ("ingested", "failed", "pending_confirm"):
                 return doc
             if time.monotonic() > deadline:
                 raise AssertionError(
@@ -534,9 +534,10 @@ class TestIngestAgentic:
         assert any("Agentic 切块失败，回退标题切块" in r.message
                    for r in caplog.records)
 
-    def test_too_long_document_fails_with_word_count(self, client, monkeypatch, admin_headers):
-        """1 万~5 万字未带确认：任务失败（failed），error 带"约 1.2 万字"
-        提示与 agentic_confirm=true 重试指引（前端据此弹确认框）"""
+    def test_too_long_document_pending_confirm_not_failed(self, client, monkeypatch, admin_headers):
+        """1 万~5 万字未带确认：不是失败 → 状态 pending_confirm（待确认），
+        error 带"约 1.2 万字"提示与 agentic_confirm=true 重试指引，
+        不写入 failed（不算失败，前端橙色"待确认"Tag + "确认继续"按钮）"""
         _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         _patch_rec_embedding(monkeypatch)
         kb = create_kb(client)
@@ -546,13 +547,47 @@ class TestIngestAgentic:
         final = self._ingest_and_wait(client, kb["id"], doc["id"],
                                       {"method": "agentic"},
                                       headers=admin_headers)
-        assert final["status"] == "failed"
+        assert final["status"] == "pending_confirm"
         assert "约 1.2 万字" in final["error"]
         assert "Agentic" in final["error"]
         assert "agentic_confirm=true" in final["error"]
         # LLM 不应被调用（超限在切块前拦截）
         fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         assert fake.call_count == 0
+        # 列表接口返回 pending_confirm（前端展示依赖）
+        listed = client.get(f"/api/kbs/{kb['id']}/documents",
+                            headers=admin_headers).json()
+        assert any(d["status"] == "pending_confirm" for d in listed)
+
+    def test_pending_confirm_confirm_retry_ingests(self, client, monkeypatch, admin_headers):
+        """待确认后"确认继续"：带 agentic_confirm=true 重提（复用 ingest
+        接口）→ 跳过超限校验正常流转 → ingested（pending_confirm → parsing
+        状态机合法；确认标记不持久化）"""
+        _patch_agentic_client(monkeypatch, _FakeAgenticClient())
+        _patch_rec_embedding(monkeypatch)
+        kb = create_kb(client)
+        long_text = ("# 标题\n\n" + "这是一个很长的段落。" * 1200)  # ~1.2 万字
+        doc = upload_doc(client, kb["id"], content=long_text)
+        # 第一步：超限未确认 → pending_confirm（不算失败）
+        first = self._ingest_and_wait(client, kb["id"], doc["id"],
+                                      {"method": "agentic"},
+                                      headers=admin_headers)
+        assert first["status"] == "pending_confirm"
+        # 第二步：确认继续（agentic_confirm=true 重提）→ ingested
+        final = self._ingest_and_wait(
+            client, kb["id"], doc["id"],
+            {"method": "agentic", "agentic_confirm": True},
+            headers=admin_headers)
+        assert final["status"] == "ingested", final.get("error")
+        assert final["parser_id"] == "agentic"
+        assert final["chunk_count"] > 0
+        # 确认标记不持久化（重跑仍需再次确认）
+        assert "agentic_confirm" not in final["parser_config"]
+        # 重跑不带确认 → 再次回到 pending_confirm（防旧配置绕过校验）
+        final2 = self._ingest_and_wait(client, kb["id"], doc["id"],
+                                       {"method": "agentic"},
+                                       headers=admin_headers)
+        assert final2["status"] == "pending_confirm"
 
     def test_mid_size_document_confirm_ingests_and_not_persisted(self, client, monkeypatch, admin_headers):
         """1 万~5 万字带 agentic_confirm=true：跳过超限校验直接分块入库
@@ -672,3 +707,62 @@ class TestResolveParserConfigAgentic:
         doc = DocumentItem(id="d1", kb_id="k1")
         with pytest.raises(ValueError, match="非法切块方式"):
             resolve_parser_config(doc, "unknown", {})
+
+
+class TestAgenticConfirmStateMachine:
+    """pending_confirm 状态机：parsing → pending_confirm 合法（含 error 提示）、
+    pending_confirm → parsing/ingested 合法、非法迁移拒绝、is_ingestable 可重提"""
+
+    def _mk(self):
+        """构造 uploaded 文档（_isolated_env 每测试隔离数据目录）"""
+        from backend.services.document_service import get_document_service
+        svc = get_document_service()
+        doc = svc.create("kb-pc", "测试.txt", 100)
+        return svc, doc
+
+    def test_parsing_to_pending_confirm_keeps_error(self):
+        """agentic 超限未确认：parsing → pending_confirm 合法，error 提示保留"""
+        svc, doc = self._mk()
+        svc.transition(doc.id, "parsing")
+        d = svc.transition(doc.id, "pending_confirm",
+                           error="文档约 1.2 万字，确认继续请重试")
+        assert d.status == "pending_confirm"
+        assert d.error and "约 1.2 万字" in d.error
+
+    def test_pending_confirm_to_parsing_clears_error(self):
+        """确认继续/重解析：pending_confirm → parsing 合法，重新解析清旧提示"""
+        svc, doc = self._mk()
+        svc.transition(doc.id, "parsing")
+        svc.transition(doc.id, "pending_confirm", error="文档约 1.2 万字")
+        d = svc.transition(doc.id, "parsing")
+        assert d.status == "parsing"
+        assert d.error is None
+
+    def test_pending_confirm_to_ingested_legal(self):
+        """transition 校验允许 pending_confirm → ingested（直接迁移兼容）"""
+        svc, doc = self._mk()
+        svc.transition(doc.id, "parsing")
+        svc.transition(doc.id, "pending_confirm", error="x")
+        d = svc.transition(doc.id, "ingested")
+        assert d.status == "ingested"
+
+    def test_pending_confirm_illegal_transitions_rejected(self):
+        """pending_confirm → failed/uploaded 非法（防误标记失败/状态回退）"""
+        svc, doc = self._mk()
+        svc.transition(doc.id, "parsing")
+        svc.transition(doc.id, "pending_confirm", error="x")
+        for to in ("failed", "uploaded", "parsed"):
+            with pytest.raises(ValueError, match="非法状态迁移"):
+                svc.transition(doc.id, to)
+
+    def test_pending_confirm_is_ingestable(self):
+        """pending_confirm 可触发 ingest（确认继续/换方式重解析入口）"""
+        svc, doc = self._mk()
+        svc.transition(doc.id, "parsing")
+        svc.transition(doc.id, "pending_confirm", error="x")
+        assert svc.is_ingestable(doc.id) is True
+
+    def test_valid_status_contains_pending_confirm(self):
+        """VALID_STATUS 含 pending_confirm（transition 校验通过的前置）"""
+        from backend.services.document_service import VALID_STATUS
+        assert "pending_confirm" in VALID_STATUS

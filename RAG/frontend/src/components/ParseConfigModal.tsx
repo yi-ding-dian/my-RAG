@@ -17,7 +17,8 @@ import {
 } from 'antd';
 import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import type { DocumentItem, IngestConfig, MinerUBackend, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../api/client';
-import { getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../api/client';
+import {
+  asApiError, getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../api/client';
 import MinerUBackendField from './parse-fields/MinerUBackendField';
 import PagesRangeField from './parse-fields/PagesRangeField';
 import TaskPageSizeField from './parse-fields/TaskPageSizeField';
@@ -310,8 +311,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         message.error(`「${name}」连接失败，保持原模型：${res.data.reason}`);
         form.setFieldValue('parse_llm_model', prev);
       }
-    } catch (e: any) {
-      message.error(`连接测试失败，保持原模型：${e.response?.data?.detail || '网络请求失败'}`);
+    } catch (e: unknown) {
+      message.error(`连接测试失败，保持原模型：${asApiError(e).response?.data?.detail || '网络请求失败'}`);
       form.setFieldValue('parse_llm_model', prev);
     } finally {
       setTestingLlm(false);
@@ -458,8 +459,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       }
       onCancel();
       onSuccess();
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '触发解析失败');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '触发解析失败');
     } finally {
       setSubmitting(false);
     }
@@ -544,7 +545,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       name="parse_mode"
                       label="解析方式"
                       rules={[{ required: true, message: '请选择解析方式' }]}
-                      extra="MinerU 适用于 PDF 混排（图文表格）文档（高精度）；DeepDoc 通过 RAGFlow 服务解析，表格输出为可检索 HTML（仅 PDF）；纯文本本地直提（pypdf/python-docx，无表格/图片识别，恒可用）。选项前的 √/x 为服务可用性检测结果（打开下拉时实时刷新），不可用的解析方式无法选择"
+                      extra="选项前 √/x 为服务可用性检测，不可用的无法选择"
                     >
                       <Select
                         options={parseModeOptions}
@@ -564,7 +565,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       <SwitchField
                         name="table_enable"
                         label="表格识别"
-                        desc="该参数将透传至 MinerU 服务端（table_enable），是否生效取决于服务端配置"
+                        desc="是否生效取决于 MinerU 服务端配置"
                         defaultValue
                       />
                     )}
@@ -572,7 +573,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       <SwitchField
                         name="formula_enable"
                         label="公式识别"
-                        desc="该参数将透传至 MinerU 服务端（formula_enable），是否生效取决于服务端配置"
+                        desc="是否生效取决于 MinerU 服务端配置"
                         defaultValue
                       />
                     )}
@@ -580,7 +581,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       <SwitchField
                         name="return_images"
                         label="图片提取"
-                        desc="提取文档图片并保存（存 MinIO）"
+                        desc="提取文档图片"
                         defaultValue
                       />
                     )}
@@ -607,30 +608,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           />
         </Form.Item>
 
-        {/* Agentic 智能分块：LLM 读全文自主切逻辑段落并打标签（说明；与
-            上下文检索增强互斥、与知识图谱可叠加，见大模型处理区）；
-            B3：由 LLM 自主切分，分块大小/重叠不适用，隐藏这两个参数输入；
-            超限策略：1 万~5 万字入库时需确认后继续，超过 5 万字不支持 */}
-        {method === 'agentic' && (
-          <Alert
-            message="Agentic 智能分块说明"
-            description="由 LLM 自主切分逻辑段落，自主判断完整逻辑段落切割并打标签（论述类/事实类/操作类/数据类/其他）；文档 1 万~5 万字需确认后继续，超过 5 万字不支持"
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-          />
-        )}
-
         {/* 父子分块：子块/父块双 Card 配置（参考 KnowFlow chunking-config 布局） */}
         {isParentChild && (
           <>
-            <Alert
-              message="父子分块模式说明"
-              description="父分块按标题层级聚合，子分块精细切分；检索时子块精确匹配、返回父块完整上下文"
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
             <Row gutter={16}>
               <Col span={12}>
                 <Card title="子块配置" size="small" style={{ marginBottom: 16 }}>
@@ -715,7 +695,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         {!isParentChild && method === 'qa' && (
           <Alert
             message="QA 问答切块说明"
-            description="按“问：/答：”标记聚合问答对为整块，分块大小/重叠不适用（已隐藏）。答案可跨多段，保留原文标记。入库时会检测问答对占比（问答对/总段落），低于 50% 判定不符合 QA 文档规范，需在文档列表确认后继续入库。"
+            description="需问/答标记，入库检测问答对占比 ≥50%"
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
@@ -798,10 +778,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                   <SwitchField
                     name="contextual_retrieval"
                     label="上下文检索增强"
-                    desc="切块后用 LLM 为每个块生成简短上下文摘要附在块头部，解决孤立分块缺乏全局背景的问题，提升检索质量"
+                    desc="切块后为每个块生成 LLM 上下文摘要，提升检索质量"
                     defaultValue={false}
                     disabled={isAgentic}
-                    tooltip={isAgentic ? '与 Agentic 分块互斥，只能选一个' : undefined}
                   />
                   {contextualRetrieval && (
                     <Alert
@@ -816,7 +795,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                   <SwitchField
                     name="knowledge_graph"
                     label="知识图谱"
-                    desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）；与 Agentic 智能分块可叠加选择"
+                    desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）"
                     defaultValue={false}
                   />
                   {knowledgeGraph && (
@@ -835,7 +814,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     <Form.Item
                       name="parse_llm_model"
                       label="解析 LLM 模型"
-                      extra="使用模型仅影响上下文摘要/知识图谱抽取/Agentic 分块，对话仍用当前激活模型；切换前自动测试连接，通过才生效"
+                      extra="仅影响上下文摘要/知识图谱抽取/Agentic 分块，对话仍用当前激活模型"
                     >
                       <Select
                         loading={testingLlm}
@@ -858,7 +837,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     <Form.Item
                       name="thinking_mode"
                       label="思考模式"
-                      extra="控制图谱抽取/上下文摘要/Agentic 分块调用的 DeepSeek 思考（reasoning）。关闭思考可加快解析速度并节省 token（推荐）"
+                      extra="关闭思考可加快解析并节省 token（推荐）"
                     >
                       <Select
                         options={[
