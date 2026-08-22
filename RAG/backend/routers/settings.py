@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,8 +82,36 @@ def _mask_llm(llm: dict) -> dict:
     return out
 
 
+def _mask_base_url(url: str) -> str:
+    """LLM base_url 主机脱敏（保留协议与端口，主机部分打码）
+
+    普通用户视角的 LLM 地址（内网主机信息不对外暴露）：
+    - IP 地址（点分十进制）：保留第一段，其余段打码（192.168.1.5 →
+      192.168.**.**，示例形态）；解析失败/无主机名防御性原样返回
+    - 域名/其他形态：整段打码（***）；IPv6 等无法按 IPv4 打码的走此分支
+    """
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if not host:
+            return url
+        host_parts = host.split(".")
+        if all(p.isdigit() for p in host_parts):
+            masked_host = ".".join([host_parts[0]] + ["**"] * (len(host_parts) - 1))
+        else:
+            masked_host = "***"
+        port = f":{parts.port}" if parts.port else ""
+        return urlunsplit((parts.scheme, masked_host + port,
+                           parts.path, parts.query, parts.fragment))
+    except ValueError:
+        return url
+
+
 def _effective_chat_payload(profile: dict,
-                            dept_config: Optional[dict] = None) -> dict:
+                            dept_config: Optional[dict] = None,
+                            mask_base_url: bool = False) -> dict:
     """响应结构：合并后的聊天配置 + llm 合并视角 + 部门原始配置段（脱敏）
 
     - retrieval/chat：全局活跃档案 + 部门覆盖字段（merge_chat_config）
@@ -90,12 +119,18 @@ def _effective_chat_payload(profile: dict,
     - dept：部门原始配置（{"llm"/"chat"/"retrieval"}，仅含部门显式设置
       的字段，llm.api_key 脱敏）；None = 当前用户无部门/部门未设置
       （=纯全局）
+    - mask_base_url：普通用户（role=user）视角对 llm.base_url 主机部分
+      打码（保留协议与端口；管理员/部门管理员看全量）
     """
     merged = merge_chat_config(profile, dept_config or {})
     dept_llm = dept_config.get("llm") if isinstance(dept_config, dict) else None
     if not isinstance(dept_llm, dict):
         dept_llm = {}
     llm = _mask_llm(merge_department_llm(_global_llm_dict(), dept_llm))
+    if mask_base_url and llm.get("base_url"):
+        # 普通用户视角：LLM 地址主机部分打码（保留协议与端口）
+        llm = dict(llm)
+        llm["base_url"] = _mask_base_url(llm["base_url"])
     dept = None
     if dept_config:
         dept = {}
@@ -105,6 +140,9 @@ def _effective_chat_payload(profile: dict,
                 sec = dict(sec)
                 if section == "llm":
                     sec = _mask_llm(sec)
+                    # 部门原始 LLM 配置中的 base_url 同样按角色打码
+                    if mask_base_url and sec.get("base_url"):
+                        sec["base_url"] = _mask_base_url(sec["base_url"])
                 dept[section] = sec
     return {**merged, "llm": llm, "dept": dept}
 
@@ -419,7 +457,8 @@ async def get_chat_settings(user: UserPublic = Depends(get_current_user),
     登录即可读：聊天设置弹窗与系统配置页 LLM 表单数据源（user 角色弹窗
     入口隐藏，但读取接口开放）；返回 merged 值（dept_admin 打开弹窗即见
     本部门生效配置）。llm 段：全局 LLM + 部门 llm 覆盖后的合并值
-    （api_key 脱敏，绝不返回明文）。dept 段：本部门原始配置（仅含部门
+    （api_key 脱敏，绝不返回明文；普通用户视角 base_url 主机部分打码，
+    管理员/部门管理员看全量）。dept 段：本部门原始配置（仅含部门
     显式设置的字段），无部门/未设置=null。无活跃档案 → 404 明确错误。
     """
     p = get_settings_service().get_active()
@@ -429,7 +468,9 @@ async def get_chat_settings(user: UserPublic = Depends(get_current_user),
     if user.department_id:
         dept_cfg = await department_service.get_department_config(
             db, user.department_id) or None
-    return _effective_chat_payload(p, dept_cfg)
+    # 普通用户（role=user）视角：LLM base_url 主机打码（防内网地址泄露）
+    return _effective_chat_payload(
+        p, dept_cfg, mask_base_url=(user.role == "user"))
 
 
 @router.post("/chat")

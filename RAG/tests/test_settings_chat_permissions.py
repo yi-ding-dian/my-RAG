@@ -154,12 +154,12 @@ class TestPostChatSettings:
         assert get_active_config().chat.system_prompt == ""
 
     def test_user_403(self, client, user_headers, dept_admin_headers):
-        """user 写聊天设置 → 403（配置仍为原值）"""
+        """user 写聊天设置 → 404 伪装（配置仍为原值）"""
         before = get_active_config().chat.temperature
         resp = client.post("/api/settings/chat", json={
             "chat": {"temperature": 1.9},
         }, headers=user_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         assert get_active_config().chat.temperature == before, "配置不应被 user 修改"
 
     def test_unauthorized_401(self, client):

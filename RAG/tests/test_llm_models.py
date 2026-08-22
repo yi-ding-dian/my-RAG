@@ -409,10 +409,10 @@ class TestLlmConnectionTest:
 
     def test_llm_test_requires_admin(self, client, admin_headers,
                                      user_headers):
-        """user 调 /llm/test → 403（管理员专用）"""
+        """user 调 /llm/test → 404 伪装（管理员专用）"""
         resp = client.post("/api/settings/llm/test",
                            json=_item("A"), headers=user_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_profile_test_uses_active_item(self, client, admin_headers,
                                            monkeypatch):
@@ -499,9 +499,15 @@ class TestDeptCompatibility:
         }, headers=dept_admin_hdrs)
         assert resp.status_code == 200, resp.text
         merged = client.get("/api/settings/chat", headers=user_hdrs).json()
-        assert merged["llm"]["base_url"] == "http://dept-llm.example/v1"
+        # 普通用户视角：base_url 主机部分打码（保留协议与端口，防内网地址泄露）
+        assert merged["llm"]["base_url"] == "http://***/v1"
+        assert "dept-llm.example" not in merged["llm"]["base_url"]
         assert merged["llm"]["model"] == "m-b", "未覆盖字段=激活模型"
         assert merged["llm"]["api_key"] != "sk-dept-key-12345", "绝不返回明文"
+        # 部门管理员视角看全量地址
+        admin_view = client.get("/api/settings/chat",
+                                headers=dept_admin_hdrs).json()
+        assert admin_view["llm"]["base_url"] == "http://dept-llm.example/v1"
 
     def test_super_admin_chat_llm_edits_active_item(self, client,
                                                     admin_headers):

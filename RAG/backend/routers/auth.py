@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.db import get_db
 from backend.deps import get_current_user
 from backend.models.user_models import (ChangePasswordRequest, LoginRequest,
-                                        UserPublic)
+                                        UserPublic, validate_password)
 from backend.services import audit_service, auth_service
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,10 @@ async def change_password(
         raise HTTPException(status_code=400, detail="旧密码不正确")
     if body.new_password == body.old_password:
         raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+    # 密码强度校验（与创建用户共用规则：至少 8 位且同时包含字母和数字）
+    strength_err = validate_password(body.new_password)
+    if strength_err:
+        raise HTTPException(status_code=400, detail=strength_err)
     orm.password_hash = auth_service.hash_password(body.new_password)
     # 改密成功即清除首次登录强制改密标志（无论是否处于强制阶段）
     if orm.must_change_password:

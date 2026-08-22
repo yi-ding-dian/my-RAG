@@ -111,6 +111,7 @@ class TestAdminDocuments:
         resp = client.get("/api/admin/documents", headers=headers)
         assert resp.status_code == 403
         assert "未归属部门" in resp.json()["detail"]
+        assert "未归属部门" in resp.json()["detail"]
 
     def test_dept_admin_filter_and_pagination_apply_after_scope(
             self, client, admin_headers):
@@ -136,10 +137,10 @@ class TestAdminDocuments:
         assert p1["items"][0]["id"] != p2["items"][0]["id"]
 
     def test_user_403(self, client, admin_headers):
-        """user → 403"""
+        """user → 404 伪装"""
         env = self._env(client, admin_headers)
         resp = client.get("/api/admin/documents", headers=env["user_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_unauthorized_401(self, client):
         """未登录 → 401"""

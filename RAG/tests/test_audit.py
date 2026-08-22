@@ -503,14 +503,14 @@ class TestSettingsAudit:
 # ==================== 权限 ====================
 
 class TestAuditPermission:
-    """user 403；dept_admin 已放开（限本部门，见 TestAuditDeptScoped）"""
+    """user 404 伪装；dept_admin 已放开（限本部门，见 TestAuditDeptScoped）"""
 
     def test_user_forbidden(self, client, admin_headers, user_headers):
-        """user 查审计/动作列表 → 403"""
+        """user 查审计/动作列表 → 404 伪装"""
         resp = client.get("/api/audit/logs", headers=user_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         resp = client.get("/api/audit/actions", headers=user_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_dept_admin_allowed(self, client, admin_headers,
                                 dept_admin_headers):
@@ -522,11 +522,11 @@ class TestAuditPermission:
 
     def test_dept_admin_cannot_delete_audit(self, client, admin_headers,
                                             dept_admin_headers):
-        """dept_admin 按天删除审计 → 403（仅超管）"""
+        """dept_admin 按天删除审计 → 404 伪装（仅超管）"""
         resp = client.delete("/api/audit/logs",
                              params={"date": "2026-01-01"},
                              headers=dept_admin_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_no_token_401(self, client):
         assert client.get("/api/audit/logs").status_code == 401

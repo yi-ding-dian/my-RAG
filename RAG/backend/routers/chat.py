@@ -78,8 +78,10 @@ async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
                     dept_config=dept_config):
                 yield ev
         except Exception as e:
+            # 兜底异常：细节仅进日志（logger.exception 已有），
+            # 不向客户端透出内部异常信息（防信息泄露）
             logger.exception("SSE 流异常: %s", e)
-            yield sse_event("error", {"message": f"服务异常: {e}"})
+            yield sse_event("error", {"message": "服务异常，请稍后重试"})
 
     return StreamingResponse(
         event_generator(),

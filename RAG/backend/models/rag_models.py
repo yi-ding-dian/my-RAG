@@ -223,7 +223,8 @@ class RetrieveRequest(BaseModel):
     kb_id: Optional[str] = Field(None, description="知识库 ID（单库检索；与 kb_ids 二选一）")
     kb_ids: Optional[List[str]] = Field(None, description="知识库 ID 数组（1~5 个，多库对比检索；与 kb_id 二选一，都传时优先）")
     query: str = Field(..., description="检索 query")
-    top_k: Optional[int] = Field(None, description="返回条数（默认取配置 RETRIEVAL_TOP_K）")
+    top_k: Optional[int] = Field(
+        None, ge=1, le=50, description="返回条数（1~50；默认取配置 RETRIEVAL_TOP_K，与 /api/chat/stream 的 1~50 校验对齐）")
     enable_hybrid: Optional[bool] = Field(None, description="混合检索开关：None=用配置默认；true/false=强制开关（对比实验用；当前版本检索链路为纯向量，参数为预留契约）")
     enable_rerank: Optional[bool] = Field(None, description="重排开关：None=用配置默认；true/false=强制开关（对比实验用；当前版本检索链路无重排，参数为预留契约）")
     enable_kg: Optional[bool] = Field(None, description="知识图谱增强开关：None=用配置默认（chat.kg_enhance）；true/false=强制开关——图谱上下文作为「知识图谱」来源引用追加在结果末尾（无图谱/无匹配自动跳过）")

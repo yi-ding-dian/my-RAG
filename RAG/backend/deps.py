@@ -4,9 +4,9 @@
 - get_current_user_query_or_header：query ?token= 或 Bearer header 二选一
   （图片鉴权代理专用：<img> 标签无法携带 Authorization header，
   JWT 24h 有效期内进 URL，内网企业环境可接受；校验失败统一 401）
-- require_super_admin：非 super_admin → 403
-- require_user_admin：super_admin 或 dept_admin → 403（用户/部门管理）
-- require_super_or_dept_admin：super_admin 或 dept_admin → 403
+- require_super_admin：非 super_admin → 404 伪装（防探测）
+- require_user_admin：super_admin 或 dept_admin → 404 伪装（用户/部门管理）
+- require_super_or_dept_admin：super_admin 或 dept_admin → 404 伪装
   （全局文档管理/审计日志查询等跨部门管理面，调用方再按角色做部门级数据隔离）
 - can_access_kb / can_manage_kb：纯函数（Agent 2 在知识库/文档/会话路由复用）
 """
@@ -73,32 +73,37 @@ async def get_current_user_query_or_header(
 async def require_super_admin(
     user: UserPublic = Depends(get_current_user),
 ) -> UserPublic:
-    """仅超级管理员可访问（系统配置/审计等管理）"""
+    """仅超级管理员可访问（系统配置/审计等管理）
+
+    越权统一 404 伪装（与业务 404 同文案）：不暴露接口存在性与权限边界，
+    防普通用户探测管理面接口（users/audit/settings/logs 等全部生效）。
+    """
     if user.role != "super_admin":
-        raise HTTPException(status_code=403, detail="仅超级管理员可执行此操作")
+        raise HTTPException(status_code=404, detail="资源不存在")
     return user
 
 
 async def require_user_admin(
     user: UserPublic = Depends(get_current_user),
 ) -> UserPublic:
-    """用户/部门管理：super_admin 或 dept_admin（user → 403）"""
+    """用户/部门管理：super_admin 或 dept_admin（user → 404 伪装）"""
     if user.role not in ("super_admin", "dept_admin"):
-        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+        raise HTTPException(status_code=404, detail="资源不存在")
     return user
 
 
 async def require_super_or_dept_admin(
     user: UserPublic = Depends(get_current_user),
 ) -> UserPublic:
-    """全局管理面：super_admin 或 dept_admin（user → 403）
+    """全局管理面：super_admin 或 dept_admin（user → 404 伪装）
 
     与 require_user_admin 的区别在语义：本依赖用于跨部门数据查询类管理接口
     （全局文档 / 审计日志），调用方拿到 user 后再按角色收紧数据范围——
-    dept_admin 强制限定本部门，super_admin 全量。
+    dept_admin 强制限定本部门，super_admin 全量。越权与 require_user_admin
+    同规则统一 404 伪装（防探测）。
     """
     if user.role not in ("super_admin", "dept_admin"):
-        raise HTTPException(status_code=403, detail="仅管理员可执行此操作")
+        raise HTTPException(status_code=404, detail="资源不存在")
     return user
 
 

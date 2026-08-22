@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # 服务
     HOST: str = "0.0.0.0"
     PORT: int = 8091
+    # CORS 白名单（逗号分隔的具体前端来源，如
+    # CORS_ORIGINS=http://127.0.0.1:3002,http://localhost:3002）：
+    # "*" 仅限开发调试（任意来源可跨域，生产有安全风险）；
+    # 生产环境必须配置具体前端来源白名单（前端域名变化需同步更新，
+    # 否则前端跨域请求失效），改动后需重启后端生效（启动时读取）
     CORS_ORIGINS: str = "*"
 
     # 数据目录（默认在项目下 data/，Docker 中可用环境变量覆盖为挂载卷）

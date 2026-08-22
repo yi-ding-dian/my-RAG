@@ -40,12 +40,14 @@ from backend.config import (ChatConfig, ChunkingConfig, ContextualRetrievalConfi
 
 # ==================== 密钥与类型辅助（schema 反射依赖，定义于 schema 之前） ====================
 
-# 密钥字段后缀（脱敏判定）
-_SECRET_SUFFIXES = ("api_key", "password", "secret_key")
+# 密钥字段后缀（脱敏判定）：api_key/password/secret_key/access_key
+# （access_key 为 MinIO 访问凭据，与密钥同规则脱敏——endpoint/bucket 等
+#  其他 MinIO 字段保持明文）
+_SECRET_SUFFIXES = ("api_key", "password", "secret_key", "access_key")
 
 
 def is_secret_field(key: str) -> bool:
-    """是否密钥字段（endswith api_key/password/secret_key）"""
+    """是否密钥字段（endswith api_key/password/secret_key/access_key）"""
     return isinstance(key, str) and any(key.endswith(s) for s in _SECRET_SUFFIXES)
 
 

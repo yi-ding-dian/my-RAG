@@ -380,26 +380,26 @@ class TestSettingsReadOnlyForDeptAdmin:
 
     def test_dept_admin_write_403(self, client, admin_headers,
                                   dept_admin_headers):
-        """dept_admin 全部写操作 → 403（创建/更新/删除/激活）"""
+        """dept_admin 全部写操作 → 404 伪装（仅 super_admin，防探测）"""
         profile = create_profile(client, name="超管档案",
                                  headers=admin_headers)
         # POST 创建
         resp = client.post("/api/settings/profiles",
                            json={"name": "越权档案"}, headers=dept_admin_headers)
-        assert resp.status_code == 403
-        assert "仅超级管理员" in resp.json()["detail"]
+        assert resp.status_code == 404
+        assert "资源不存在" in resp.json()["detail"]
         # PUT 更新
         resp = client.put(f"/api/settings/profiles/{profile['id']}",
                           json={"name": "越权改名"}, headers=dept_admin_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         # DELETE 删除
         resp = client.delete(f"/api/settings/profiles/{profile['id']}",
                              headers=dept_admin_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         # POST 激活
         resp = client.post(f"/api/settings/profiles/{profile['id']}/activate",
                            headers=dept_admin_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         # 配置未被越权改动（档案仍存在且未激活）
         items = client.get("/api/settings/profiles",
                            headers=admin_headers).json()
@@ -409,11 +409,11 @@ class TestSettingsReadOnlyForDeptAdmin:
 
     def test_user_read_403(self, client, admin_headers, dept_admin_headers,
                            user_headers):
-        """普通用户读系统配置 → 403（仅管理员开放）"""
+        """普通用户读系统配置 → 404 伪装（仅管理员开放，防探测）"""
         for path in ("/api/settings/profiles", "/api/settings/profiles/active",
                      "/api/settings/embedding-dim"):
             resp = client.get(path, headers=user_headers)
-            assert resp.status_code == 403, f"{path} 应对 user 403"
+            assert resp.status_code == 404, f"{path} 应对 user 404 伪装"
         resp = client.post("/api/settings/profiles/active/test",
                            headers=user_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404

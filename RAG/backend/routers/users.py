@@ -24,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.db import get_db
 from backend.deps import get_current_user, require_user_admin
 from backend.models.user_models import (DepartmentORM, UserCreate, UserORM,
-                                        UserPublic, UserUpdate)
+                                        UserPublic, UserUpdate,
+                                        validate_password)
 from backend.services import audit_service, storage_service, user_service
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,10 @@ async def create_user(request: Request, body: UserCreate,
     dept_admin：department_id 强制本部门（body 指定其他部门被覆盖，与 kb 创建
     同模式）；role 仅允许 user/dept_admin（super_admin → 400）。
     """
+    # 密码强度校验（与改密共用规则：至少 8 位且同时包含字母和数字）
+    strength_err = validate_password(body.password)
+    if strength_err:
+        raise HTTPException(status_code=400, detail=strength_err)
     if _is_dept_admin(user):
         if not user.department_id:
             raise HTTPException(status_code=403,
@@ -195,6 +200,12 @@ async def update_user(request: Request, user_id: str, body: UserUpdate,
                 raise HTTPException(status_code=400, detail="不能禁用当前登录账号")
     else:
         await _check_department(db, body.department_id)
+    # 管理员重置密码同样执行强度校验（与创建用户/改密共用规则；
+    # 放在越权 404 检查之后——权限问题优先返回 404 伪装，不泄露目标存在性）
+    if payload.get("password"):
+        strength_err = validate_password(str(payload["password"]))
+        if strength_err:
+            raise HTTPException(status_code=400, detail=strength_err)
     try:
         # current_user_id 传入服务层：超管保护（禁自己/禁最后一个超管 → 400）
         result = await user_service.update(

@@ -84,15 +84,15 @@ class TestAdminCRUD:
 
     def test_permissions(self, client, admin_headers, dept_admin_headers,
                          user_headers):
-        """user / dept_admin 访问管理 API → 403"""
+        """user / dept_admin 访问管理 API → 404 伪装"""
         kb = create_kb(client)
         for hdrs in (user_headers, dept_admin_headers):
             resp = client.get("/api/ext-queries", headers=hdrs)
-            assert resp.status_code == 403
+            assert resp.status_code == 404
             resp = client.post("/api/ext-queries",
                                json={"name": "x", "kb_ids": [kb["id"]]},
                                headers=hdrs)
-            assert resp.status_code == 403
+            assert resp.status_code == 404
 
     def test_update(self, client, admin_headers):
         """编辑名称/库/config；token 保持不变（链接继续有效）；不存在 404"""

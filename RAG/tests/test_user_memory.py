@@ -21,6 +21,7 @@ import pytest
 
 from backend.services import user_memory_service as ums
 from backend.services.chat_service import (ChatService, _CITATION_RULE,
+                                           _wrap_data_boundary,
                                            _SYSTEM_PROMPT_TEMPLATE)
 from conftest import FakeLLMClient, create_kb, upload_and_ingest
 
@@ -417,34 +418,38 @@ class TestBuildSystemContentMemory:
         out = ChatService._build_system_content("", self.REFS, memory=self.MEM)
         # 注意：模板规则文本本身含 "[引用]" 字样，须以引用内容（REFS 原文）定位
         assert out.index(self.MEM) < out.index(self.REFS)
-        assert out.endswith("\n\n" + self.REFS)
+        # 引用内容包裹数据边界标记，结尾为 </data_boundary>
+        assert out.endswith(_wrap_data_boundary(self.REFS))
         assert ChatService._build_system_content("", self.REFS) == \
-            _SYSTEM_PROMPT_TEMPLATE.format(refs=self.REFS)
+            _SYSTEM_PROMPT_TEMPLATE.format(refs=_wrap_data_boundary(self.REFS))
 
     def test_custom_memory_placeholder(self):
-        """自定义模板 {memory} 占位符 → 原位替换"""
+        """自定义模板 {memory} 占位符 → 原位替换（refs 带数据边界）"""
         out = ChatService._build_system_content(
             "你是助手。\n{memory}\n{refs}", self.REFS, memory=self.MEM)
-        assert out == f"你是助手。\n{self.MEM}\n{self.REFS}"
+        assert out == ("你是助手。\n" + self.MEM + "\n"
+                       + _wrap_data_boundary(self.REFS))
 
     def test_custom_without_memory_placeholder_no_inject(self):
         """自定义含 {refs} 但无 {memory} → 不注入（模板自行掌控）"""
         out = ChatService._build_system_content(
             "你是助手。\n{refs}", self.REFS, memory=self.MEM)
         assert self.MEM not in out
-        assert out == f"你是助手。\n{self.REFS}"
+        assert out == "你是助手。\n" + _wrap_data_boundary(self.REFS)
 
     def test_no_placeholder_injects_before_refs(self):
-        """无占位符自动追加引用段：画像插在引用段前"""
+        """无占位符自动追加引用段：画像插在引用段前（refs 带数据边界）"""
         out = ChatService._build_system_content(
             "你是助手。", self.REFS, memory=self.MEM)
         assert out == ("你是助手。\n\n" + _CITATION_RULE
-                       + f"\n{self.MEM}\n\n[引用]\n{self.REFS}")
+                       + f"\n{self.MEM}\n\n[引用]\n"
+                       + _wrap_data_boundary(self.REFS))
 
     def test_memory_empty_unchanged(self):
-        """memory 空串 → 与历史完全一致"""
+        """memory 空串 → 行为一致（引用段带数据边界）"""
         assert ChatService._build_system_content("你是助手。", self.REFS) == \
-            ("你是助手。\n\n" + _CITATION_RULE + "\n[引用]\n" + self.REFS)
+            ("你是助手。\n\n" + _CITATION_RULE + "\n[引用]\n"
+             + _wrap_data_boundary(self.REFS))
 
 
 # ==================== 聊天集成（system 注入 + 异步提取触发） ====================

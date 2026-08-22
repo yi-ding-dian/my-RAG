@@ -56,3 +56,13 @@ Python 依赖统一在根目录 `requirements.txt`（含 jieba 等检索/认证/
 - 数据持久化于项目根 `data/` 目录（与 Docker 部署共用同一目录规范）
 - 外部服务地址（LLM/Embedding/MinerU/RAGAS）可在前端"系统配置"页修改并持久化，
   也可通过项目根 `.env` 配置默认值
+
+## CORS 跨域白名单
+
+- 后端 CORS 白名单由项目根 `.env` 的 `CORS_ORIGINS` 控制（逗号分隔的具体
+  前端来源；缺省 `*` 仅限开发调试）。`.env` 已配置 dev 前端来源
+  `http://127.0.0.1:3002,http://localhost:3002`。
+- **前端域名变化时必须同步更新 `CORS_ORIGINS`**（如部署到
+  `https://kb.example.com` 时改为该来源），否则前端跨域请求会被浏览器拒绝
+  （后端接口不可用）。
+- CORS 白名单在**后端启动时读取**，修改 `.env` 后需重启后端生效。

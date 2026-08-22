@@ -4,7 +4,8 @@
  * 输入格式：每行一个用户，英文逗号分隔：`用户名,显示名,部门名,角色`
  * - 角色：admin=部门管理员 / user=普通用户，缺省 user；部门缺省「默认部门」
  * - 空行与 # 注释行忽略；用户名须为 3-20 位字母/数字/下划线；同批次内用户名不可重复
- * - 初始密码统一为 123456（createUser 契约必传 password），创建后请用户尽快登录修改
+ * - 初始密码统一为 user123456（createUser 契约必传 password；满足后端强度
+ *   要求：至少 8 位且同时包含字母和数字），创建后请用户尽快登录修改
  *
  * 执行：复用现有 listDepartments / createDepartment / createUser 接口，不新增后端接口；
  * 部门不存在时自动创建；逐个串行建号并展示进度（建号中 x/y）与结果汇总（成功 n / 失败 m + 原因列表）。
@@ -31,8 +32,8 @@ import {
 
 const { Text } = Typography;
 
-/** 默认初始密码（createUser 契约必传 password） */
-const DEFAULT_PASSWORD = '123456';
+/** 默认初始密码（createUser 契约必传 password；满足强度要求：至少 8 位且含字母和数字） */
+const DEFAULT_PASSWORD = 'user123456';
 /** 部门缺省值 */
 const DEFAULT_DEPT = '默认部门';
 

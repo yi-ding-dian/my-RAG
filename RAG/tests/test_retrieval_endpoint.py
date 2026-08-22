@@ -61,15 +61,24 @@ class TestRetrieveParams:
                 "char_start/char_end 切片应与命中文本一致"
 
     def test_top_k_override(self, client, mock_embedding, admin_headers):
-        """top_k 覆盖生效：1 → 只回 1 条；放大 → 不少于默认"""
+        """top_k 覆盖生效：1 → 只回 1 条；放大（50 上限内）→ 不少于默认"""
         kb = self._kb_with_title_chunks(client)
         assert len(self._retrieve(client, admin_headers, kb["id"], top_k=1)) == 1
         default_len = len(self._retrieve(client, admin_headers, kb["id"]))
-        assert len(self._retrieve(client, admin_headers, kb["id"], top_k=100)) >= default_len
+        assert len(self._retrieve(client, admin_headers, kb["id"], top_k=50)) >= default_len
         # 结果顺序：按相似度降序
         sources = self._retrieve(client, admin_headers, kb["id"], top_k=5)
         scores = [s["score"] for s in sources]
         assert scores == sorted(scores, reverse=True), "命中应按相似度降序"
+
+    def test_top_k_out_of_range_422(self, client, mock_embedding, admin_headers):
+        """top_k 越界（0 / 51 / 1000）→ 422（pydantic 约束 ge=1 le=50，与 stream 对齐）"""
+        kb = self._kb_with_title_chunks(client)
+        for bad in (0, 51, 1000):
+            resp = client.post("/api/chat/retrieve", json={
+                "kb_id": kb["id"], "query": "Python 是什么语言？", "top_k": bad,
+            }, headers=admin_headers)
+            assert resp.status_code == 422, f"top_k={bad} 应 422: {resp.text}"
 
     def test_similarity_threshold_override_filters_all(self, client, mock_embedding,
                                                        admin_headers):

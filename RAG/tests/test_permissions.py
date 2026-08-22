@@ -139,34 +139,34 @@ class TestAdminOnlyEndpoints:
 
     def test_settings_read_write_matrix(self, client, admin_headers,
                                         multi_dept_env):
-        """权限矩阵：user 读 403；dept_admin 读 200 / 写 403；super_admin 全通"""
+        """权限矩阵：user 读 404 伪装；dept_admin 读 200 / 写 404 伪装；super_admin 全通"""
         dept_h = multi_dept_env["dept_admin_a"]
-        # user 读系统配置 → 403
+        # user 读系统配置 → 404 伪装
         resp = client.get("/api/settings/profiles",
                           headers=multi_dept_env["user_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         # dept_admin 读 → 200（只读放开，写测试见 TestSettingsReadOnlyForDeptAdmin）
         assert client.get("/api/settings/profiles",
                           headers=dept_h).status_code == 200
-        # dept_admin 写（新建档案）→ 403
+        # dept_admin 写（新建档案）→ 404 伪装
         resp = client.post("/api/settings/profiles",
                            json={"name": "越权档案"}, headers=dept_h)
-        assert resp.status_code == 403
-        assert "仅超级管理员" in resp.json()["detail"]
+        assert resp.status_code == 404
+        assert "资源不存在" in resp.json()["detail"]
 
     def test_user_users_403(self, client, admin_headers, multi_dept_env):
-        """user 访问用户管理 → 403（dept_admin 已放开，见 test_dept_admin_members）"""
+        """user 访问用户管理 → 404 伪装（dept_admin 已放开，见 test_dept_admin_members）"""
         resp = client.get("/api/users", headers=multi_dept_env["user_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         # dept_admin 可访问（仅本部门成员）
         assert client.get("/api/users",
                           headers=multi_dept_env["dept_admin_a"]).status_code == 200
 
     def test_user_departments_403(self, client, admin_headers,
                                   multi_dept_env):
-        """user 访问部门管理 → 403（dept_admin 已放开，见 test_dept_admin_members）"""
+        """user 访问部门管理 → 404 伪装（dept_admin 已放开，见 test_dept_admin_members）"""
         resp = client.get("/api/departments", headers=multi_dept_env["user_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         # dept_admin 可访问（仅本部门）
         assert client.get("/api/departments",
                           headers=multi_dept_env["dept_admin_a"]).status_code == 200

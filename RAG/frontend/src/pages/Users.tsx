@@ -60,6 +60,13 @@ import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
 
+/** 密码强度校验规则（与后端 validate_password 一致：至少 8 位且同时包含字母和数字） */
+const passwordStrengthRules = (prefix = '密码') => [
+  { min: 8, message: `${prefix}至少 8 位，且需同时包含字母和数字` },
+  { pattern: /[A-Za-z]/, message: `${prefix}至少 8 位，且需同时包含字母和数字` },
+  { pattern: /\d/, message: `${prefix}至少 8 位，且需同时包含字母和数字` },
+];
+
 const roleMeta: Record<User['role'], { color: string; text: string }> = {
   super_admin: { color: 'red', text: '超级管理员' },
   dept_admin: { color: 'blue', text: '部门管理员' },
@@ -890,10 +897,10 @@ const UsersPage: React.FC = () => {
               tooltip="新用户首次登录时须使用该密码，建议提醒其登录后修改"
               rules={[
                 { required: true, message: '请输入初始密码' },
-                { min: 6, message: '初始密码至少 6 位' },
+                ...passwordStrengthRules('初始密码'),
               ]}
             >
-              <Input.Password placeholder="至少 6 位" maxLength={128} />
+              <Input.Password placeholder="至少 8 位，需同时包含字母和数字" maxLength={128} />
             </Form.Item>
           )}
           {editingUser && (
@@ -901,9 +908,9 @@ const UsersPage: React.FC = () => {
               name="password"
               label="重置密码"
               tooltip="留空则不修改密码"
-              rules={[{ min: 6, message: '密码至少 6 位' }]}
+              rules={[...passwordStrengthRules()]}
             >
-              <Input.Password placeholder="留空则不修改密码，重置须至少 6 位" maxLength={128} />
+              <Input.Password placeholder="留空则不修改密码，重置须至少 8 位且含字母和数字" maxLength={128} />
             </Form.Item>
           )}
         </Form>

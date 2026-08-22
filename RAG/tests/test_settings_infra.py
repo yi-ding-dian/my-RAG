@@ -42,15 +42,17 @@ class TestInfraSections:
         assert "sqlite" in mysql["url"]
 
     def test_password_masked(self, client, admin_headers):
-        """mysql.password / minio.secret_key 脱敏（前4****后4）"""
+        """mysql.password / minio.secret_key / minio.access_key 脱敏（前4****后4）"""
         profile = _make_profile(client, admin_headers)
         # 测试注入值 mysql-test-pass（15 字符）→ mysq****pass
         assert profile["mysql"]["password"] == "mysq****pass"
         assert profile["minio"]["secret_key"] == "mini****cret"
         assert "****" in profile["mysql"]["password"]
         assert "mysql-test-pass" not in profile["mysql"]["password"], "明文不得回传"
-        # access_key 非密钥后缀字段不清洗
-        assert profile["minio"]["access_key"] == "test-access-key"
+        # access_key 与密钥同规则脱敏（endpoint/bucket 等仍明文）
+        assert profile["minio"]["access_key"] == "test****-key"
+        assert "test-access-key" not in profile["minio"]["access_key"], "明文不得回传"
+        assert profile["minio"]["endpoint"] != ""
 
     def test_masked_roundtrip_keeps_original(self, client, admin_headers):
         """PUT 回传脱敏 password → 不覆盖原值（激活后可见原值）"""

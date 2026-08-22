@@ -153,14 +153,14 @@ class TestConfigField:
             assert resp.status_code == 400, resp.text
 
     def test_only_super_admin(self, client, user_headers, admin_headers):
-        """非超管修改配置 → 403（仅超管可配）"""
+        """非超管修改配置 → 404 伪装（仅超管可配）"""
         pid = client.get("/api/settings/profiles/active",
                          headers=admin_headers).json()["id"]
         resp = client.put(
             f"/api/settings/profiles/{pid}",
             json={"contextual_retrieval": {"max_full_doc_chars": 5000}},
             headers=user_headers)
-        assert resp.status_code == 403, resp.text
+        assert resp.status_code == 404, resp.text
 
 
 # ==================== enrich_chunks 输入组装（完整文档 / 超限抛错） ====================

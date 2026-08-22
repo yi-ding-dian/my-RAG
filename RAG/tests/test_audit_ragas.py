@@ -186,4 +186,4 @@ class TestAuditDeleteByDate:
         for headers in (dept_admin_headers, user_headers):
             resp = client.delete("/api/audit/logs",
                                  params={"date": "2026-01-01"}, headers=headers)
-            assert resp.status_code == 403
+            assert resp.status_code == 404

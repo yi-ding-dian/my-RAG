@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -15,6 +16,24 @@ from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.db import Base
+
+# 密码强度校验：最少 8 位且同时包含字母和数字（可含符号，不强制）
+_PASSWORD_MIN_LEN = 8
+_PASSWORD_STRENGTH_MSG = "密码至少 8 位，且需同时包含字母和数字"
+
+
+def validate_password(password: str) -> Optional[str]:
+    """密码强度校验（创建用户 / 修改密码共用）
+
+    规则：最少 8 位，且必须同时包含字母和数字（可含符号，不强制）。
+    返回错误文案（None = 通过）；路由层据此抛 400 中文提示。
+    """
+    pwd = password or ""
+    if len(pwd) < _PASSWORD_MIN_LEN:
+        return _PASSWORD_STRENGTH_MSG
+    if not re.search(r"[A-Za-z]", pwd) or not re.search(r"\d", pwd):
+        return _PASSWORD_STRENGTH_MSG
+    return None
 
 # 角色 / 状态枚举（pydantic Literal 约束 + ORM 层字符串，MySQL ENUM 与 sqlite 兼容性考虑）
 ROLE_SUPER_ADMIN = "super_admin"
@@ -154,21 +173,21 @@ class UserPublic(BaseModel):
 
 
 class UserCreate(BaseModel):
-    """创建用户请求"""
+    """创建用户请求（password 强度校验见 validate_password，路由层 400）"""
     username: str = Field(..., min_length=1, max_length=64, description="登录名（唯一）")
-    password: str = Field(..., min_length=1, max_length=128, description="明文密码（服务端 bcrypt 哈希）")
+    password: str = Field(..., min_length=1, max_length=128, description="明文密码（服务端 bcrypt 哈希；至少 8 位且同时包含字母和数字）")
     display_name: str = Field(..., min_length=1, max_length=64, description="显示名")
     role: Literal["super_admin", "dept_admin", "user"] = Field("user", description="角色")
     department_id: Optional[str] = Field(None, description="所属部门 ID（可为空）")
 
 
 class UserUpdate(BaseModel):
-    """更新用户请求（全可选，传哪个改哪个）"""
+    """更新用户请求（全可选，传哪个改哪个；password 重置同样走强度校验）"""
     display_name: Optional[str] = Field(None, max_length=64)
     role: Optional[Literal["super_admin", "dept_admin", "user"]] = None
     department_id: Optional[str] = None
     status: Optional[Literal["active", "disabled"]] = None
-    password: Optional[str] = Field(None, max_length=128, description="新密码（重哈希）")
+    password: Optional[str] = Field(None, max_length=128, description="新密码（重哈希；至少 8 位且同时包含字母和数字）")
 
 
 class DepartmentPublic(BaseModel):
@@ -198,6 +217,6 @@ class LoginRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    """修改密码请求"""
+    """修改密码请求（new_password 强度校验见 validate_password，路由层 400）"""
     old_password: str = Field(..., min_length=1, description="旧密码")
-    new_password: str = Field(..., min_length=1, max_length=128, description="新密码")
+    new_password: str = Field(..., min_length=1, max_length=128, description="新密码（至少 8 位且同时包含字母和数字）")

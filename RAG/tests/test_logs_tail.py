@@ -60,9 +60,9 @@ class TestLogsPermission:
     def test_non_super_admin_forbidden(self, client, dept_admin_headers,
                                        user_headers):
         for headers in (dept_admin_headers, user_headers):
-            assert client.get("/api/logs/tail", headers=headers).status_code == 403
-            assert client.get("/api/logs/files", headers=headers).status_code == 403
-            assert client.delete("/api/logs/files", headers=headers).status_code == 403
+            assert client.get("/api/logs/tail", headers=headers).status_code == 404
+            assert client.get("/api/logs/files", headers=headers).status_code == 404
+            assert client.delete("/api/logs/files", headers=headers).status_code == 404
 
 
 # ==================== tail 行为（按天） ====================
@@ -270,7 +270,7 @@ class TestLogFileDownload:
         for headers in (dept_admin_headers, user_headers):
             assert client.get("/api/logs/files/download",
                               params={"date": _d(1)},
-                              headers=headers).status_code == 403
+                              headers=headers).status_code == 404
 
     def test_download_content(self, client, admin_headers):
         """下载返回文件全部内容 + attachment + filename（kb-YYYY-MM-DD.log）"""

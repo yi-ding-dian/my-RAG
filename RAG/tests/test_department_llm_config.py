@@ -292,7 +292,7 @@ class TestDeptLlmApi:
 
     def test_user_read_merged_post_403(self, client, admin_headers,
                                        dept_admin_headers, user_headers):
-        """user GET 读合并值；user POST llm → 403（配置仍为原值）"""
+        """user GET 读合并值；user POST llm → 404 伪装（配置仍为原值）"""
         client.post("/api/settings/chat", json={
             "llm": dict(DEPT_LLM),
         }, headers=dept_admin_headers)
@@ -302,5 +302,5 @@ class TestDeptLlmApi:
         resp = client.post("/api/settings/chat", json={
             "llm": {"model": "evil-model"},
         }, headers=user_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         assert get_active_config().llm.model == global_model

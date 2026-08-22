@@ -7,8 +7,8 @@
   跨部门调整 → 400；改自己角色/禁自己 → 400；改 super_admin → 404
 - 删除：本部门成员成功；删自己 → 409；删跨部门成员/超管 → 404
 - 重置密码：本部门成员成功（新密码可登录）；跨部门 → 404
-- 部门：列表仅本部门；编辑本部门成功；编辑其他部门 404；创建/删除 403
-- user 角色：用户/部门全部接口 403（现状保持）
+- 部门：列表仅本部门；编辑本部门成功；编辑其他部门 404；创建/删除 404 伪装（仅 super_admin）
+- user 角色：用户/部门全部接口 404 伪装（防探测）
 """
 from __future__ import annotations
 
@@ -256,7 +256,7 @@ class TestDeptAdminResetPassword:
         """重置跨部门成员密码 → 404 伪装"""
         env = multi_dept_env
         uid = _user_id(client, admin_headers, "member_user_b")
-        resp = client.put(f"/api/users/{uid}", json={"password": "x123456"},
+        resp = client.put(f"/api/users/{uid}", json={"password": "x1234567"},
                           headers=env["dept_admin_a"])
         assert resp.status_code == 404
 
@@ -294,19 +294,19 @@ class TestDeptAdminDepartments:
         assert resp.status_code == 404
         assert resp.json()["detail"] == "部门不存在"
 
-    def test_create_department_403(self, client, admin_headers,
+    def test_create_department_404(self, client, admin_headers,
                                    multi_dept_env):
-        """创建部门 → 403（仅 super_admin）"""
+        """创建部门 → 404 伪装（仅 super_admin）"""
         resp = client.post("/api/departments", json={"name": "越权新部"},
                            headers=multi_dept_env["dept_admin_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
-    def test_delete_department_403(self, client, admin_headers,
+    def test_delete_department_404(self, client, admin_headers,
                                    multi_dept_env):
-        """删除部门 → 403（仅 super_admin）"""
+        """删除部门 → 404 伪装（仅 super_admin）"""
         resp = client.delete(f"/api/departments/{multi_dept_env['dept_a_id']}",
                              headers=multi_dept_env["dept_admin_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
 
 class TestDeptAdminWithoutDepartment:
@@ -332,7 +332,7 @@ class TestDeptAdminWithoutDepartment:
                           headers=hdrs).status_code == 404
         assert client.delete(f"/api/users/{uid}",
                              headers=hdrs).status_code == 404
-        # 创建用户 → 403
+        # 创建用户 → 403（无部门 dept_admin 业务拒绝，非管理依赖）
         resp = client.post("/api/users", json={
             "username": "x_new", "password": "pass123456",
             "display_name": "越权", "role": "user",
@@ -340,36 +340,36 @@ class TestDeptAdminWithoutDepartment:
         assert resp.status_code == 403
 
 
-class TestUserRoleStill403:
-    """user 角色：用户/部门全部接口 403（现状保持）"""
+class TestUserRoleStill404:
+    """user 角色：用户/部门全部接口 404 伪装（防探测）"""
 
-    def test_user_users_endpoints_403(self, client, admin_headers,
+    def test_user_users_endpoints_404(self, client, admin_headers,
                                       multi_dept_env):
-        """user 访问用户管理全部接口 → 403"""
+        """user 访问用户管理全部接口 → 404 伪装"""
         env = multi_dept_env
         uid = _user_id(client, admin_headers, "member_user_a")
-        assert client.get("/api/users", headers=env["user_a"]).status_code == 403
+        assert client.get("/api/users", headers=env["user_a"]).status_code == 404
         resp = client.post("/api/users", json={
             "username": "x_user", "password": "pass123456",
             "display_name": "越权", "role": "user",
         }, headers=env["user_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         assert client.put(f"/api/users/{uid}", json={"display_name": "x"},
-                          headers=env["user_a"]).status_code == 403
+                          headers=env["user_a"]).status_code == 404
         assert client.delete(f"/api/users/{uid}",
-                             headers=env["user_a"]).status_code == 403
+                             headers=env["user_a"]).status_code == 404
 
-    def test_user_departments_endpoints_403(self, client, admin_headers,
+    def test_user_departments_endpoints_404(self, client, admin_headers,
                                             multi_dept_env):
-        """user 访问部门全部接口 → 403"""
+        """user 访问部门全部接口 → 404 伪装"""
         env = multi_dept_env
         assert client.get("/api/departments",
-                          headers=env["user_a"]).status_code == 403
+                          headers=env["user_a"]).status_code == 404
         resp = client.post("/api/departments", json={"name": "越权部"},
                            headers=env["user_a"])
-        assert resp.status_code == 403
+        assert resp.status_code == 404
         assert client.put(f"/api/departments/{env['dept_a_id']}",
                           json={"name": "x"},
-                          headers=env["user_a"]).status_code == 403
+                          headers=env["user_a"]).status_code == 404
         assert client.delete(f"/api/departments/{env['dept_a_id']}",
-                             headers=env["user_a"]).status_code == 403
+                             headers=env["user_a"]).status_code == 404
