@@ -1,14 +1,28 @@
-"""Chroma 向量库单例（嵌入式 PersistentClient）
+"""向量存储后端（可插拔抽象，当前实现 chroma，milvus 预留）
 
-- collection 名 kb_{kb_id}（多知识库隔离），hnsw:space=cosine
-- metadata 只存 str/int/float/bool：{document_id, document_name, chunk_index}
-- id = f"{doc_id}_{chunk_index}"
-- 余弦距离转相似度: 1 - distance
-- 检索文本存入 Chroma documents 字段（检索时一并返回，避免重新切块）
+- 上层全部通过 get_vector_store() 获取门面 VectorStore（单例），
+  VectorStore 内部委托给 VectorBackend 后端实现，按 settings.VECTOR_BACKEND
+  选择（.env VECTOR_BACKEND=chroma|milvus）。
+- 后端接口契约（VectorBackend ABC）：
+  - 每个知识库一个隔离集合（collection / collection 等价物），名字 kb_{kb_id}；
+  - add：id = f"{doc_id}_{i}"，metadata 仅 str/int/float/bool，
+    显式补 doc_active 键（软删除过滤标志，见 ChromaVectorBackend）；
+  - search：余弦相似度，返回按相似度降序的 (id, text, metadata, score)，
+    其中相似度 = 1 - distance（算距离的后端自行换算），where 为等值
+    metadata 过滤 dict（如 {"doc_active": True}）；
+  - update_metadata：替换某文档全部 chunk 的部分 metadata 键
+    （其余键保真），失败返回 False；
+  - 无向量 / collection 不存在是合法状态：search 空、count 0、
+    delete 静默成功、update_metadata 返回 True（无操作视为成功）。
+- 接入新后端（milvus 等）步骤：
+  1) 实现 VectorBackend 全部方法（一个类，内部用 milvus client）；
+  2) _create_backend 注册名字分支；
+  3) config 补充该后端连接配置（已预留 VECTOR_BACKEND/MILVUS_URI）。
 """
 from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 
 # 系统 libsqlite3 过旧（<3.35）时，用 pysqlite3-binary 自带的新版 sqlite 替换
@@ -22,7 +36,7 @@ except ImportError:
 
 import chromadb  # noqa: E402
 
-from backend.config import CHROMA_DIR  # noqa: E402
+from backend.config import CHROMA_DIR, settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +44,47 @@ logger = logging.getLogger(__name__)
 Hit = Tuple[str, str, Dict, float]
 
 
-class VectorStore:
+class VectorBackend(ABC):
+    """向量存储后端抽象（契约见模块 docstring）"""
+
+    @abstractmethod
+    def add(self, kb_id: str, doc_id: str, document_name: str,
+            chunks: List[str], embeddings: List[List[float]],
+            metadatas: List[Dict] | None = None) -> None:
+        """向量入库（整文档批量）"""
+
+    @abstractmethod
+    def search(self, kb_id: str, query_embedding: List[float],
+               top_k: int = 5, where: Optional[dict] = None) -> List[Hit]:
+        """相似度检索，返回按相似度降序的命中列表"""
+
+    @abstractmethod
+    def delete_by_document(self, kb_id: str, doc_id: str) -> None:
+        """删除某文档的全部向量（重新入库/彻底删除时使用）"""
+
+    @abstractmethod
+    def update_metadata(self, kb_id: str, doc_id: str, **meta) -> bool:
+        """更新某文档全部 chunk 的 metadata（软删/恢复时打 doc_active）"""
+
+    @abstractmethod
+    def count(self, kb_id: str) -> int:
+        """collection 内向量总数"""
+
+    @abstractmethod
+    def get_embedding_dimension(self, kb_id: str) -> Optional[int]:
+        """任意一条向量的维度；collection 不存在/为空 → None"""
+
+    @abstractmethod
+    def get_all(self, kb_id: str) -> List[Tuple[str, str, Dict]]:
+        """拉取全部 (id, text, metadata)（BM25 索引构建/重建用）"""
+
+    @abstractmethod
+    def drop_collection(self, kb_id: str) -> None:
+        """删除知识库时级联删除整个集合"""
+
+
+class ChromaVectorBackend(VectorBackend):
+    """Chroma 嵌入式实现（PersistentClient 单实例，collection 名 kb_{kb_id}）"""
 
     def __init__(self):
         self._client = chromadb.PersistentClient(path=str(CHROMA_DIR))
@@ -114,7 +168,7 @@ class VectorStore:
                top_k: int = 5, where: Optional[dict] = None) -> List[Hit]:
         """余弦相似度检索，返回按相似度降序的命中列表
 
-        where: 可选 Chroma metadata 过滤（如 {"doc_active": True} 排除软删
+        where: 可选 metadata 等值过滤（如 {"doc_active": True} 排除软删
         文档；默认 None=不过滤，向后兼容）
         """
         col = self._get_collection(kb_id)
@@ -250,6 +304,54 @@ class VectorStore:
             logger.info("向量库删除: kb=%s", kb_id)
         except Exception as e:
             logger.warning("向量库删除失败: kb=%s err=%s", kb_id, e)
+
+
+class VectorStore:
+    """向量存储门面：按配置选择后端，方法与 VectorBackend 契约一致。
+
+    保留类名 VectorStore 兼容既有 import/get_vector_store() 调用，
+    实现委托给 _backend；新增后端时无需改动上层调用方。
+    """
+
+    def __init__(self, backend: Optional[VectorBackend] = None):
+        self._backend = backend or _create_backend(settings.VECTOR_BACKEND)
+
+    def add(self, *args, **kwargs):
+        return self._backend.add(*args, **kwargs)
+
+    def search(self, *args, **kwargs):
+        return self._backend.search(*args, **kwargs)
+
+    def delete_by_document(self, *args, **kwargs):
+        return self._backend.delete_by_document(*args, **kwargs)
+
+    def update_metadata(self, *args, **kwargs):
+        return self._backend.update_metadata(*args, **kwargs)
+
+    def count(self, *args, **kwargs):
+        return self._backend.count(*args, **kwargs)
+
+    def get_embedding_dimension(self, *args, **kwargs):
+        return self._backend.get_embedding_dimension(*args, **kwargs)
+
+    def get_all(self, *args, **kwargs):
+        return self._backend.get_all(*args, **kwargs)
+
+    def drop_collection(self, *args, **kwargs):
+        return self._backend.drop_collection(*args, **kwargs)
+
+
+def _create_backend(name: str) -> VectorBackend:
+    """按配置创建后端实例（接入新后端在此注册）"""
+    if name == "chroma":
+        return ChromaVectorBackend()
+    if name == "milvus":
+        raise RuntimeError(
+            "向量后端 milvus 尚未接入：接口已就绪（VectorBackend），"
+            "请先实现 MilvusVectorBackend 并在 vector_store._create_backend 注册"
+            f"（MILVUS_URI={settings.MILVUS_URI}），或将 VECTOR_BACKEND 改回 chroma")
+    raise ValueError(
+        f"未知向量后端: {name!r}（支持: chroma / milvus）")
 
 
 _vector_store: Optional[VectorStore] = None

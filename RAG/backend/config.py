@@ -104,6 +104,13 @@ class Settings(BaseSettings):
     # 存储后端: minio / local（local 存本地 data/uploads，测试离线用）
     STORAGE_BACKEND: str = "minio"
 
+    # 向量存储后端: chroma（嵌入式文件，默认）/ milvus（服务化，未接入）
+    # 接口已做可插拔抽象（backend/services/vector_store.py VectorBackend），
+    # 选择 milvus 时 get_vector_store() 报错提示待接入，不影响 chroma 启动
+    VECTOR_BACKEND: str = "chroma"
+    # Milvus 服务地址（VECTOR_BACKEND=milvus 时使用；预留配置）
+    MILVUS_URI: str = "http://127.0.0.1:19530"
+
     # 认证（JWT 签名密钥，必须通过 .env 注入强随机值 ≥16 字符，否则拒绝启动）
     JWT_SECRET: str = ""
 
