@@ -91,6 +91,7 @@ from backend.services.parser_client import (ParserUnavailableError,
 from backend.services.parser_probe import probe_parsers
 from backend.services.parser_images import rewrite_image_refs
 from backend.services.storage_service import get_storage_service
+from backend.services.table_normalizer import html_tables_to_pipe
 from backend.services.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -669,6 +670,13 @@ class IngestionService:
                            doc.id, str(e)[:150])
         if images:
             text = await self._upload_images(doc, text, images)
+
+        # 2.8) HTML 表格 → markdown 管道表格规范化（图片引用替换后执行，
+        # 表格内 <img> 的 src 已是代理 URL 原样保留）。目的：入库内容
+        # token 更省、LLM 可读性更高（不会把 <table><tr><td> 标签流
+        # 原样输出给用户）；非表格文本不动，无 HTML 表格时零开销。
+        # 转换后落盘，预览/切块/检索共用干净文本。
+        text = html_tables_to_pipe(text)
 
         # 3) 解析文本落盘 data/parsed/{doc_id}.md
         # （新流程无 parsed 中间态：解析+入库一步完成，直接到 ingested）

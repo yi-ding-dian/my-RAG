@@ -502,6 +502,44 @@ body {
   background: #f0f6ff !important;
 }
 
+/* ---------- 回答正文表格（MarkdownTable：管道/HTML 表格轻量渲染） ---------- */
+.md-table-wrap {
+  overflow-x: auto;      /* 超宽表格横向滚动，不挤破气泡 */
+  margin: 6px 0 8px;
+}
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.md-table th,
+.md-table td {
+  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+}
+.md-table th {
+  background: #f1f5f9;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.md-table tbody > tr:nth-child(even) > td {
+  background: #fafbfe;
+}
+[data-theme='dark'] .md-table th,
+[data-theme='dark'] .md-table td {
+  border-color: #2e3646;
+}
+[data-theme='dark'] .md-table th {
+  background: #232b38;
+}
+[data-theme='dark'] .md-table tbody > tr:nth-child(even) > td {
+  background: #1e2430;
+}
+
 /* ============================================================
    知识库卡片网格（KnowledgeBases 页：表格 → 卡片）
    ============================================================ */

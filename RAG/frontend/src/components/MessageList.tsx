@@ -8,6 +8,7 @@ import MdImages from './MdImages';
 import SourcePanel from './SourcePanel';
 import { computeHighlightRanges, splitByHighlights } from '../utils/sourceHighlight';
 import { cleanAnswerText } from '../utils/cleanMarkdown';
+import { renderTableBlocks } from './MarkdownTable';
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -281,15 +282,23 @@ const renderContent = (
   sources: Source[] | undefined,
   onCitationClick: ((source: Source) => void) | undefined,
 ): React.ReactNode[] => {
-  // 先清洗行首 Markdown 结构符号（### 标题 / - 列表等），再拆分 [n] 引用标：
+  // 先清洗行首 Markdown 结构符号（### 标题 / - 列表等）：
   // 显示文本与高亮基准（answerText）都用清洗后文本，保证所见即所算
   const cleaned = cleanAnswerText(content);
-  const parts = renderCitationContent(cleaned, sources, onCitationClick);
-  return parts.map((p, i) =>
-    typeof p === 'string'
-      ? <MdImages key={`m${i}`} text={p} maxWidth={ANSWER_IMAGE_MAX_WIDTH} />
-      : p,
-  );
+  // 再识别表格块（管道表格 / HTML <table> 存量兜底，半截自动回退纯文本），
+  // 表格之外的文本继续走 [n] 引用标拆分 + MdImages 图片渲染
+  const blocks = renderTableBlocks(cleaned);
+  return blocks.map((b, bi) => {
+    if (typeof b !== 'string') {
+      return <React.Fragment key={`t${bi}`}>{b}</React.Fragment>;
+    }
+    const parts = renderCitationContent(b, sources, onCitationClick);
+    return parts.map((p, pi) =>
+      typeof p === 'string'
+        ? <MdImages key={`m${bi}-${pi}`} text={p} maxWidth={ANSWER_IMAGE_MAX_WIDTH} />
+        : <React.Fragment key={`c${bi}-${pi}`}>{p}</React.Fragment>,
+    );
+  });
 };
 
 /** 消息列表：用户右侧 / 助手左侧气泡；助手消息 pre-wrap 渲染，引用来源默认收成一行入口按钮 */
