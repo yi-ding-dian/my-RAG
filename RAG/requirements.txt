@@ -21,3 +21,6 @@ aiosqlite>=0.20
 PyJWT>=2.8
 bcrypt>=4.1
 minio>=7.2
+# ---- Excel/CSV 表格解析（单元格矩阵 → markdown 管道表格，结构化直读）----
+openpyxl>=3.1
+xlrd>=2.0

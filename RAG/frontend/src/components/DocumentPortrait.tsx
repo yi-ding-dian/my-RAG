@@ -29,6 +29,7 @@ export const ENGINE_LABELS: Record<string, string> = {
   deepdoc: 'DeepDOC',
   plain: '纯文本',
   auto: '自动',
+  spreadsheet: '本地表格直读',
 };
 
 const DENSITY_TAG: Record<string, { color: string; label: string }> = {
@@ -127,74 +128,107 @@ const DocumentPortrait: React.FC<DocumentPortraitProps> = ({
               </Text>
             </Space>
           </PortraitCard>
-          <PortraitCard icon={<AlignLeftOutlined />} label="标题结构">
-            {analyze.structure.has_headings ? (
-              <Space direction="vertical" size={2}>
-                <Tag color="green">
-                  有标题（
-                  {analyze.structure.heading_count + analyze.structure.numbered_headings} 个）
-                </Tag>
-                <div>
-                  {analyze.structure.examples.slice(0, 2).map((t, i) => (
-                    <Tag key={i} style={{ marginInlineEnd: 4, marginTop: 2 }}>
-                      {t}
+          {analyze.spreadsheet ? (
+            <>
+              {/* 表格文档画像：Sheet 结构替代文本结构卡（后端 smart_parse 轻量统计） */}
+              <PortraitCard icon={<DashboardOutlined />} label="表格结构" wide iconClass="spw-p-icon--violet">
+                <Space direction="vertical" size={2}>
+                  <span>
+                    {analyze.spreadsheet.sheet_count} 个 Sheet /
+                    共 {analyze.spreadsheet.total_rows} 行
+                    {analyze.spreadsheet.merged_cells > 0 && (
+                      <Tag color="orange" style={{ marginLeft: 8 }}>
+                        合并单元格 {analyze.spreadsheet.merged_cells} 处
+                      </Tag>
+                    )}
+                  </span>
+                  <Space size={4} wrap>
+                    {analyze.spreadsheet.sheets.slice(0, 4).map((s) => (
+                      <Tag key={s.name} style={{ margin: 0 }}>
+                        {s.name}（{s.rows} 行 × {s.cols} 列）
+                      </Tag>
+                    ))}
+                    {analyze.spreadsheet.sheets.length > 4 && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        +{analyze.spreadsheet.sheets.length - 4} 个
+                      </Text>
+                    )}
+                  </Space>
+                </Space>
+              </PortraitCard>
+            </>
+          ) : (
+            <>
+              <PortraitCard icon={<AlignLeftOutlined />} label="标题结构">
+                {analyze.structure.has_headings ? (
+                  <Space direction="vertical" size={2}>
+                    <Tag color="green">
+                      有标题（
+                      {analyze.structure.heading_count + analyze.structure.numbered_headings} 个）
                     </Tag>
-                  ))}
-                </div>
-              </Space>
-            ) : (
-              <Tag>无标题结构</Tag>
-            )}
-          </PortraitCard>
-          <PortraitCard icon={<DashboardOutlined />} label="篇幅">
-            <Space direction="vertical" size={2}>
-              <span>
-                {analyze.length.doc_label} / 段落 {analyze.length.paragraphs}
-                {analyze.length.over_threshold ? (
-                  <Tag color="red" style={{ marginLeft: 8 }}>
-                    超过阈值 {analyze.length.threshold_label}
+                    <div>
+                      {analyze.structure.examples.slice(0, 2).map((t, i) => (
+                        <Tag key={i} style={{ marginInlineEnd: 4, marginTop: 2 }}>
+                          {t}
+                        </Tag>
+                      ))}
+                    </div>
+                  </Space>
+                ) : (
+                  <Tag>无标题结构</Tag>
+                )}
+              </PortraitCard>
+              <PortraitCard icon={<DashboardOutlined />} label="篇幅">
+                <Space direction="vertical" size={2}>
+                  <span>
+                    {analyze.length.doc_label} / 段落 {analyze.length.paragraphs}
+                    {analyze.length.over_threshold ? (
+                      <Tag color="red" style={{ marginLeft: 8 }}>
+                        超过阈值 {analyze.length.threshold_label}
+                      </Tag>
+                    ) : (
+                      <Tag color="green" style={{ marginLeft: 8 }}>
+                        ≤ 阈值 {analyze.length.threshold_label}
+                      </Tag>
+                    )}
+                  </span>
+                </Space>
+              </PortraitCard>
+              <PortraitCard
+                icon={<QuestionCircleOutlined />}
+                label="QA 格式"
+                iconClass="spw-p-icon--violet"
+              >
+                {analyze.qa.is_qa ? (
+                  <Tag color="purple">
+                    QA 问答（{analyze.qa.qa_pairs} 对，占比 {Math.round(analyze.qa.ratio * 100)}%）
                   </Tag>
                 ) : (
-                  <Tag color="green" style={{ marginLeft: 8 }}>
-                    ≤ 阈值 {analyze.length.threshold_label}
-                  </Tag>
+                  <Text type="secondary">非 QA 格式</Text>
                 )}
-              </span>
-            </Space>
-          </PortraitCard>
-          <PortraitCard
-            icon={<QuestionCircleOutlined />}
-            label="QA 格式"
-            iconClass="spw-p-icon--violet"
-          >
-            {analyze.qa.is_qa ? (
-              <Tag color="purple">
-                QA 问答（{analyze.qa.qa_pairs} 对，占比 {Math.round(analyze.qa.ratio * 100)}%）
-              </Tag>
-            ) : (
-              <Text type="secondary">非 QA 格式</Text>
-            )}
-          </PortraitCard>
-          <PortraitCard
-            icon={<LinkOutlined />}
-            label="指代密集度"
-            wide
-            iconClass={
-              analyze.reference_density.level === 'high'
-                ? 'spw-p-icon--danger'
-                : analyze.reference_density.level === 'mid'
-                  ? 'spw-p-icon--amber'
-                  : undefined
-            }
-          >
-            <Tag color={DENSITY_TAG[analyze.reference_density.level]?.color ?? 'default'}>
-              {analyze.reference_density.level_label}
-            </Tag>
-            <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-              {analyze.reference_density.count} 次（
-              {analyze.reference_density.per_1000_chars} 次/千字）
-            </Text>
-          </PortraitCard>
+              </PortraitCard>
+              <PortraitCard
+                icon={<LinkOutlined />}
+                label="指代密集度"
+                wide
+                iconClass={
+                  analyze.reference_density.level === 'high'
+                    ? 'spw-p-icon--danger'
+                    : analyze.reference_density.level === 'mid'
+                      ? 'spw-p-icon--amber'
+                      : undefined
+                }
+              >
+                <Tag color={DENSITY_TAG[analyze.reference_density.level]?.color ?? 'default'}>
+                  {analyze.reference_density.level_label}
+                </Tag>
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                  {analyze.reference_density.count} 次（
+                  {analyze.reference_density.per_1000_chars} 次/千字）
+                </Text>
+              </PortraitCard>
+            </>
+          )}
         </div>
         {analyze.recommendations && (
           <div className="spw-recommend">

@@ -2,3 +2,5 @@
 -r requirements.txt
 
 pytest>=8.0
+# 测试用例生成 .xls 老格式样本（xlwt 仅测试用）
+xlwt>=1.3

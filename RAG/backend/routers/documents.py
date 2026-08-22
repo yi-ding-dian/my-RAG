@@ -502,6 +502,10 @@ _DOWNLOAD_MEDIA_TYPES = {
     "txt": "text/plain; charset=utf-8",
     "md": "text/markdown; charset=utf-8",
     "url": "text/markdown; charset=utf-8",  # URL 网页导入的原始 .md 文本
+    "xlsx": ("application/vnd.openxmlformats-officedocument."
+             "spreadsheetml.sheet"),
+    "xls": "application/vnd.ms-excel",
+    "csv": "text/csv; charset=utf-8",
 }
 
 

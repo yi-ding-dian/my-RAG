@@ -56,6 +56,7 @@ _HEADING_MAX_LEN = 50
 
 _TEXT_FILE_TYPES = {"txt", "md"}
 _PARSER_FILE_TYPES = {"pdf", "docx"}
+_SPREADSHEET_FILE_TYPES = {"xlsx", "xls", "csv"}
 
 _METHOD_LABELS = {
     "naive": "通用切块",
@@ -195,12 +196,44 @@ def _safe_analyze(fn, text: str, warnings: list, name: str):
         return {}
 
 
+# ---------------- 表格画像（轻量本地读取，无 LLM） ----------------
+
+def _analyze_spreadsheet(path: Path) -> dict:
+    """Excel/CSV 轻量画像：Sheet 数量/行列/合计行数/合并单元格数量。
+
+    复用 spreadsheet_reader（结构化直读），秒出、不烧 token——
+    比 LLM 文本分析对表格文档更有用（Sheet 结构即文档骨架）。
+    """
+    from backend.services.spreadsheet_reader import read_spreadsheet
+    sheets = read_spreadsheet(path)
+    if not sheets:
+        return {}
+    infos = []
+    total_rows = 0
+    merged = 0
+    for s in sheets:
+        nrows = len(s.rows)
+        ncols = max((len(r) for r in s.rows), default=0)
+        total_rows += nrows
+        merged += int(s.stats.get("merged_cells", 0))
+        infos.append({"name": s.name, "rows": nrows, "cols": ncols})
+    return {
+        "sheet_count": len(infos),
+        "sheets": infos,
+        "total_rows": total_rows,
+        "merged_cells": merged,
+    }
+
+
 # ---------------- 引擎建议（probe 探测 mineru/deepdoc 可用性） ----------------
 
 def _suggest_engine(file_type: str, probe: dict) -> dict:
     """基于文件类型 + 解析器可用性探测的引擎建议（纯规则）"""
     mineru = probe.get("mineru") or {}
     deepdoc = probe.get("deepdoc") or {}
+    if file_type in _SPREADSHEET_FILE_TYPES:
+        return {"suggested": "spreadsheet",
+                "reason": "Excel/CSV 本地结构化直读（表格→管道），无需解析引擎"}
     if file_type in _TEXT_FILE_TYPES:
         return {"suggested": "plain",
                 "reason": "纯文本直读，无需外部解析器"}
@@ -321,6 +354,49 @@ async def analyze_document(request: Request, kb_id: str, doc_id: str,
     doc = _get_doc_or_404(kb_id, doc_id)
     file_type = (doc.file_type or "").lower().lstrip(".")
     warnings: list = []
+
+    # 0) 表格文档：跳过文本结构画像与解析器探测（秒出，无 LLM 成本）。
+    # 轻量表格画像（Sheet/行列/合并单元格）+ 固定推荐（按 Sheet 切块）。
+    if file_type in _SPREADSHEET_FILE_TYPES:
+        spreadsheet: dict = {}
+        try:
+            spreadsheet = _analyze_spreadsheet(
+                get_document_service().get_upload_path(doc))
+        except Exception as e:
+            logger.warning("表格画像失败 %s: %s", doc.original_name, e)
+            warnings.append(f"表格画像失败: {e}")
+        engine = _suggest_engine(file_type, {})
+        recommendations = {
+            "chunk_method": {
+                "method": "title", "label": _METHOD_LABELS["title"],
+                "recommended": True,
+                "reason": "表格文档按 Sheet 分节（## Sheet: 名称）切块，"
+                          "每张表独立成块，检索语义最精准"},
+            "alternatives": [
+                {"method": "naive", "label": _METHOD_LABELS["naive"],
+                 "recommended": False,
+                 "reason": "备选：通用字符切块（管道表格块仍原子保护）"},
+                {"method": "parent_child", "label": _METHOD_LABELS["parent_child"],
+                 "recommended": False,
+                 "reason": "备选：父子分块，父块含完整表格"},
+            ],
+            "contextual_retrieval": {
+                "recommended": False,
+                "reason": "表格自带结构上下文，无需 LLM 摘要增强"},
+            "enable_heading_in_content": False,
+        }
+        return {
+            "doc_id": doc_id,
+            "file_type": file_type,
+            "extracted": True,
+            "extract_warning": None,
+            "engine_suggestion": engine,
+            "spreadsheet": spreadsheet,
+            "length": {}, "structure": {}, "qa": {},
+            "reference_density": {},
+            "recommendations": recommendations,
+            "warnings": warnings,
+        }
 
     # 1) 文本提取（容错：失败返回部分画像）
     text, extracted, extract_warning = _extract_text(

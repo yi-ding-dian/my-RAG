@@ -131,10 +131,12 @@ const UploadArea: React.FC<UploadAreaProps> = ({
       return false;
     }
     // L4: 拖拽/点击上传的类型预校验（Dragger accept 仅过滤文件选择器，拖拽不拦截）
+    // 类型白名单与后端 SUPPORTED_EXTS 保持一致
     const dot = file.name.lastIndexOf('.');
     const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
-    if (!['.txt', '.md', '.pdf', '.docx'].includes(ext)) {
-      message.warning(`不支持的文件类型：${file.name}（仅支持 .txt/.md/.pdf/.docx）`);
+    if (!['.txt', '.md', '.pdf', '.docx', '.xlsx', '.xls', '.csv'].includes(ext)) {
+      message.warning(
+        `不支持的文件类型：${file.name}（仅支持 .txt/.md/.pdf/.docx/.xlsx/.xls/.csv）`);
       return false;
     }
     // multiple 时 antd 逐个回调 beforeUpload，先聚合成批（30ms 窗口）再统一并发上传
@@ -160,7 +162,7 @@ const UploadArea: React.FC<UploadAreaProps> = ({
         {canManage ? (
           <Dragger
             className="upload-zone upload-zone--inline"
-            accept=".txt,.md,.pdf,.docx"
+            accept=".txt,.md,.pdf,.docx,.xlsx,.xls,.csv"
             multiple={true}
             showUploadList={false}
             beforeUpload={file => handleUpload(file)}
@@ -168,7 +170,7 @@ const UploadArea: React.FC<UploadAreaProps> = ({
           >
             <div className="upload-inline__content">
               <InboxOutlined style={{ fontSize: 16, color: token.colorPrimary }} />
-              <span>点击或拖拽文件到此处上传，支持 .txt/.md/.pdf/.docx</span>
+              <span>点击或拖拽文件到此处上传，支持 .txt/.md/.pdf/.docx/.xlsx/.xls/.csv</span>
             </div>
           </Dragger>
         ) : (

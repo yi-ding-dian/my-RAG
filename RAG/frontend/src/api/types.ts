@@ -146,7 +146,7 @@ export interface DocumentItem {
   status: DocumentStatus;
   error?: string;
   chunk_count: number;
-  parse_method: string; // 'mineru' | 'plain'
+  parse_method: string; // 'mineru' | 'deepdoc' | 'plain' | 'spreadsheet'
   parser_id?: string; // 解析方式：'naive' | 'title' | 'regex'（列表/详情返回）
   parser_config?: Record<string, unknown>; // 解析参数（chunk_size/overlap/split_level/regex_pattern 等）
   created_at: string;
@@ -427,6 +427,13 @@ export interface AnalyzeResult {
     enable_heading_in_content: boolean;
   };
   warnings: string[];
+  /** 表格文档画像（xlsx/xls/csv，非表格文档无此字段） */
+  spreadsheet?: {
+    sheet_count: number;
+    sheets: { name: string; rows: number; cols: number }[];
+    total_rows: number;
+    merged_cells: number;
+  };
 }
 
 /** 分页响应结构（后端带 page/page_size 参数时返回） */

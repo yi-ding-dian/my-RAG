@@ -355,6 +355,19 @@ class ParserClient:
                     continue
             return file_path.read_text(encoding="utf-8", errors="replace"), [], "plain"
 
+        # Excel/CSV：本地结构化直读（单元格矩阵 → markdown 管道表格），
+        # 与 txt/md 一样不受解析引擎影响（auto/mineru/plain 均走本路径，
+        # 无需 MinerU/DeepDoc），切块/检索/前端渲染链路复用管道表格路由。
+        if file_type in ("xlsx", "xls", "csv"):
+            from backend.services.spreadsheet_reader import (
+                read_spreadsheet, render_sheets_text)
+            sheets = read_spreadsheet(file_path)
+            if not sheets or not any(s.rows for s in sheets):
+                raise RuntimeError(
+                    "表格解析结果为空（所有工作表均无有效数据行），"
+                    "请检查文件是否为空或仅含图片")
+            return render_sheets_text(sheets), [], "spreadsheet"
+
         if file_type in ("pdf", "docx"):
             cfg = get_active_config().mineru
             if engine == "deepdoc":

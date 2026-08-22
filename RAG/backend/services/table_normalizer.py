@@ -46,6 +46,17 @@ def _is_header_cell(tag: str) -> bool:
     return tag.lower() == "th"
 
 
+def pipe_escape(text: str) -> str:
+    """管道单元格文本规范化：空白折叠 + 字面 | 转义（全链路公共）
+
+    - HTML 表格转换（本模块）与 spreadsheet 读取器（Excel/CSV 直接转管道）
+      共用，保证两个入口产出语义一致的 GFM 管道表格；
+    - 折叠 `\\s+` → 单空格：单元格单行化（前端按行渲染安全）；
+    - 替换 `|` → `\\|`：GFM 单元格分隔符转义，检索/渲染后字形还原。
+    """
+    return _WS_RE.sub(" ", text or "").strip().replace("|", "\\|")
+
+
 class _Cell:
     """单个单元格结构：文本 + 合并跨度 + 是否表头"""
 
@@ -148,9 +159,7 @@ class _TableParser(HTMLParser):
     def _close_cell(self) -> None:
         if self._cur_cell is not None:
             raw = "".join(self._cur_text)
-            text = _WS_RE.sub(" ", raw).strip()
-            # 单元格内 | 转义（GFM 管道语法转义）
-            text = text.replace("|", "\\|")
+            text = pipe_escape(raw)
             self._cur_cell.text = text
             if self._cur_row is None:
                 self._cur_row = []

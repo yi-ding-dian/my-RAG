@@ -79,7 +79,8 @@ flowchart LR
 ```
 上传（txt/md/pdf/docx ≤100MB / URL 网页导入）
     ↓
-解析：MinerU 高质量解析（含图片提取）→ 不可用自动降级 pypdf / python-docx
+解析：MinerU 高质量解析（含图片提取）→ 不可用自动降级 pypdf / python-docx；
+      Excel/CSV 本地结构化直读（spreadsheet 读取器，直接产出管道表格）
     ↓
 切块：通用 / 按标题 / 正则 / 父子分块 / QA 问答 / Agentic 智能分块（chunk_size / chunk_overlap 可配；Agentic 为 LLM 读全文语义切块，≤1 万字，原理见 docs/Agentic智能分块原理.md）
     ↓

@@ -137,6 +137,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 隐藏时相关字段不渲染、提交时剔除（见 handleOk），后端缺省默认兜底。
   const docFileType = (doc?.file_type ?? '').toLowerCase().replace(/^\./, '');
   const isPdfLike = docFileType === 'pdf' || docFileType === 'docx';
+  // Excel/CSV：本地结构化直读（管道表格），无解析引擎/版面识别概念；
+  // 切块方式里 QA/Agentic 对表格文档无意义，隐藏
+  const isSpreadsheet = ['xlsx', 'xls', 'csv'].includes(docFileType);
   // 选 agentic 时强制关闭上下文检索增强（互斥）；知识图谱不互斥，
   // 保持用户已开的状态（可叠加选择）
   useEffect(() => {
@@ -231,11 +234,16 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         return Number.isFinite(n) ? n : fallback;
       };
       const isParentChild = doc.parser_id === 'parent_child';
+      // Excel/CSV：默认按 Sheet 切块（title），非表格文档沿用 doc.parser_id
       const initMethod: ParseMethod =
-        doc.parser_id === 'parent_child' || doc.parser_id === 'title' ||
-        doc.parser_id === 'regex' || doc.parser_id === 'agentic'
-          ? (doc.parser_id as ParseMethod)
-          : 'naive';
+        isSpreadsheet
+          ? doc.parser_id === 'title' || doc.parser_id === 'regex'
+            ? (doc.parser_id as ParseMethod)
+            : 'title'
+          : doc.parser_id === 'parent_child' || doc.parser_id === 'title' ||
+            doc.parser_id === 'regex' || doc.parser_id === 'agentic'
+            ? (doc.parser_id as ParseMethod)
+            : 'naive';
       // PDF 解析配置回填：parser_config 有对应字段时沿用（含页码范围），缺失用默认值
       // 解析方式回填（兼容旧配置：parser_engine=auto + layout_recognize 值、或仅
       // engine 无 layout 的旧文档）：layout_recognize 精确值优先，缺失/非法时按
@@ -553,6 +561,15 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
             不再孤悬在外）：解析方式（合并原解析引擎+版面识别，带连接检测）/
             MinerU 解析后端 / 页码范围 / 任务页面大小 / 表格/公式/图片 /
             语言（参考 KnowFlow 范式） */}
+        {isSpreadsheet && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Excel/CSV 本地结构化直读"
+            description="表格数据直接转为 markdown 管道表格入库，无需解析引擎（MinerU/DeepDOC 等）；切块按 Sheet 名称分节。"
+          />
+        )}
         {isPdfLike && (
           <Collapse
             ghost
@@ -621,16 +638,25 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           />
         )}
 
-        <Form.Item name="method" label="切块方式" rules={[{ required: true }]}>
+        <Form.Item name="method" label="切块方式" rules={[{ required: true }]} extra={isSpreadsheet ? '表格文档按 Sheet 名称（## Sheet:）切分，推荐"按标题切块"' : undefined}>
           <Select
-            options={[
-              { value: 'naive', label: '通用切块' },
-              { value: 'title', label: '按标题切块' },
-              { value: 'regex', label: '正则切块' },
-              { value: 'parent_child', label: '父子分块' },
-              { value: 'qa', label: 'QA 问答' },
-              { value: 'agentic', label: 'Agentic 智能分块' },
-            ]}
+            options={
+              isSpreadsheet
+                ? [
+                    { value: 'title', label: '按标题切块' },
+                    { value: 'naive', label: '通用切块' },
+                    { value: 'regex', label: '正则切块' },
+                    { value: 'parent_child', label: '父子分块' },
+                  ]
+                : [
+                    { value: 'naive', label: '通用切块' },
+                    { value: 'title', label: '按标题切块' },
+                    { value: 'regex', label: '正则切块' },
+                    { value: 'parent_child', label: '父子分块' },
+                    { value: 'qa', label: 'QA 问答' },
+                    { value: 'agentic', label: 'Agentic 智能分块' },
+                  ]
+            }
           />
         </Form.Item>
 
