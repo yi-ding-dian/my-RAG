@@ -245,9 +245,17 @@ const AppModal: React.FC<AppModalProps> = ({
       {...rest}
       {...(busy ? { closable: false, keyboard: false } : {})}
     >
+      {/* flex 列: 子组件(如 .logs-page-tabs 链式撑满)可 flex:1 填满剩余高度,
+          左右/上下内滚独立于弹窗 body 滚动 */}
       <div
         ref={contentRef}
-        style={{ height: '100%', overflow: 'auto', position: 'relative' }}
+        style={{
+          height: '100%',
+          overflow: 'auto',
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
       >
         {children}
       </div>

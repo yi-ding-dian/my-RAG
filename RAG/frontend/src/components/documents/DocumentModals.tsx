@@ -289,6 +289,8 @@ export interface DetailModalApi {
 export function useDetailModal(kbId: string | undefined): DetailModalApi {
   const { message } = AntApp.useApp();
   const [detail, setDetail] = useState<DocumentItem | null>(null);
+  // 视图切换(标题行 Tabs): 切块 / 知识图谱
+  const [detailTab, setDetailTab] = useState('chunks');
   const [detailData, setDetailData] = useState<DocumentDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   // 知识图谱 Tab 数据（null=未启用/加载失败/接口 404）
@@ -332,10 +334,23 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            gap: 12,
             paddingRight: 36,
           }}
         >
-          <span>{detail ? `切块详情 - ${detail.original_name}` : '切块详情'}</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {detail ? `切块详情 - ${detail.original_name}` : '切块详情'}
+          </span>
+          <Tabs
+            size="small"
+            activeKey={detailTab}
+            onChange={setDetailTab}
+            style={{ margin: '-10px 0 -4px' }}
+            items={[
+              { key: 'chunks', label: '切块' },
+              { key: 'graph', label: '知识图谱' },
+            ]}
+          />
         </div>
       }
       open={!!detail}
@@ -356,53 +371,35 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
     >
       {detailLoading ? (
         <Skeleton active paragraph={{ rows: 10 }} />
+      ) : detailTab === 'graph' ? (
+        <KnowledgeGraphTab
+          graph={graphData}
+          loading={graphLoading}
+          chunks={
+            detailData?.chunks?.map(c => ({ index: c.index, text: c.text })) ??
+            detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
+            []
+          }
+        />
       ) : (
-        <Tabs
-          // 与日志页同款撑满规则（index.css .logs-page-tabs 链式 flex 撑满）
-          className="logs-page-tabs"
-          defaultActiveKey="chunks"
-          items={[
-            {
-              key: 'chunks',
-              label: '切块',
-              children: (
-                <ChunkCompareView
-                  // 弹窗固定高度，内容区撑满剩余高度（头部/工具条固定，仅左右内容区内部滚动）
-                  fillHeight
-                  // key 绑定文档 id：切换文档时重挂载，重置选中态
-                  key={detailData?.id}
-                  chunks={
-                    detailData?.chunks?.map(c => ({
-                      index: c.index,
-                      text: c.text,
-                      char_start: c.char_start,
-                      char_end: c.char_end,
-                      context: c.context,
-                      label: c.label,
-                    })) ??
-                    detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
-                    []
-                  }
-                  fullText={detailData?.full_text}
-                />
-              ),
-            },
-            {
-              key: 'graph',
-              label: '知识图谱',
-              children: (
-                <KnowledgeGraphTab
-                  graph={graphData}
-                  loading={graphLoading}
-                  chunks={
-                    detailData?.chunks?.map(c => ({ index: c.index, text: c.text })) ??
-                    detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
-                    []
-                  }
-                />
-              ),
-            },
-          ]}
+        <ChunkCompareView
+          // 弹窗固定高度，内容区撑满剩余高度（头部/工具条固定，仅左右内容区内部滚动）
+          fillHeight
+          // key 绑定文档 id：切换文档时重挂载，重置选中态
+          key={detailData?.id}
+          chunks={
+            detailData?.chunks?.map(c => ({
+              index: c.index,
+              text: c.text,
+              char_start: c.char_start,
+              char_end: c.char_end,
+              context: c.context,
+              label: c.label,
+            })) ??
+            detailData?.chunk_preview?.map((text, i) => ({ index: i, text })) ??
+            []
+          }
+          fullText={detailData?.full_text}
         />
       )}
     </AppModal>

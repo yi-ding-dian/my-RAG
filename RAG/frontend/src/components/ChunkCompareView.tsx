@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Empty, Input, List, Pagination, Tag, Typography, theme } from 'antd';
-import { ArrowDownOutlined, ArrowUpOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Empty, Input, List, Pagination, Tag, Tooltip, Typography, theme } from 'antd';
+import { ArrowDownOutlined, ArrowUpOutlined, RetweetOutlined, SearchOutlined } from '@ant-design/icons';
 import { useTheme } from '../theme';
 import MdImages from './MdImages';
 import { renderTableBlocks } from './MarkdownTable';
@@ -183,6 +183,8 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   const [page, setPage] = useState(1);
   // 全文搜索
   const [searchText, setSearchText] = useState('');
+  // 同步滚动开关：默认关闭(左右独立滚动,点击/搜索/溯源定位始终生效)
+  const [syncScroll, setSyncScroll] = useState(false);
   const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
   // 当前定位结果对应的搜索词：搜索词变化后首次 Enter/按钮操作应先定位第 1 处，
   // 而非从重置后的序号（0）继续"下一个"跳到第 2 处
@@ -250,7 +252,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
         const id = rangeIdOf(rightPos);
         if (id) {
           setProgrammatic();
-          document.getElementById(id)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
         }
       }
     });
@@ -337,7 +339,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
       window.setTimeout(() => {
         const seg = segOf(start);
         setProgrammatic();
-        document.getElementById(`chunk-seg-${seg ? seg.start : start}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        document.getElementById(`chunk-seg-${seg ? seg.start : start}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
         // 左栏同步滚到目标块（即时滚动防联动回拉）
         document.getElementById(`chunk-list-${initialIndex}`)?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
       }, 0);
@@ -446,7 +448,9 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
       // 程序滚动期间抑制另一侧联动（防来回抖动）
       setProgrammatic();
       window.setTimeout(() => {
-        document.getElementById(`chunk-seg-${seg ? seg.start : start}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        // block:'start'：选中块顶对齐可视区顶部，从块开头完整往下读
+        // （原 center 会把长块放视口中部，上下被相邻块内容包围、显示不全）
+        document.getElementById(`chunk-seg-${seg ? seg.start : start}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
       }, 0);
     },
     [chunkStartOf, segOf],
@@ -775,14 +779,42 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
           marginBottom: 12,
           flexShrink: 0,
           flexWrap: 'wrap',
+          /* 固定吸顶：弹窗/容器再滚动，工具栏(同步按钮+搜索)都不跟随 */
+          position: 'sticky',
+          top: 0,
+          zIndex: 6,
+          background: token.colorBgContainer,
+          padding: '8px 0',
         }}
       >
         <Text strong>共 {chunks.length} 块</Text>
+        {/* 分页器：放工具栏行「共 N 块」右侧紧邻，与左栏列表解耦（左右栏共用页码） */}
+        <Pagination
+          size="small"
+          current={page}
+          total={sortedChunks.length}
+          pageSize={PAGE_SIZE}
+          showSizeChanger={false}
+          onChange={p => {
+            setPage(p);
+            // 切页后若选中块在当前页，滚动到它（跨页联动同样走 pending 机制）
+            if (selectedIndex != null) pendingLeftRef.current = selectedIndex;
+          }}
+        />
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {canCompare ? '点击左右侧双向联动，滚动任一侧自动同步；支持全文搜索' : '原文预览不可用，仅展示切块列表'}
+          {canCompare ? '左右独立滚动，点击块/搜索/引用跳转定位；可开「同步滚动」联动' : '原文预览不可用，仅展示切块列表'}
         </Text>
         {/* 全文搜索：搜索词变化重置匹配序号；Enter 下一个 / Shift+Enter 上一个 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+          <Tooltip title={syncScroll ? '同步滚动已开启（关闭即左右独立滚动）' : '同步滚动：左右栏跟随滚动（默认关闭）'}>
+            <Button
+              size="small"
+              type={syncScroll ? 'primary' : 'text'}
+              icon={<RetweetOutlined />}
+              aria-label="同步滚动开关"
+              onClick={() => setSyncScroll(v => !v)}
+            />
+          </Tooltip>
           <Input
             size="small"
             allowClear
@@ -822,26 +854,14 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
           )}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
-        {/* 左栏：切块列表（约 45%，分页器控制左右共用页码） */}
+      {/* overflow hidden: 左右栏必须各自独立滚动视口，否则共享外层滚动
+          导致"点左块 -> 右跳转,左边也跟着滚"(用户反馈) */}
+      <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        {/* 左栏：切块列表（约 45%，分页器在顶部工具栏行，左右栏共用页码） */}
         <div style={{ width: '45%', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ flexShrink: 0, marginBottom: 8 }}>
-            <Pagination
-              size="small"
-              current={page}
-              total={sortedChunks.length}
-              pageSize={PAGE_SIZE}
-              showSizeChanger={false}
-              onChange={p => {
-                setPage(p);
-                // 切页后若选中块在当前页，滚动到它（跨页联动同样走 pending 机制）
-                if (selectedIndex != null) pendingLeftRef.current = selectedIndex;
-              }}
-            />
-          </div>
           <div
             ref={leftScrollRef}
-            onScroll={() => scheduleSync(syncRightFromLeft)}
+            onScroll={() => { if (syncScroll) scheduleSync(syncRightFromLeft); }}
             style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 4 }}
           >
             <List
@@ -928,7 +948,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
         {/* 右栏：原文面板（约 55%，只渲染当前页块的原文区间，与左栏同页同步） */}
         <div
           ref={rightScrollRef}
-          onScroll={() => scheduleSync(syncLeftFromRight)}
+          onScroll={() => { if (syncScroll) scheduleSync(syncLeftFromRight); }}
           style={{
             width: '55%',
             minWidth: 0,
