@@ -86,11 +86,25 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     getDocumentRaw(kbId, doc.id)
       .then(blob => {
         if (cancelled) return;
-        if (kind === 'pdf' || kind === 'spreadsheet') {
-          // pdf 原始字节 / spreadsheet 类 Excel HTML，均走 iframe 渲染
+        if (kind === 'pdf') {
           const url = URL.createObjectURL(blob);
           blobUrlRef.current = url;
           setBlobUrl(url);
+        } else if (kind === 'spreadsheet') {
+          // 类 Excel HTML：注入宿主主题标记（iframe 无主题上下文，
+          // 后端 HTML 以 [data-theme] 属性切换亮/暗变量）
+          blob.text().then(t => {
+            if (cancelled) return;
+            const theme = document.documentElement.getAttribute('data-theme') || 'light';
+            // 注意: 后端 CSS 也含 "data-theme" 字样,须只检查 <html> 根标签
+            const htmlTag = /<html[^>]*>/i.exec(t)?.[0] ?? '';
+            const injected = htmlTag && !/data-theme/i.test(htmlTag)
+              ? t.replace(htmlTag, `<html data-theme="${theme}"${htmlTag.slice(5)}`)
+              : t;
+            const url = URL.createObjectURL(new Blob([injected], { type: 'text/html' }));
+            blobUrlRef.current = url;
+            setBlobUrl(url);
+          });
         } else {
           blob.text().then(t => {
             if (!cancelled) setText(t);

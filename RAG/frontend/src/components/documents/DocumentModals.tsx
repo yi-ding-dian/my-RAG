@@ -1,21 +1,17 @@
 import React, { useCallback, useState } from 'react';
 import AppModal from '../AppModal';
 import {
-  Alert, 
-  App as AntApp, 
-  Button, 
-  Select, 
-  Skeleton, 
-  Space, 
-  Spin, 
-  Tabs, 
-  Tooltip, 
+  Alert,  
+  App as AntApp,  
+  Select,  
+  Skeleton,  
+  Space,  
+  Spin,  
+  Tabs,  
   Typography} from 'antd';
 
 const { Text } = Typography;
 import {
-  FullscreenExitOutlined,
-  FullscreenOutlined,
   RobotOutlined,
 } from '@ant-design/icons';
 import {
@@ -295,7 +291,6 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
   const [detail, setDetail] = useState<DocumentItem | null>(null);
   const [detailData, setDetailData] = useState<DocumentDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [detailFullscreen, setDetailFullscreen] = useState(false);
   // 知识图谱 Tab 数据（null=未启用/加载失败/接口 404）
   const [graphData, setGraphData] = useState<KnowledgeGraph | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -328,7 +323,7 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
   const node = (
     <AppModal
   dimension="resizable"
-  defaultSize={{ w: 760, h: 600 }}
+  defaultSize={{ w: 1150, h: 640 }}
   rememberKey="chunk-detail"
       className="chunk-detail-modal"
       title={
@@ -341,28 +336,11 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
           }}
         >
           <span>{detail ? `切块详情 - ${detail.original_name}` : '切块详情'}</span>
-          <Tooltip title={detailFullscreen ? '还原' : '放大'}>
-            <Button
-              type="text"
-              size="small"
-              aria-label={detailFullscreen ? '还原窗口' : '放大窗口'}
-              icon={detailFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-              onClick={() => setDetailFullscreen(v => !v)}
-            />
-          </Tooltip>
         </div>
       }
       open={!!detail}
       onCancel={() => setDetail(null)}
       footer={null}
-      width={detailFullscreen ? '88vw' : 1150}
-      // 高度用 min(固定vh, 视口高-120px) 兜底：小视口下 8vh+80vh+底部留白(padding 24px)
-      // 也不会超过视口，全屏 .ant-modal-wrap 永不成为滚动容器
-      style={
-        detailFullscreen
-          ? { top: '6vh', height: 'min(88vh, calc(100vh - 120px))' }
-          : { top: '8vh', height: 'min(80vh, calc(100vh - 120px))' }
-      }
       styles={{
         content: { display: 'flex', flexDirection: 'column', height: '100%' },
         header: { flexShrink: 0 },

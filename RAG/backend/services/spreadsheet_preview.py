@@ -18,22 +18,38 @@ import csv
 import datetime
 import html
 import io
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # ---- 通用 HTML 骨架（样式 + 纯 CSS tab 切换） ----
 
 _CSS = """
+/* 主题变量（iframe：前端按宿主主题注入 html data-theme 属性） */
+:root {
+  --sp-page-bg: #fff; --sp-page-fg: #1f2328;
+  --sp-tabs-bg: #f6f8fa; --sp-border: #d0d7de;
+  --sp-tab-bg: #eef1f6; --sp-tab-fg: #1f2328;
+  --sp-tab-active-bg: #ffffff; --sp-tab-active-fg: #111827;
+}
+[data-theme='dark'] {
+  --sp-page-bg: #1b2028; --sp-page-fg: #e5e7eb;
+  --sp-tabs-bg: #171c23; --sp-border: #2e3644;
+  --sp-tab-bg: #232a35; --sp-tab-fg: #c9d1d9;
+  --sp-tab-active-bg: #2a3240; --sp-tab-active-fg: #f3f4f6;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-       background: #fff; color: #1f2328; }
+       background: var(--sp-page-bg); color: var(--sp-page-fg); }
 .tabs { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap;
-        gap: 4px; padding: 8px 10px 0; background: #f6f8fa;
-        border-bottom: 1px solid #d0d7de; }
+        gap: 4px; padding: 8px 10px 0; background: var(--sp-tabs-bg);
+        border-bottom: 1px solid var(--sp-border); }
 .tabs label { padding: 5px 14px; font-size: 13px; border-radius: 6px 6px 0 0;
-              background: #eef1f6; cursor: pointer; user-select: none;
-              border: 1px solid #d0d7de; border-bottom: none; }
-.tabs input { display: none; }
+              background: var(--sp-tab-bg); color: var(--sp-tab-fg);
+              cursor: pointer; user-select: none;
+              border: 1px solid var(--sp-border); border-bottom: none; }
+/* radio 在 body 直接子级（tabs 之外），按 name 隐藏所有选择圆点 */
+input[name="sh"] { display: none; }
 .sheet { display: none; padding: 10px; }
 input#sheet-0:checked ~ .sheet.sheet-0 { display: block; }
 input#sheet-1:checked ~ .sheet.sheet-1 { display: block; }
@@ -45,11 +61,24 @@ input#sheet-6:checked ~ .sheet.sheet-6 { display: block; }
 input#sheet-7:checked ~ .sheet.sheet-7 { display: block; }
 input#sheet-8:checked ~ .sheet.sheet-8 { display: block; }
 input#sheet-9:checked ~ .sheet.sheet-9 { display: block; }
-.tabs input:checked + label { background: #fff; font-weight: 600; }
+/* 选中的 tab：radio 与 label 不同级，用 ~ + nth-child 定位（10 个上限） */
+input#sheet-0:checked ~ .tabs label:nth-child(1),
+input#sheet-1:checked ~ .tabs label:nth-child(2),
+input#sheet-2:checked ~ .tabs label:nth-child(3),
+input#sheet-3:checked ~ .tabs label:nth-child(4),
+input#sheet-4:checked ~ .tabs label:nth-child(5),
+input#sheet-5:checked ~ .tabs label:nth-child(6),
+input#sheet-6:checked ~ .tabs label:nth-child(7),
+input#sheet-7:checked ~ .tabs label:nth-child(8),
+input#sheet-8:checked ~ .tabs label:nth-child(9),
+input#sheet-9:checked ~ .tabs label:nth-child(10) {
+  background: var(--sp-tab-active-bg); color: var(--sp-tab-active-fg);
+  font-weight: 600;
+}
 table { border-collapse: collapse; table-layout: auto; }
-td, th { border: 1px solid #d0d7de; padding: 2px 6px; font-size: 13px;
-         line-height: 1.5; overflow: hidden; text-overflow: ellipsis;
-         white-space: nowrap; }
+td, th { border: 1px solid var(--sp-border); padding: 2px 6px;
+         font-size: 13px; line-height: 1.5; overflow: hidden;
+         text-overflow: ellipsis; white-space: nowrap; }
 .table-scroll { overflow: auto; max-width: 100%; }
 """
 
@@ -81,8 +110,51 @@ def _wrap_sheet(name: str, table_html: str, idx: int) -> str:
             f'<div class="table-scroll">\n{table_html}\n</div>\n</div>')
 
 
+def _apply_number_format(value: float, fmt: str) -> str:
+    """Excel number_format → 展示文本（货币/千分位/固定小数/百分比，尽力还原）
+
+    覆盖常见企业内部报表格式（如 ¥#,##0.00、#,##0.0、0.00%、$#,##0）；
+    未识别或异常 → 原样值回退，不虚构格式。注意: 数字格式里带引号的
+    文本片段(如 "¥"#,##0.00)按同规则处理，先取货币符号再应用数值格式。
+    """
+    fmt = fmt or ""
+    try:
+        # GENERAL / 无格式 / 文本格式：原样输出（整数去尾 .0；小数净化尾差）
+        if not fmt or fmt.upper() in ("GENERAL", "General") or "@" in fmt:
+            if value == int(value):
+                return str(int(value))
+            from backend.services.spreadsheet_reader import humanize_number
+            return humanize_number(value)
+        # 货币符号(带引号或裸符号)
+        symbol = ""
+        m = re.search(r'"?([¥￥$€£])"?', fmt)
+        if m:
+            symbol = m.group(1)
+        dec = 2
+        if ".00" in fmt:
+            dec = 2
+        elif ".0" in fmt:
+            dec = 1
+        elif "." in fmt and not symbol:
+            dec = 2
+        else:
+            dec = 0
+        # 有 / 无千分位
+        has_comma = "," in fmt
+        if has_comma:
+            num = f"{value:,.{dec}f}"
+        else:
+            num = f"{value:.{dec}f}"
+        if "%" in fmt:
+            num = f"{value * 100:.{max(dec, 0)}f}%"
+            symbol = ""
+        return f"{symbol}{num}"
+    except Exception:
+        return str(value)
+
+
 def _fmt_value(value, number_format: str = "") -> str:
-    """单元格值展示文本（数字格式感知：百分比/货币/日期）"""
+    """单元格值展示文本（数字格式感知：货币/千分位/百分比/日期）"""
     if value is None:
         return ""
     if isinstance(value, datetime.datetime):
@@ -91,11 +163,10 @@ def _fmt_value(value, number_format: str = "") -> str:
         return value.strftime("%Y-%m-%d %H:%M")
     if isinstance(value, datetime.date):
         return value.isoformat()
-    if isinstance(value, float) and "%" in (number_format or ""):
-        # openpyxl data_only 百分比为小数（如 0.125），按格式还原百分比文本
-        return f"{round(value * 100, 2)}%"
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _apply_number_format(float(value), number_format)
     return str(value)
 
 
@@ -119,6 +190,24 @@ def _render_xlsx(path: Path) -> Tuple[List[str], List[str]]:
     from openpyxl.utils import get_column_letter
 
     wb = openpyxl.load_workbook(path, data_only=True)
+    try:
+        wb_formula = openpyxl.load_workbook(path, data_only=False)
+    except Exception:
+        wb_formula = None
+    # 公式计算引擎（有公式时重算；缓存命中秒读；失败回退公式文本）
+    _recalc: dict = {}
+    if wb_formula is not None:
+        try:
+            has_formula = any(
+                isinstance(c.value, str) and c.value.startswith("=")
+                for sheet in wb_formula.worksheets for row in sheet.iter_rows()
+                for c in row
+            )
+            if has_formula:
+                from backend.services.spreadsheet_formula import recalc_cells
+                _recalc = recalc_cells(path)
+        except Exception:
+            _recalc = {}
     names: List[str] = []
     sheet_htmls: List[str] = []
     for ws in wb.worksheets[:10]:
@@ -189,7 +278,17 @@ def _render_xlsx(path: Path) -> Tuple[List[str], List[str]]:
                     attrs.append(f'colspan="{span[1]}"')
                 if cell.row in row_h:
                     attrs.append(f'height="{row_h[cell.row]}"')
-                val = _fmt_value(cell.value, cell.number_format or "")
+                # 公式无缓存值(未重算)：计算引擎值优先，公式文本兜底
+                val = cell.value
+                if val is None and wb_formula is not None:
+                    fv = wb_formula[ws.title].cell(
+                        row=cell.row, column=cell.column).value
+                    if isinstance(fv, str) and fv.startswith("="):
+                        calc = _recalc.get(ws.title, {}).get(
+                            str(cell.row), {}).get(get_column_letter(cell.column))
+                        val = calc if calc is not None \
+                            else (fv[1:] if fv.startswith("==") else fv)
+                val = _fmt_value(val, cell.number_format or "")
                 tag = "th" if cell.row == 1 else "td"
                 attrs_str = " " + " ".join(attrs) if attrs else ""
                 cells.append(f"<{tag}{attrs_str}>{html.escape(val)}</{tag}>")

@@ -30,16 +30,59 @@ def _cell_text(value) -> str:
     return str(value)
 
 
+def _formula_text(value) -> str:
+    """公式文本兜底：WPS/未重算文件无缓存值时显示 =公式（不显示为空）"""
+    s = str(value or "").strip()
+    if s.startswith("=="):
+        s = s[1:]  # WPS 双等号怪癖归一
+    return s if s else "=公式"
+
+
 def read_xlsx(path: Path) -> List[Sheet]:
     """读取工作簿全部工作表中非空 sheet（空 sheet/全空行跳过）"""
     import openpyxl
+    from openpyxl.utils import get_column_letter
 
     wb = openpyxl.load_workbook(path, data_only=True)
+    # 公式兜底：data_only 无缓存值时从公式视图回读 =公式 文本
+    try:
+        wb_formula = openpyxl.load_workbook(path, data_only=False)
+    except Exception:
+        wb_formula = None
+    # 公式计算引擎（有公式时按需重算，缓存命中秒读；失败回退公式文本）
+    _recalc: Dict = {}
+    if wb_formula is not None:
+        try:
+            has_formula = any(
+                isinstance(c.value, str) and c.value.startswith("=")
+                for sheet in wb_formula.worksheets for row in sheet.iter_rows()
+                for c in row
+            )
+            if has_formula:
+                from backend.services.spreadsheet_formula import recalc_cells
+                _recalc = recalc_cells(path)
+        except Exception:
+            _recalc = {}
     sheets: List[Sheet] = []
     for ws in wb.worksheets:
         rows: List[List[str]] = []
-        for row in ws.iter_rows(values_only=True):
-            cells = [_cell_text(v) for v in row]
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
+                                min_col=1, max_col=ws.max_column):
+            cells = []
+            for cell in row:
+                text = _cell_text(cell.value)
+                # 无缓存值(公式未计算,如 WPS 保存) → 计算引擎值优先,公式文本兜底
+                if text == "" and wb_formula is not None:
+                    fv = wb_formula[ws.title].cell(
+                        row=cell.row, column=cell.column).value
+                    if isinstance(fv, str) and fv.startswith("="):
+                        calc = _recalc.get(ws.title, {}).get(
+                            str(cell.row), {}).get(get_column_letter(cell.column))
+                        if isinstance(calc, float):
+                            from backend.services.spreadsheet_reader import humanize_number
+                            calc = humanize_number(calc)
+                        text = str(calc) if calc is not None else _formula_text(fv)
+                cells.append(text)
             # 全空行跳过（Excel 尾部空行/格式化残留行）
             if not any(c for c in cells):
                 continue

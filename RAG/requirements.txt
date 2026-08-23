@@ -24,3 +24,5 @@ minio>=7.2
 # ---- Excel/CSV 表格解析（单元格矩阵 → markdown 管道表格，结构化直读）----
 openpyxl>=3.1
 xlrd>=2.0
+# ---- Excel 公式计算(仅公式无缓存时触发,结果 hash 缓存)----
+formulas>=1.3

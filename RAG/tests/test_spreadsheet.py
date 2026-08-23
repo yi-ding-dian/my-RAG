@@ -150,8 +150,8 @@ def test_read_xlsx_multi_sheet_merge_date(tmp_path):
     assert sheets[0].rows[1][0] == "AI服务器" and sheets[0].rows[2][0] == "AI服务器"
     # 日期 ISO
     assert "2026-08-22 12:30:00" in sheets[1].rows[1][0]
-    # 公式无缓存 → ""
-    assert sheets[2].rows[1][0] == ""
+    # 公式无缓存 → 计算引擎重算得值(=SUM(1,2) → 3)
+    assert sheets[2].rows[1][0] == "3"
 
 
 # ------------------- csv -------------------

@@ -51,6 +51,18 @@ def is_spreadsheet_ext(ext: str) -> bool:
     return (ext or "").lower().lstrip(".") in _SPREADSHEET_EXTS
 
 
+def humanize_number(value: float) -> str:
+    """数值展示净化：round(8) 清浮点尾差 + 10 位有效截断
+    （230.17999999999997 → "230.18"；与 Excel General 显示观感一致）"""
+    try:
+        v = round(float(value), 8)
+        if v == int(v):
+            return str(int(v))
+        return f"{v:.10g}"
+    except Exception:
+        return str(value)
+
+
 def read_spreadsheet(path: Path) -> List[Sheet]:
     """按扩展名分发读取（文件名扩展名决定读取器）。
 
