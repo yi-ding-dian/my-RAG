@@ -466,8 +466,10 @@ async def get_document_raw(kb_id: str, doc_id: str,
     doc = _get_doc_or_404(kb_id, doc_id)
     if doc.deleted:
         raise HTTPException(status_code=404, detail="文档不存在")
+    doc_svc = get_document_service()
     file_type = (doc.file_type or "").lower()
-    if file_type not in ("pdf", "txt", "md", "url", "docx"):
+    if file_type not in ("pdf", "txt", "md", "url", "docx",
+                         "xlsx", "xls", "csv"):
         raise HTTPException(status_code=400,
                             detail="该文件类型暂不支持在线预览")
     if file_type == "pdf" and doc.size > _MAX_PREVIEW_PDF_BYTES:
@@ -489,6 +491,20 @@ async def get_document_raw(kb_id: str, doc_id: str,
             headers={
                 "Content-Disposition":
                     f"attachment; filename*=UTF-8''{filename}"})
+    # Excel/CSV：还原"类 Excel"样式 HTML（网格/合并单元格/列宽/sheet 标签），
+    # 与 WPS 打开观感一致（原理见 services/spreadsheet_preview.py）
+    if file_type in ("xlsx", "xls", "csv"):
+        try:
+            from backend.services.spreadsheet_preview import \
+                render_spreadsheet_html
+            content = render_spreadsheet_html(
+                doc_svc.get_upload_path(doc))
+        except Exception as e:
+            logger.warning("表格预览渲染失败 %s: %s", doc_id, str(e)[:150])
+            raise HTTPException(status_code=500,
+                                detail="Excel 预览渲染失败，请稍后重试")
+        return Response(content=content,
+                        media_type="text/html; charset=utf-8")
     # txt/md/url：网页/文本内容（二进制解码容错，非法字节替换）
     return Response(content=data.decode("utf-8", errors="replace"),
                     media_type="text/plain; charset=utf-8")

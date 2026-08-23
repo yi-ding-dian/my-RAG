@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { App as AntApp, Button, Card, Empty, Input, List, Modal, Popconfirm, Select, Tooltip, Typography, theme } from 'antd';
+import AppModal from '../components/AppModal';
+import { App as AntApp,  Button,  Card,  Empty,  Input,  List,  Popconfirm,  Select,  Tooltip,  Typography,  theme } from 'antd';
 import { DeleteOutlined, DownloadOutlined, EditOutlined, FolderOpenOutlined, MessageOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -556,7 +557,10 @@ const ChatPage: React.FC = () => {
       <ChatSettingsModal open={chatSettingsOpen} onCancel={() => setChatSettingsOpen(false)} />
 
       {/* 会话重命名弹窗：Enter 或点击"保存"提交 */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 420, h: 360 }}
+        rememberKey="chat-settings-save"
         title="重命名会话"
         open={!!renameTarget}
         onCancel={() => setRenameTarget(null)}
@@ -575,7 +579,7 @@ const ChatPage: React.FC = () => {
           placeholder="请输入新标题（1-50 字）"
           autoFocus
         />
-      </Modal>
+      </AppModal>
 
       {/* 引用溯源弹窗：定位高亮到被点击引用的 chunk 原文 */}
       <CitationTraceModal

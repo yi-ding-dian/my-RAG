@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AppModal from '../components/AppModal';
 import {
-  App as AntApp, Card, Col, Row, Skeleton, Statistic, Table, Tag, Typography, Alert, Modal,
-  Space, Tooltip, Button, Empty, Select, Checkbox, Form, Input, Segmented, List, Popconfirm,
-} from 'antd';
+  App as AntApp,  Card,  Col,  Row,  Skeleton,  Statistic,  Table,  Tag,  Typography,  Alert, 
+  Space,  Tooltip,  Button,  Empty,  Select,  Checkbox,  Form,  Input,  Segmented,  List,  Popconfirm} from 'antd';
 import {
   DatabaseOutlined, DeleteOutlined, EyeOutlined, FileExcelOutlined, FileTextOutlined,
   ImportOutlined, MessageOutlined, PartitionOutlined, PlusOutlined, ReloadOutlined,
@@ -959,7 +959,10 @@ const AnalyticsPage: React.FC = () => {
       </Card>
 
       {/* 发起评估 Modal（手动测试集：问题 + 正确答案） */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 760, h: 520 }}
+        rememberKey="ana-1"
         title="发起 RAGAS 评估"
         open={evalOpen}
         onCancel={() => { if (evalAnim) return; setEvalOpen(false); }} // 注入动画期间禁止手动关闭
@@ -1100,10 +1103,13 @@ const AnalyticsPage: React.FC = () => {
               LLM 配置作为评分模型。"
           />
         </Space>
-      </Modal>
+      </AppModal>
 
       {/* 测试集导入/导出 Modal（txt / Excel 格式选择；导出下载文件，导入文件/文本回填） */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 680, h: 480 }}
+        rememberKey="ana-2"
         title="测试集导入/导出"
         open={textModalOpen}
         onCancel={() => setTextModalOpen(false)}
@@ -1203,10 +1209,13 @@ const AnalyticsPage: React.FC = () => {
             onChange={onFileChange}
           />
         </Space>
-      </Modal>
+      </AppModal>
 
       {/* 从聊天历史导入选择 Modal：勾选想要的预览样本 → 确定后追加到测试集 */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 680, h: 480 }}
+        rememberKey="ana-3"
         title={`从聊天历史导入（预览 ${chatPickList.length} 条）`}
         open={chatPickOpen}
         onCancel={() => setChatPickOpen(false)}
@@ -1266,10 +1275,13 @@ const AnalyticsPage: React.FC = () => {
             </Checkbox.Group>
           </div>
         </Space>
-      </Modal>
+      </AppModal>
 
       {/* 任务报告 Modal */}
-      <Modal
+      <AppModal
+        dimension="resizable"
+        defaultSize={{ w: 960, h: 600 }}
+        rememberKey="ana-4"
         title={
           <Space>
             <span>评估报告</span>
@@ -1304,7 +1316,7 @@ const AnalyticsPage: React.FC = () => {
         ) : (
           <AppEmpty title="报告加载失败" description="RAGAS 任务可能已删除或尚未完成" />
         )}
-      </Modal>
+      </AppModal>
     </div>
   );
 };

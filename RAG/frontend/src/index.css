@@ -1798,3 +1798,31 @@ mark:not(.citation-highlight) {
 [data-theme='dark'] .spw-recommend-reason {
   color: #dbe0f5;
 }
+
+/* ---------- 弹窗 8 向 resize 手柄（平时隐藏，鼠标悬停弹窗边框时淡显；
+   颜色走主题品牌变量，跟随亮/暗主题） ---------- */
+.rsz { position: absolute; pointer-events: auto; z-index: 30;
+       opacity: 0; transition: opacity 0.12s, background 0.12s; }
+/* 弹窗卡片 hover → 全部手柄淡显（用户"悬停在边框才出现"） */
+.am-shell:hover .rsz { opacity: 1; }
+/* 四边：8px 细条（内缩 16px 避让角） */
+.rsz-n, .rsz-s, .rsz-e, .rsz-w {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+}
+.rsz-n { top: 0; left: 16px; right: 16px; height: 8px; cursor: ns-resize; }
+.rsz-s { bottom: 0; left: 16px; right: 16px; height: 8px; cursor: ns-resize; }
+.rsz-w { left: 0; top: 16px; bottom: 16px; width: 8px; cursor: ew-resize; }
+.rsz-e { right: 0; top: 16px; bottom: 16px; width: 8px; cursor: ew-resize; }
+/* 四角：20x20 小圆角块，比边更醒目 */
+.rsz-ne, .rsz-nw, .rsz-se, .rsz-sw { width: 20px; height: 20px; border-radius: 5px;
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14); }
+.rsz-nw { top: 0; left: 0; cursor: nwse-resize; }
+.rsz-ne { top: 0; right: 0; cursor: nesw-resize; }
+.rsz-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.rsz-se { bottom: 0; right: 0; cursor: nwse-resize; }
+/* 手柄自身 hover / 拖动中：加深 + 加强显示 */
+.rsz:hover { opacity: 1; background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.22) !important; }
+.rsz-active { opacity: 1; background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.40) !important; }
+
+
+

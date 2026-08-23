@@ -1,19 +1,18 @@
 import React, { useEffect, useState } from 'react';
+import AppModal from './AppModal';
 import {
-  Alert,
-  App as AntApp,
-  Button,
-  Input,
-  Modal,
-  Progress,
-  Radio,
-  Select,
-  Space,
-  Switch,
-  Tag,
-  Typography,
-  Upload,
-} from 'antd';
+  Alert, 
+  App as AntApp, 
+  Button, 
+  Input, 
+  Progress, 
+  Radio, 
+  Select, 
+  Space, 
+  Switch, 
+  Tag, 
+  Typography, 
+  Upload} from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import {
@@ -271,7 +270,10 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   const okCount = results?.filter(r => r.ok).length ?? 0;
 
   return (
-    <Modal
+    <AppModal
+      dimension="auto"
+      defaultSize={{ w: 680, h: 520 }}
+      rememberKey="batch-import"
       title="批量导入并解析"
       open={open}
       onCancel={onCancel}
@@ -439,7 +441,7 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
           />
         )}
       </Space>
-    </Modal>
+    </AppModal>
   );
 };
 

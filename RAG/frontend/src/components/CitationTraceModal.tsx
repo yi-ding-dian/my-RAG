@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Modal, Spin } from 'antd';
+import AppModal from './AppModal';
+import { Alert,  Spin } from 'antd';
 import type { DocumentDetail, Source } from '../api/client';
 import { asApiError, getDocument } from '../api/client';
 import ChunkCompareView from './ChunkCompareView';
@@ -78,7 +79,10 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
   }, [open, source, kbId]);
 
   return (
-    <Modal
+    <AppModal
+      dimension="resizable"
+      defaultSize={{ w: 1150, h: 560 }}
+      rememberKey="citation-trace"
       className="chunk-detail-modal"
       title={`引用溯源 - ${source?.document_name || source?.document_id || ''}`}
       open={open}
@@ -147,7 +151,7 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
           answerText={answerText}
         />
       ) : null}
-    </Modal>
+    </AppModal>
   );
 };
 

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button, Collapse, Typography, Tag, theme } from 'antd';
 import type { Source } from '../api/client';
 import MdImages from './MdImages';
+import renderTextWithTables from '../utils/richText';
 import {
   computeHighlightRanges,
   splitByHighlights,
@@ -100,12 +101,17 @@ const PreviewBlock: React.FC<{
               </React.Fragment>
             ))
           ) : (
-            <MdImages
-              text={text}
-              maxWidth={imgMaxWidth}
-              onImageLoad={() => setImgLoads((n) => n + 1)}
-              highlights={highlights}
-            />
+            // 表格块渲染为真表格；文本段保持 MdImages（图片+高亮，高亮坐标换算到段内）
+            renderTextWithTables(text, (seg, offset) => (
+              <MdImages
+                text={seg}
+                maxWidth={imgMaxWidth}
+                onImageLoad={() => setImgLoads((n) => n + 1)}
+                highlights={highlights?.map(
+                  ([s, e]) => [s - offset, e - offset] as HighlightRange,
+                )}
+              />
+            ))
           )}
         </div>
       </div>

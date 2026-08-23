@@ -11,16 +11,15 @@
  * 部门不存在时自动创建；逐个串行建号并展示进度（建号中 x/y）与结果汇总（成功 n / 失败 m + 原因列表）。
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import AppModal from './AppModal';
 import {
-  Alert,
-  App as AntApp,
-  Input,
-  Modal,
-  Table,
-  Tag,
-  Tooltip,
-  Typography,
-} from 'antd';
+  Alert, 
+  App as AntApp, 
+  Input, 
+  Table, 
+  Tag, 
+  Tooltip, 
+  Typography} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   asApiError,
@@ -211,7 +210,10 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
   ];
 
   return (
-    <Modal
+    <AppModal
+      dimension="auto"
+      defaultSize={{ w: 820, h: 560 }}
+      rememberKey="batch-users"
       title="批量建号"
       open={open}
       onOk={handleOk}
@@ -282,7 +284,7 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
           scroll={{ y: 220 }}
         />
       )}
-    </Modal>
+    </AppModal>
   );
 };
 

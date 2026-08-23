@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { App as AntApp, Form, Input, Modal } from 'antd';
+import AppModal from './AppModal';
+import { App as AntApp,  Form,  Input } from 'antd';
 import type { DocumentItem } from '../api/client';
 import {
   asApiError, renameDocument } from '../api/client';
@@ -64,7 +65,10 @@ const RenameDocumentModal: React.FC<RenameDocumentModalProps> = ({
   };
 
   return (
-    <Modal
+    <AppModal
+      dimension="auto"
+      defaultSize={{ w: 420, h: 320 }}
+      rememberKey="rename-doc"
       title={`重命名 - ${originalName}`}
       open={open}
       onOk={handleOk}
@@ -100,7 +104,7 @@ const RenameDocumentModal: React.FC<RenameDocumentModalProps> = ({
           />
         </Form.Item>
       </Form>
-    </Modal>
+    </AppModal>
   );
 };
 

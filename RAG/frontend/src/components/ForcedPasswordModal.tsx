@@ -6,7 +6,8 @@
  * refreshUser() 拉取新用户信息（must_change_password=false）自动关闭弹窗。
  */
 import React, { useEffect, useState } from 'react';
-import { App as AntApp, Form, Input, Modal, Typography } from 'antd';
+import AppModal from './AppModal';
+import { App as AntApp,  Form,  Input,  Typography } from 'antd';
 import { LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import {
   asApiError, changePassword } from '../api/client';
@@ -55,7 +56,10 @@ const ForcedPasswordModal: React.FC<Props> = ({ open, onSuccess }) => {
   };
 
   return (
-    <Modal
+    <AppModal
+      dimension="auto"
+      defaultSize={{ w: 440, h: 340 }}
+      rememberKey="forced-pwd"
       title="首次登录须修改密码"
       open={open}
       onOk={handleOk}
@@ -108,7 +112,7 @@ const ForcedPasswordModal: React.FC<Props> = ({ open, onSuccess }) => {
           <Input.Password prefix={<LockOutlined />} placeholder="再次输入新密码" autoComplete="new-password" />
         </Form.Item>
       </Form>
-    </Modal>
+    </AppModal>
   );
 };
 

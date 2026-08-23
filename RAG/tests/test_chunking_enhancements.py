@@ -313,3 +313,42 @@ class TestOffsetsAfterEnhancements:
             p = result.parents[result.child_parent_map[i]]
             assert p.char_start <= c.char_start and c.char_end <= p.char_end, \
                 f"子块 {i} 未完整落在父块内"
+
+
+# ---------- 标题行并入保护区间（防孤儿标题块，见 splitter._extend_to_preceding_heading） ----------
+
+def test_protected_range_includes_preceding_heading():
+    """表格前紧邻(可隔 1 空行)的标题行并入保护区间：防止 title 超长回退
+    把标题字符窗口切走成"无数据孤儿块"（Excel 分段表场景）"""
+    text = ("## 表标题\n\n"
+            "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n"
+            "## 表标题2\n\n"
+            "| c | d |\n| --- | --- |\n| 3 | 4 |\n")
+    protected = find_protected_ranges(text)
+    assert protected[0][0] == text.index("## 表标题"), "区间应含紧邻标题行"
+    assert protected[1][0] == text.index("## 表标题2")
+    # title 切块：标题+表格成块，无"仅标题"孤儿块
+    chunks = MarkdownSplitter(chunk_size=800, overlap=100,
+                              split_level=2).chunk(text)
+    orphans = [c for c in chunks
+               if c.text.strip().startswith("## ") and len(c.text) < 30]
+    assert not orphans, f"出现孤儿标题块: {[c.text[:20] for c in orphans]}"
+    assert any("| a | b |" in c.text and "## 表标题\n" in c.text for c in chunks)
+
+
+def test_html_table_heading_extension():
+    """HTML <table> 前紧邻标题行同样并入（MinerU 产物一致性）"""
+    text = ("# HTML 表\n\n"
+            "<table><tr><th>x</th></tr><tr><td>1</td></tr></table>")
+    protected = find_protected_ranges(text)
+    assert len(protected) == 1
+    assert protected[0][0] == text.index("# HTML 表")
+
+
+def test_heading_not_merged_when_text_between():
+    """标题与表格之间有说明文字时不扩展（常规边界语义保持）"""
+    text = ("## 章节\n\n表格前说明文字。\n\n"
+            "| a | b |\n| --- | --- |\n| 1 | 2 |\n")
+    protected = find_protected_ranges(text)
+    assert text.index("| a |") in [s for s, _ in protected]
+    assert protected[0][0] > text.index("## 章节")

@@ -1,17 +1,16 @@
 import React, { useCallback, useState } from 'react';
+import AppModal from '../AppModal';
 import {
-  Alert,
-  App as AntApp,
-  Button,
-  Modal,
-  Select,
-  Skeleton,
-  Space,
-  Spin,
-  Tabs,
-  Tooltip,
-  Typography,
-} from 'antd';
+  Alert, 
+  App as AntApp, 
+  Button, 
+  Select, 
+  Skeleton, 
+  Space, 
+  Spin, 
+  Tabs, 
+  Tooltip, 
+  Typography} from 'antd';
 
 const { Text } = Typography;
 import {
@@ -148,7 +147,10 @@ export function useGraphBuildModal(
   };
 
   const node = (
-    <Modal
+    <AppModal
+  dimension="auto"
+  defaultSize={{ w: 600, h: 460 }}
+  rememberKey="graph-confirm"
       title="构建知识图谱"
       open={!!graphDoc}
       onCancel={() => setGraphDoc(null)}
@@ -202,7 +204,7 @@ export function useGraphBuildModal(
           </div>
         </>
       )}
-    </Modal>
+    </AppModal>
   );
 
   return { openGraphModal, node };
@@ -241,7 +243,10 @@ export function usePortraitModal(kbId: string | undefined): PortraitModalApi {
   };
 
   const node = (
-    <Modal
+    <AppModal
+  dimension="auto"
+  defaultSize={{ w: 760, h: 640 }}
+  rememberKey="parse-config"
       className="parse-config-modal"
       title={
         <div className="spw-title">
@@ -267,7 +272,7 @@ export function usePortraitModal(kbId: string | undefined): PortraitModalApi {
         error={portraitError}
         onRetry={() => portraitDoc && void openPortrait(portraitDoc)}
       />
-    </Modal>
+    </AppModal>
   );
 
   return { openPortrait, node };
@@ -321,7 +326,10 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
   };
 
   const node = (
-    <Modal
+    <AppModal
+  dimension="resizable"
+  defaultSize={{ w: 760, h: 600 }}
+  rememberKey="chunk-detail"
       className="chunk-detail-modal"
       title={
         <div
@@ -419,7 +427,7 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
           ]}
         />
       )}
-    </Modal>
+    </AppModal>
   );
 
   return { openDetail, node };

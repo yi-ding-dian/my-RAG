@@ -11,10 +11,10 @@
  *   混合检索=BM25 关键词与向量 RRF 融合（关闭即纯向量），重排=rerank 服务重排
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import AppModal from '../components/AppModal';
 import {
-  Alert, Button, Card, Col, Divider, Input, InputNumber, Modal, Row, Select,
-  Skeleton, Slider, Space, Statistic, Tag, Tooltip, Typography, message, theme,
-} from 'antd';
+  Alert,  Button,  Card,  Col,  Divider,  Input,  InputNumber,  Row,  Select, 
+  Skeleton,  Slider,  Space,  Statistic,  Tag,  Tooltip,  Typography,  message,  theme} from 'antd';
 import {
   CloseOutlined, FileTextOutlined, HistoryOutlined, SearchOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
@@ -24,6 +24,7 @@ import {
 } from '../api/client';
 import AppEmpty from '../components/AppEmpty';
 import MdImages from '../components/MdImages';
+import renderTextWithTables from '../utils/richText';
 import PageHeader from '../components/PageHeader';
 
 const { Text } = Typography;
@@ -613,7 +614,10 @@ const RetrievalTestPage: React.FC = () => {
       </Row>
 
       {/* ==================== 上下文 Modal ==================== */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 760, h: 520 }}
+        rememberKey="retrieval-detail"
         title="命中上下文"
         open={contextOpen}
         onCancel={() => setContextOpen(false)}
@@ -653,16 +657,16 @@ const RetrievalTestPage: React.FC = () => {
                   lineHeight: 1.9, maxHeight: 420, overflow: 'auto',
                 }}
               >
-                <Text type="secondary"><MdImages text={context.before} /></Text>
+                <Text type="secondary">{renderTextWithTables(context.before, (s) => <MdImages text={s} />)}</Text>
                 <mark
                   style={{
                     background: 'rgba(var(--brand-primary-rgb, 37, 99, 235), 0.15)', color: 'inherit',
                     padding: '0 2px', borderRadius: 3,
                   }}
                 >
-                  <MdImages text={context.chunk} />
+                  {renderTextWithTables(context.chunk, (s) => <MdImages text={s} />)}
                 </mark>
-                <Text type="secondary"><MdImages text={context.after} /></Text>
+                <Text type="secondary">{renderTextWithTables(context.after, (s) => <MdImages text={s} />)}</Text>
               </div>
             ) : (
               <div>
@@ -676,7 +680,7 @@ const RetrievalTestPage: React.FC = () => {
                     lineHeight: 1.9, maxHeight: 420, overflow: 'auto',
                   }}
                 >
-                  <MdImages text={context.chunk} />
+                  {renderTextWithTables(context.chunk, (s) => <MdImages text={s} />)}
                 </div>
               </div>
             )}
@@ -692,13 +696,13 @@ const RetrievalTestPage: React.FC = () => {
                     lineHeight: 1.8, maxHeight: 220, overflow: 'auto', color: token.colorTextSecondary,
                   }}
                 >
-                  <MdImages text={context.source.parent_text} />
+                  {renderTextWithTables(context.source.parent_text, (s) => <MdImages text={s} />)}
                 </div>
               </div>
             ) : null}
           </>
         ) : null}
-      </Modal>
+      </AppModal>
     </div>
   );
 };

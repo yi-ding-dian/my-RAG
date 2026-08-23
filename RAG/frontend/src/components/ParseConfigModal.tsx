@@ -1,22 +1,21 @@
+import AppModal from './AppModal';
 import React, { useEffect, useState } from 'react';
 import {
-  Alert,
-  App as AntApp,
-  Button,
-  Card,
-  Collapse,
-  Col,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Row,
-  Select,
-  Space,
-  Spin,
-  Tag,
-  Tooltip,
-} from 'antd';
+  Alert, 
+  App as AntApp, 
+  Button, 
+  Card, 
+  Collapse, 
+  Col, 
+  Form, 
+  Input, 
+  InputNumber, 
+  Row, 
+  Select, 
+  Space, 
+  Spin, 
+  Tag, 
+  Tooltip} from 'antd';
 import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
 import type { DocumentItem, IngestConfig, MinerUBackend, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../api/client';
 import {
@@ -538,23 +537,19 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 内部（滚动结构修复见 index.css .parse-config-modal，与
   // .chunk-detail-modal 同一套规则）
   return (
-    <Modal
+    <AppModal
       className="parse-config-modal"
       title={doc ? `解析配置 - ${doc.original_name}` : '解析配置'}
       open={open}
       onOk={handleOk}
       onCancel={onCancel}
       confirmLoading={submitting}
+      busy={submitting}
       okText="开始解析"
       cancelText="取消"
-      width={720}
-      style={{ top: '8vh', height: 'min(88vh, calc(100vh - 120px))' }}
-      styles={{
-        content: { display: 'flex', flexDirection: 'column', height: '100%' },
-        header: { flexShrink: 0 },
-        body: { padding: '16px 20px', flex: 1, minHeight: 0, overflow: 'auto' },
-        footer: { flexShrink: 0 },
-      }}
+      dimension="resizable"
+      defaultSize={{ w: 720, h: 600 }}
+      rememberKey="parse-config-modal"
     >
       <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
         {/* PDF 解析配置（仅 pdf/docx 文档显示，B4；解析方式并入 Collapse 顶部，
@@ -919,7 +914,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           ]}
         />
       </Form>
-    </Modal>
+    </AppModal>
   );
 };
 

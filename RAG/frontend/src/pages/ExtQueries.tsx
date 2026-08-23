@@ -1,20 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import AppModal from '../components/AppModal';
 import {
-  App as AntApp,
-  Button,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Popconfirm,
-  Select,
-  Space,
-  Switch,
-  Table,
-  Tag,
-  Tooltip,
-  Typography,
-} from 'antd';
+  App as AntApp, 
+  Button, 
+  Form, 
+  Input, 
+  InputNumber, 
+  Popconfirm, 
+  Select, 
+  Space, 
+  Switch, 
+  Table, 
+  Tag, 
+  Tooltip, 
+  Typography} from 'antd';
 import {
   CopyOutlined,
   LinkOutlined,
@@ -373,7 +372,10 @@ const ExtQueriesPage: React.FC = () => {
       />
 
       {/* 新建 / 编辑弹窗 */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 640, h: 420 }}
+        rememberKey="extq-1"
         title={editing ? '编辑外部查询' : '新建外部查询'}
         open={modalOpen}
         onOk={handleSubmit}
@@ -441,10 +443,13 @@ const ExtQueriesPage: React.FC = () => {
             </Form.Item>
           </Space>
         </Form>
-      </Modal>
+      </AppModal>
 
       {/* 链接展示（创建/重置后）：含访问凭证，仅展示一次 */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 680, h: 420 }}
+        rememberKey="extq-2"
         title={linkModal?.title}
         open={!!linkModal}
         onCancel={() => setLinkModal(null)}
@@ -468,7 +473,7 @@ const ExtQueriesPage: React.FC = () => {
         >
           {linkModal?.link}
         </Typography.Paragraph>
-      </Modal>
+      </AppModal>
     </div>
   );
 };

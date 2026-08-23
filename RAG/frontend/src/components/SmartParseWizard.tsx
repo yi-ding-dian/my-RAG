@@ -3,7 +3,6 @@ import {
   Alert,
   App as AntApp,
   Button,
-  Modal,
   Radio,
   Select,
   Space,
@@ -37,6 +36,7 @@ import type {
 } from '../api/client';
 import { analyzeDocument, getLlmModelList, ingestDocument, testLlmModelByName } from '../api/client';
 import DocumentPortrait, { ENGINE_LABELS } from './DocumentPortrait';
+import AppModal from './AppModal';
 
 const { Text } = Typography;
 
@@ -541,7 +541,7 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
   );
 
   return (
-    <Modal
+    <AppModal
       className="parse-config-modal"
       title={
         <div className="spw-title">
@@ -554,8 +554,9 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
       }
       open={open}
       onCancel={onCancel}
-      width={760}
-      style={{ top: '8vh', height: 'min(88vh, calc(100vh - 120px))' }}
+      dimension="auto"
+      defaultSize={{ w: 760, h: 640 }}
+      rememberKey="smart-parse"
       footer={
         <div className="spw-footer">
           <Steps
@@ -588,7 +589,7 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
       }}
     >
       {stepContent}
-    </Modal>
+    </AppModal>
   );
 };
 

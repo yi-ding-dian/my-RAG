@@ -259,11 +259,37 @@ def _find_fence_ranges(text: str) -> List[Tuple[int, int]]:
     return ranges
 
 
+def _extend_to_preceding_heading(text: str,
+                                 ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """保护区间前扩展：紧邻表格（中间至多 1 空行）的标题行并入区间。
+
+    背景：超长表格触发 title 切块智能回退（忽略标题边界重切）时，
+    "标题行+空行"会被字符窗口切走成孤儿块（几十字、无任何数据、
+    检索无意义——如 Excel 分段表 "## Sheet: xx (第 1-10 行)"）。
+    标题行并入保护区间后，回退切分不会把标题与表格拆开，
+    块内标题定位信息 + 表头 + 数据自解释。
+    仅表格前紧邻标题行时生效（前有说明文字/段落时不动，保持常规边界语义）。
+    """
+    out: List[Tuple[int, int]] = []
+    for s, e in ranges:
+        pre = text[:s]
+        m = re.search(
+            r"(?:^|\n)([ \t]*#{1,6}[ \t]+[^\n]*)[ \t]*\n[ \t]*\n?$",
+            pre,
+        )
+        if m:
+            s = m.start(1)
+        out.append((s, e))
+    return out
+
+
 def find_protected_ranges(text: str) -> List[Tuple[int, int]]:
     """返回不可切分的区间列表（markdown 表格 / HTML 表格 / 围栏代码块）
 
     - 升序且互不重叠（重叠部分合并——如代码块内恰好有 | 分隔行）；
-    - 切分边界不得落在区间内部：区间作为整体归入某块，超长也可整体成块。
+    - 切分边界不得落在区间内部：区间作为整体归入某块，超长也可整体成块；
+    - 紧邻表格的标题行并入区间（见 _extend_to_preceding_heading：
+      防超长回退时标题被切飞成孤儿块）。
     """
     ranges = (_find_table_ranges(text) + _find_html_table_ranges(text)
               + _find_fence_ranges(text))
@@ -274,7 +300,7 @@ def find_protected_ranges(text: str) -> List[Tuple[int, int]]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], e))
         else:
             merged.append((s, e))
-    return merged
+    return _extend_to_preceding_heading(text, merged)
 
 
 def _bounds_outside_protected(bounds: List[int],

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { App as AntApp, Form, Input, Modal } from 'antd';
+import { App as AntApp,  Form,  Input } from 'antd';
+import AppModal from './AppModal';
 import {
   asApiError, importDocumentFromUrl } from '../api/client';
 
@@ -49,14 +50,16 @@ const UrlImportModal: React.FC<UrlImportModalProps> = ({
   };
 
   return (
-    <Modal
+    <AppModal
       title="从 URL 导入网页"
       open={open}
       onOk={handleOk}
       onCancel={onCancel}
       confirmLoading={importing}
+      busy={importing}
       okText="导入"
       cancelText="取消"
+      rememberKey="url-import"
     >
       <Form form={form} layout="vertical">
         <Form.Item
@@ -73,7 +76,7 @@ const UrlImportModal: React.FC<UrlImportModalProps> = ({
           <Input placeholder="https://example.com/article" />
         </Form.Item>
       </Form>
-    </Modal>
+    </AppModal>
   );
 };
 

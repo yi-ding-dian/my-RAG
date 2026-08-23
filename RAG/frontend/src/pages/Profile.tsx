@@ -7,25 +7,24 @@
  * - 首选项：暗色模式开关（与全局 ThemeContext 联动）
  */
 import React, { useCallback, useEffect, useState } from 'react';
+import AppModal from '../components/AppModal';
 import {
-  App as AntApp,
-  Button,
-  Card,
-  Descriptions,
-  Empty,
-  Form,
-  Input,
-  List,
-  Modal,
-  Popconfirm,
-  Radio,
-  Select,
-  Space,
-  Switch,
-  Tag,
-  Typography,
-  Upload,
-} from 'antd';
+  App as AntApp, 
+  Button, 
+  Card, 
+  Descriptions, 
+  Empty, 
+  Form, 
+  Input, 
+  List, 
+  Popconfirm, 
+  Radio, 
+  Select, 
+  Space, 
+  Switch, 
+  Tag, 
+  Typography, 
+  Upload} from 'antd';
 import {
   DeleteOutlined,
   EditOutlined,
@@ -434,7 +433,10 @@ const ProfilePage: React.FC = () => {
       </Card>
 
       {/* 编辑画像条目弹窗 */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 480, h: 400 }}
+        rememberKey="profile"
         title="编辑画像条目"
         open={memoryModalOpen}
         onOk={handleMemoryItemSubmit}
@@ -473,7 +475,7 @@ const ProfilePage: React.FC = () => {
             />
           </Form.Item>
         </Form>
-      </Modal>
+      </AppModal>
 
       {/* 首选项 */}
       <Card title="首选项" style={{ marginTop: 16 }}>

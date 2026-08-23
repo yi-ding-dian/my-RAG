@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Empty, Modal, Tooltip, theme } from 'antd';
+import AppModal from './AppModal';
+import { Button,  Empty,  Tooltip,  theme } from 'antd';
 import { ArrowDownOutlined, FileTextOutlined, PaperClipOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { avatarUrl, type ChatMessage, type Source } from '../api/client';
@@ -523,7 +524,10 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
 
     {/* 引用来源详情 Modal：复用 SourcePanel 渲染（编号角标 + 查看原文），body 限高滚动 */}
     {modalSources && (
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 720, h: 420 }}
+        rememberKey="sources"
         open
         width={720}
         title={
@@ -548,12 +552,15 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
           answerText={modalAnswerText}
           onViewOriginal={handleViewOriginal}
         />
-      </Modal>
+      </AppModal>
     )}
 
     {/* 请求详情 Modal：检索问题 / 召回耗时 / 总耗时 / 完整提示词（body 限高滚动） */}
     {detailMsg && (
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 760, h: 520 }}
+        rememberKey="detail"
         open
         width={760}
         title={
@@ -604,7 +611,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
           完整提示词{Array.isArray(detailMsg.prompt) ? `（${detailMsg.prompt.length} 条消息）` : ''}
         </div>
         {renderPromptEntries(detailMsg.prompt, token)}
-      </Modal>
+      </AppModal>
     )}
     </>
   );

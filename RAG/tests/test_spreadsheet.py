@@ -57,6 +57,45 @@ def test_render_sheet_pipe_basic_and_escape():
     assert text.splitlines()[2] == "| 名称 | 说明 |"  # 0 标题 /1 空行 /2 表头
 
 
+def test_large_sheet_split_into_blocks_with_repeated_header():
+    """超长表分段（行块+重复表头）：每段表头/分隔行常驻、区间连续无行丢失"""
+    import re
+    rows = [["列1", "列2"]] + [[f"值{i}", "x" * 150] for i in range(80)]
+    text = render_sheet_pipe(Sheet(name="s", rows=rows))
+    spans = re.findall(r"## Sheet: s \(第 (\d+)-(\d+) 行\)", text)
+    assert len(spans) > 1, "80 行长文本应分段"
+    # 区间连续覆盖全部数据行
+    assert int(spans[0][0]) == 1 and int(spans[-1][1]) == 80
+    for i in range(len(spans) - 1):
+        assert int(spans[i][1]) + 1 == int(spans[i + 1][0])
+    # 每段都重复表头 + 分隔行
+    assert text.count("| 列1 | 列2 |") == len(spans)
+    assert text.count("| --- | --- |") == len(spans)
+    # 每段数据行数 = 区间宽度
+    lines = text.splitlines()
+    for a, b in spans:
+        seg_lines = [l for l in lines if re.match(r"^\| 值", l)]
+        assert len(seg_lines) == 80, "数据行数守恒"
+    # 段内完整性抽查：一段的行都在相邻两个标题之间
+    titles_idx = [i for i, l in enumerate(lines) if l.startswith("## Sheet: s")]
+    first_seg = lines[titles_idx[0]:titles_idx[1]]
+    assert first_seg[0].startswith("## Sheet: s (第 1-")
+    assert "| --- | --- |" in first_seg and "| 列1 | 列2 |" in first_seg
+    # 段数据行数与区间一致
+    data_lines = [l for l in first_seg if l.startswith("| 值")]
+    a = int(re.search(r"\(第 (\d+)-", first_seg[0]).group(1))
+    b = int(re.search(r"-(\d+) 行", first_seg[0]).group(1))
+    assert len(data_lines) == b - a + 1
+
+
+def test_small_sheet_kept_whole():
+    """小表不分段（保持单块，标题无区间）"""
+    rows = [["a", "b"], ["1", "2"], ["3", "4"]]
+    text = render_sheet_pipe(Sheet(name="s", rows=rows))
+    assert "## Sheet: s\n" in text
+    assert "第 1-" not in text
+
+
 def test_render_sheets_text_skips_empty():
     sheets = [Sheet(name="空", rows=[]), Sheet(name="s", rows=[["a", "b"], ["1", "2"]])]
     text = render_sheets_text(sheets)

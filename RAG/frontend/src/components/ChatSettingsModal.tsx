@@ -1,21 +1,20 @@
 import React, { useEffect, useState } from 'react';
+import AppModal from './AppModal';
 import {
-  Alert,
-  App as AntApp,
-  Button,
-  Card,
-  Col,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Row,
-  Select,
-  Slider,
-  Space,
-  Spin,
-  Switch,
-} from 'antd';
+  Alert, 
+  App as AntApp, 
+  Button, 
+  Card, 
+  Col, 
+  Form, 
+  Input, 
+  InputNumber, 
+  Row, 
+  Select, 
+  Slider, 
+  Space, 
+  Spin, 
+  Switch} from 'antd';
 import {
   asApiError, getChatSettings, updateChatSettings } from '../api/client';
 import type { ThinkingMode } from '../api/client';
@@ -145,7 +144,10 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
   };
 
   return (
-    <Modal
+    <AppModal
+      dimension="auto"
+      defaultSize={{ w: 780, h: 520 }}
+      rememberKey="chat-settings"
       title={isDeptAdmin ? '本部门聊天配置' : '聊天设置（全局）'}
       open={open}
       onOk={handleOk}
@@ -318,7 +320,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           style={{ marginTop: 8 }}
         />
       )}
-    </Modal>
+    </AppModal>
   );
 };
 

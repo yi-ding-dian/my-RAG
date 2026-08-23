@@ -3,6 +3,8 @@ import { Button, Empty, Input, List, Pagination, Tag, Typography, theme } from '
 import { ArrowDownOutlined, ArrowUpOutlined, SearchOutlined } from '@ant-design/icons';
 import { useTheme } from '../theme';
 import MdImages from './MdImages';
+import { renderTableBlocks } from './MarkdownTable';
+import renderTextWithTables from '../utils/richText';
 import { safeTruncateWithImages } from '../utils/safeTruncate';
 import {
   computeHighlightRanges,
@@ -604,6 +606,13 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
    */
   const renderHighlighted = (text: string, base: number): React.ReactNode => {
     if (!text) return null;
+    // 表格块先行提取 → 渲染为真表格；文本段递归本函数（偏移累加，
+    // 搜索匹配/回答对齐高亮坐标正确），表格块内不做搜索/回答高亮
+    const tableBlocks = renderTableBlocks(text);
+    if (tableBlocks.length > 1 || typeof tableBlocks[0] !== 'string') {
+      return renderTextWithTables(text, (seg, offset) =>
+        renderHighlighted(seg, base + offset));
+    }
     const currentMatch = searchMatches[currentMatchIdx] as SearchMatch | undefined;
     const imgSpans = collectImgSpans(text);
     const nodes: React.ReactNode[] = [];

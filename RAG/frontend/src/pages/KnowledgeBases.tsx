@@ -1,18 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import AppModal from '../components/AppModal';
 import { useNavigate } from 'react-router-dom';
 import {
-  App as AntApp,
-  Button,
-  Card,
-  Form,
-  Input,
-  Modal,
-  Progress,
-  Skeleton,
-  Space,
-  Tag,
-  Typography,
-} from 'antd';
+  App as AntApp, 
+  Button, 
+  Card, 
+  Form, 
+  Input, 
+  Progress, 
+  Skeleton, 
+  Space, 
+  Tag, 
+  Typography} from 'antd';
 import {
   LinkOutlined,
   PlusOutlined,
@@ -387,7 +386,10 @@ const KnowledgeBasesPage: React.FC = () => {
       )}
 
       {/* 重建进度 Modal（后台任务轮询，无取消按钮防中断） */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 520, h: 400 }}
+        rememberKey="kb-1"
         title={`重建向量 - ${rebuildKb?.name ?? ''}`}
         open={!!rebuildKb}
         footer={null}
@@ -422,9 +424,15 @@ const KnowledgeBasesPage: React.FC = () => {
             )}
           </div>
         )}
-      </Modal>
+      </AppModal>
 
-      <Modal
+      <AppModal
+
+        dimension="auto"
+
+        defaultSize={{ w: 640, h: 460 }}
+
+        rememberKey="kb-2"
         title={editingKb ? '编辑知识库' : '新建知识库'}
         open={modalOpen}
         onOk={handleSubmit}
@@ -475,7 +483,7 @@ const KnowledgeBasesPage: React.FC = () => {
             )}
           </Form.Item>
         </Form>
-      </Modal>
+      </AppModal>
     </div>
   );
 };

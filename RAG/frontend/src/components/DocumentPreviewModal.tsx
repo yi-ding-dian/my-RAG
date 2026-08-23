@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Modal, Spin, Typography } from 'antd';
+import { Alert, Button, Spin, Typography } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import type { DocumentItem } from '../api/client';
 import { downloadDocumentRaw, getDocumentRaw } from '../api/client';
 import MdImages from './MdImages';
+import AppModal from './AppModal';
 
 const { Text } = Typography;
 
@@ -25,13 +26,16 @@ interface DocumentPreviewModalProps {
   onCancel: () => void;
 }
 
-/** 预览类型：pdf=iframe 原生渲染 / text=pre 等宽文本展示 / docx=提供下载 */
-type PreviewKind = 'pdf' | 'text' | 'docx' | 'unsupported';
+/** 预览类型：pdf=iframe 原生渲染 / text=pre 等宽文本展示 /
+ * spreadsheet=类 Excel HTML iframe（后端还原网格/合并/样式，见 spreadsheet_preview）/
+ * docx=提供下载 */
+type PreviewKind = 'pdf' | 'text' | 'spreadsheet' | 'docx' | 'unsupported';
 
 const previewKindOf = (doc: DocumentItem | null): PreviewKind => {
   const ft = (doc?.file_type ?? '').toLowerCase();
   if (ft === 'pdf') return 'pdf';
   if (ft === 'txt' || ft === 'md' || ft === 'url') return 'text';
+  if (ft === 'xlsx' || ft === 'xls' || ft === 'csv') return 'spreadsheet';
   if (ft === 'docx') return 'docx';
   return 'unsupported';
 };
@@ -57,9 +61,17 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [text, setText] = useState<string>('');
   const blobUrlRef = useRef<string | null>(null);
 
-  // 每次打开重新加载；关闭时释放 Blob URL
+  // 每次打开重新加载；关闭时释放 Blob URL 并清空内容（防"标题变内容不变"残留）
   useEffect(() => {
-    if (!open || !doc || !kbId) return;
+    if (!open || !doc || !kbId) {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+      setBlobUrl(null);
+      setText('');
+      return;
+    }
     const kind = previewKindOf(doc);
     if (kind === 'unsupported' || kind === 'docx') {
       // unsupported/docx 不请求 raw（docx 走下载分支，不设 error）
@@ -74,7 +86,8 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     getDocumentRaw(kbId, doc.id)
       .then(blob => {
         if (cancelled) return;
-        if (kind === 'pdf') {
+        if (kind === 'pdf' || kind === 'spreadsheet') {
+          // pdf 原始字节 / spreadsheet 类 Excel HTML，均走 iframe 渲染
           const url = URL.createObjectURL(blob);
           blobUrlRef.current = url;
           setBlobUrl(url);
@@ -113,13 +126,14 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   };
 
   return (
-    <Modal
+    <AppModal
       title={doc ? `文档预览 - ${doc.original_name}` : '文档预览'}
       open={open}
       onCancel={onCancel}
       footer={null}
-      width={900}
-      styles={{ body: { height: '80vh', padding: 0, overflow: 'hidden' } }}
+      dimension="resizable"
+      defaultSize={{ w: 900, h: 640 }}
+      rememberKey="doc-preview"
       destroyOnClose={false}
     >
       {loading ? (
@@ -134,6 +148,7 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
         </div>
       ) : blobUrl ? (
         <iframe
+          key={`${doc?.id ?? ''}-${blobUrl}`}
           title={doc?.original_name}
           src={blobUrl}
           style={{ width: '100%', height: '100%', border: 0 }}
@@ -187,7 +202,7 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           <Text type="secondary">暂无内容</Text>
         </div>
       )}
-    </Modal>
+    </AppModal>
   );
 };
 

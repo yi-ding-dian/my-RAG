@@ -109,23 +109,71 @@ def pad_rows(rows: List[List[str]]) -> List[List[str]]:
     return rows
 
 
+# 超长表分段参数（对齐业界"行块 + 重复表头"实践，见 RAGFlow Table / STC 框架）：
+# - 段目标字符 ≈ 默认切块预算（chunk_size 800 的 ~85%，留切块开销余量）；
+# - 段内数据行下限：太小则段过碎（坏语义，小表整体不分段）；
+# - 每段重复表头行 + 分隔行，段标题带"第 x-y 行"区间（检索/引用可定位）。
+_BLOCK_CHAR_TARGET = 700
+
+
+def _split_rows_into_blocks(rows: List[List[str]]) -> List[List[List[str]]]:
+    """按行窗口切分数据行（表头行 rows[0] 不参与分段，每段独立携带）
+
+    行宽自适应：单行字符代价 sum(len(c))；段预算按行均宽折算行数，
+    行越宽每段行数越少（**无行数下限**——宽表每行可达数千字符，
+    刚性下限会制造超长巨块触发切块回退把标题切飞，见 splitter；
+    超宽行自然退化到行级块，与业界"行块+重复表头"一致）。
+    返回 [段数据行列表, ...]；整表不超预算返回 []（不分段）。
+    """
+    if len(rows) <= 1:
+        return []
+    header_cost = sum(len(c) for c in rows[0])
+    row_costs = [sum(len(c) for c in r) for r in rows[1:]]
+    avg_cost = (sum(row_costs) / max(len(row_costs), 1)) or 1
+    if header_cost + sum(row_costs) <= _BLOCK_CHAR_TARGET:
+        return []  # 整表不超预算：不分段（保持单表单块）
+    per_block = max(1, int(_BLOCK_CHAR_TARGET / avg_cost))
+    blocks: List[List[List[str]]] = []
+    for i in range(0, len(row_costs), per_block):
+        blocks.append(rows[1 + i:1 + i + per_block])
+    return blocks
+
+
+def _render_table_block(header: List[str], data: List[List[str]],
+                        title: str) -> str:
+    """表头+分隔行+数据行 → 管道表格文本（标题在前，空行分隔）"""
+    width = len(header)
+    sep = "| " + " | ".join("---" for _ in range(width)) + " |"
+    lines = ["| " + " | ".join(pipe_escape(c) for c in header) + " |", sep]
+    for r in data:
+        lines.append("| " + " | ".join(pipe_escape(c) for c in r) + " |")
+    return f"{title}\n\n" + "\n".join(lines) + "\n"
+
+
 def render_sheet_pipe(sheet: Sheet) -> str:
     """单 sheet → markdown 管道表格文本（"## Sheet: 名称" + 表头/分隔/数据）
 
     - 首行作为表头行（Excel 工作区第一行通常即表头；无数据返回空串）；
     - 分隔行 "| --- |"（与 table_normalizer 输出格式一致）；
+    - **超长表自动分段**（业界"行块+重复表头"）：每段 ≤ 目标字符、
+      重复表头与分隔行、标题带"第 x-y 行"区间；小表整体不分段；
     - 表格前后补空行、与相邻 sheet 分隔；单元格内换行/| 经 pipe_escape。
     """
     if not sheet.rows:
         return ""
     rows = pad_rows([list(r) for r in sheet.rows])
-    width = len(rows[0])
-    sep = "| " + " | ".join("---" for _ in range(width)) + " |"
-    lines = ["| " + " | ".join(pipe_escape(c) for c in rows[0]) + " |", sep]
-    for r in rows[1:]:
-        lines.append("| " + " | ".join(pipe_escape(c) for c in r) + " |")
-    title = f"## Sheet: {sheet.name}"
-    return f"{title}\n\n" + "\n".join(lines) + "\n"
+    blocks = _split_rows_into_blocks(rows)
+    if not blocks:
+        return _render_table_block(rows[0], rows[1:], f"## Sheet: {sheet.name}")
+    out: List[str] = []
+    header = rows[0]
+    start = 1
+    for data_rows in blocks:
+        end = start + len(data_rows) - 1
+        title = f"## Sheet: {sheet.name} (第 {start}-{end} 行)"
+        out.append(_render_table_block(header, data_rows, title))
+        start = end + 1
+    return "\n".join(out).rstrip("\n") + "\n"
 
 
 def render_sheets_text(sheets: List[Sheet]) -> str:

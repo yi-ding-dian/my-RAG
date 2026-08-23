@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import AppModal from '../components/AppModal';
 import {
-  App as AntApp, Card, Form, Input, InputNumber, Button, Typography, Space,
-  Row, Col, Skeleton, Tag, Alert, Modal, Popconfirm, Tooltip, Collapse, Select,
-  Radio, Empty, theme,
-} from 'antd';
+  App as AntApp,  Card,  Form,  Input,  InputNumber,  Button,  Typography,  Space, 
+  Row,  Col,  Skeleton,  Tag,  Alert,  Popconfirm,  Tooltip,  Collapse,  Select, 
+  Radio,  Empty,  theme} from 'antd';
 import {
   CheckCircleFilled, CloseCircleFilled, LoadingOutlined,
   PlusOutlined, DeleteOutlined, CheckOutlined, EditOutlined,
@@ -827,7 +827,10 @@ const SettingsPage: React.FC = () => {
       {/* 新建/编辑弹窗：固定高度（7 个 Collapse 面板默认全展开，内容超高），
           头部/关闭按钮固定，滚动只在内容区内部（滚动结构修复见
           index.css .profile-config-modal，与 .chunk-detail-modal 同一套规则） */}
-      <Modal
+      <AppModal
+        dimension="resizable"
+        defaultSize={{ w: 720, h: 560 }}
+        rememberKey="settings-1"
         className="profile-config-modal"
         title={editingId ? '编辑配置档案' : '新建配置档案'}
         open={modalOpen}
@@ -1264,10 +1267,13 @@ const SettingsPage: React.FC = () => {
           {renderTestLine(modalTest.mysql, sectionLabel.mysql)}
           {renderTestLine(modalTest.minio, sectionLabel.minio)}
         </Form>
-      </Modal>
+      </AppModal>
 
       {/* 模型添加/编辑弹窗（LLM 多模型管理） */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 600, h: 460 }}
+        rememberKey="settings-2"
         title={modelEditIdx !== null
           ? `编辑模型${llmModels[modelEditIdx] ? `：${llmModels[modelEditIdx].name}` : ''}`
           : '添加 LLM 模型'}
@@ -1336,7 +1342,7 @@ const SettingsPage: React.FC = () => {
             </Col>
           </Row>
         </Form>
-      </Modal>
+      </AppModal>
     </div>
   );
 };

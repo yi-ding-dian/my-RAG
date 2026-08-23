@@ -1,24 +1,23 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import AppModal from '../components/AppModal';
 import {
-  App as AntApp,
-  Button,
-  Card,
-  DatePicker,
-  Empty,
-  Form,
-  Input,
-  List,
-  Modal,
-  Popconfirm,
-  Select,
-  Space,
-  Switch,
-  Table,
-  Tabs,
-  Tag,
-  Tooltip,
-  Typography,
-} from 'antd';
+  App as AntApp, 
+  Button, 
+  Card, 
+  DatePicker, 
+  Empty, 
+  Form, 
+  Input, 
+  List, 
+  Popconfirm, 
+  Select, 
+  Space, 
+  Switch, 
+  Table, 
+  Tabs, 
+  Tag, 
+  Tooltip, 
+  Typography} from 'antd';
 import {
   DeleteOutlined,
   EditOutlined,
@@ -822,7 +821,10 @@ const UsersPage: React.FC = () => {
       />
 
       {/* 新建/编辑用户弹窗 */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 520, h: 420 }}
+        rememberKey="user-1"
         title={editingUser ? `编辑用户 - ${editingUser.username}` : '新建用户'}
         open={userModalOpen}
         onOk={handleUserSubmit}
@@ -914,10 +916,13 @@ const UsersPage: React.FC = () => {
             </Form.Item>
           )}
         </Form>
-      </Modal>
+      </AppModal>
 
       {/* 新建/编辑部门弹窗 */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 520, h: 420 }}
+        rememberKey="user-2"
         title={editingDept ? `编辑部门 - ${editingDept.name}` : '新建部门'}
         open={deptModalOpen}
         onOk={handleDeptSubmit}
@@ -934,7 +939,7 @@ const UsersPage: React.FC = () => {
             <Input.TextArea placeholder="选填，简单描述该部门" maxLength={200} rows={3} />
           </Form.Item>
         </Form>
-      </Modal>
+      </AppModal>
 
       {/* 批量建号弹窗（复用现有 createUser/createDepartment API，不新增后端接口） */}
       <BatchCreateUsersModal
@@ -945,7 +950,10 @@ const UsersPage: React.FC = () => {
       />
 
       {/* 查看用户画像（只读；编辑仅本人可在个人设置页操作） */}
-      <Modal
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 560, h: 440 }}
+        rememberKey="user-3"
         title={`用户画像 - ${memoryViewUser?.username ?? ''}`}
         open={memoryModalOpen}
         onCancel={() => setMemoryModalOpen(false)}
@@ -1003,7 +1011,7 @@ const UsersPage: React.FC = () => {
             </Text>
           </div>
         ) : null}
-      </Modal>
+      </AppModal>
     </div>
   );
 };
