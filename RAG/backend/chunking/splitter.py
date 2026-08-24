@@ -259,6 +259,24 @@ def _find_fence_ranges(text: str) -> List[Tuple[int, int]]:
     return ranges
 
 
+# 图片引用：markdown ![alt](src) / HTML <img>（作为原子保护，见 _find_image_ranges）
+_IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_IMAGE_HTML_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+
+
+def _find_image_ranges(text: str) -> List[Tuple[int, int]]:
+    """定位图片引用区间（markdown ![alt](src) / HTML <img>）
+
+    背景（修复前实测 bug）：图片引用含英文感叹号 `!`，被句子感知切分
+    （句界集合含 `!`）当作句子分隔符拆碎——块文本变成残缺的 `[](url)`，
+    前端不渲染、显示为链接文本。引用作整体保护后与表格同等待遇：
+    原子并入某块，不被切分毁坏（alt/src 保持完整）。
+    """
+    spans = [(m.start(), m.end()) for m in _IMAGE_MD_RE.finditer(text)]
+    spans += [(m.start(), m.end()) for m in _IMAGE_HTML_RE.finditer(text)]
+    return spans
+
+
 def _extend_to_preceding_heading(text: str,
                                  ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
     """保护区间前扩展：紧邻表格（中间至多 1 空行）的标题行并入区间。
@@ -292,7 +310,7 @@ def find_protected_ranges(text: str) -> List[Tuple[int, int]]:
       防超长回退时标题被切飞成孤儿块）。
     """
     ranges = (_find_table_ranges(text) + _find_html_table_ranges(text)
-              + _find_fence_ranges(text))
+              + _find_fence_ranges(text) + _find_image_ranges(text))
     ranges.sort()
     merged: List[Tuple[int, int]] = []
     for s, e in ranges:
@@ -458,6 +476,11 @@ class RecursiveChunker:
         self._custom_delimiter_list = delimiter if isinstance(delimiter, list) else None
 
     def chunk(self, text: str) -> List[Chunk]:
+        # 保护区间兜底：调用方未显式传 protected_ranges 时自动识别
+        # （表格/代码块/图片引用作为整体成块——naive 直用也吃保护；
+        # MarkdownSplitter 已显式传入，此处自动跳过保持行为一致）
+        if not self.protected_ranges:
+            self.protected_ranges = find_protected_ranges(text)
         chunks = self._split_sentence_aware(text) if self._sentence_aware \
             else self._split_text(text)
         return [c for c in chunks if c.text and c.text.strip()]

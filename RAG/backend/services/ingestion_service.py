@@ -449,6 +449,31 @@ class IngestionService:
             self._cancel.discard(doc_id)
             raise _IngestCancelled(doc_id)
 
+    async def _await_with_cancel(self, doc_id: str, to_await,
+                                 poll: float = 1.0):
+        """可取消等待：轮询取消标记，命中 → 中断 to_await（底层请求随之
+        取消）并抛 _IngestCancelled；完成 → 正常返回结果。
+
+        背景（修复"取消解析半天没反应"）：原取消是检查点式——MinerU /
+        embedding 等对外 HTTP 长等待期间没有检查点可消费，任务实际阻塞
+        在调用里，取消要等本次解析跑完才生效（可能数分钟）。本包装把
+        等待改成"轮询 + 可丢弃"：命中标记即取消底层任务（httpx 连接
+        释放；丢弃部分结果——取消本就不要结果）。
+        """
+        task = asyncio.ensure_future(to_await)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=poll)
+                if task in done:
+                    return task.result()
+                self._raise_if_cancelled(doc_id)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        except Exception:
+            task.cancel()
+            raise
+
     async def run_ingestion(self, doc_id: str, method: str | None = None,
                             **params):
         """后台任务主流程（路由层 asyncio.create_task 调用）
@@ -642,11 +667,14 @@ class IngestionService:
         if parse_degrade:
             parser_config["degrade"] = parse_degrade
         try:
-            text, images, parse_method = await parser.parse(
-                upload_path, doc.file_type,
-                engine=engine,
-                **parse_opts)
+            text, images, parse_method = await self._await_with_cancel(
+                doc_id,
+                parser.parse(upload_path, doc.file_type,
+                             engine=engine,
+                             **parse_opts))
         except ParserUnavailableError:
+            raise
+        except _IngestCancelled:
             raise
         except Exception as e:
             # 可预期失败（解析器不可用/网络错误）：类型化异常（消息 =
@@ -739,8 +767,8 @@ class IngestionService:
                     f"Agentic 分块成本较高，确认继续请重试"
                     f"（agentic_confirm=true）")
             try:
-                agentic_chunks, labels = await agentic_chunk(
-                    text, parser_config)
+                agentic_chunks, labels = await self._await_with_cancel(
+                    doc_id, agentic_chunk(text, parser_config))
                 agentic_labels = {i: labels[i]
                                   for i in range(len(labels))}
                 chunk_objects = agentic_chunks
@@ -795,9 +823,9 @@ class IngestionService:
         # 契约不破坏），摘要存 chunks_meta.context 字段
         contexts: Dict[int, str] = {}
         if parser_config.get("contextual_retrieval"):
-            for item in await enrich_chunks(
+            for item in await self._await_with_cancel(doc_id, enrich_chunks(
                     stage.chunk_objects, text, parser_config,
-                    doc_name=doc.original_name):
+                    doc_name=doc.original_name)):
                 ctx = (item.get("context") or "").strip()
                 if ctx:
                     contexts[int(item["index"])] = ctx
@@ -814,10 +842,12 @@ class IngestionService:
         kg_error: Optional[str] = None
         if parser_config.get("knowledge_graph"):
             try:
-                kg_stats = await build_graph_for_doc(
-                    doc.kb_id, doc_id, doc.original_name,
-                    stage.chunk_objects, raw_texts=stage.raw_chunk_texts,
-                    cfg=parser_config)
+                kg_stats = await self._await_with_cancel(
+                    doc_id,
+                    build_graph_for_doc(
+                        doc.kb_id, doc_id, doc.original_name,
+                        stage.chunk_objects, raw_texts=stage.raw_chunk_texts,
+                        cfg=parser_config))
                 if kg_stats.get("extracted"):
                     logger.info(
                         "知识图谱构建: %s (%s) 抽取 %d/%d 块 → 实体 %d / 关系 %d",
@@ -825,6 +855,8 @@ class IngestionService:
                         kg_stats["chunks"], kg_stats["entities"],
                         kg_stats["relations"])
                 kg_status = "ready"
+            except _IngestCancelled:
+                raise  # 用户取消：保留取消语义（不落成"图谱失败"）
             except Exception as e:
                 # 图谱构建失败不阻塞入库（与上下文检索增强同策略）
                 logger.warning("知识图谱构建失败（不阻塞入库）: %s err=%s",
@@ -858,7 +890,8 @@ class IngestionService:
             f"【上下文】{contexts[i]}\n{c.text}" if i in contexts else c.text
             for i, c in enumerate(chunk_objects)
         ]
-        embeddings = await emb_svc.embed(embed_texts)
+        embeddings = await self._await_with_cancel(doc_id,
+                                                   emb_svc.embed(embed_texts))
         # 取消检查点 2b：嵌入完成后、向量写入前——命中则不写向量库
         # （嵌入白算可接受，向量库保持干净，不污染检索）
         self._raise_if_cancelled(doc_id)

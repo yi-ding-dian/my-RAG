@@ -453,12 +453,15 @@ const DocumentsPage: React.FC = () => {
   // 取消解析（仅 parsing 可取消）：接口置取消信号 → 任务尽快停止，文档
   // 回 failed（error="用户取消解析"），可重新发起解析；列表轮询自动刷新
   const handleCancelIngestion = async (doc: DocumentItem) => {
+    const hide = message.loading('正在取消解析…', 0);
     try {
       await cancelDocumentIngestion(kbId!, doc.id);
-      message.success('已发送取消请求，文档将回到失败状态，可重新解析');
+      message.success('取消请求已发送，文档将回到失败状态，可重新解析');
       void reloadFirstPage();
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '取消解析失败');
+    } finally {
+      hide();
     }
   };
 

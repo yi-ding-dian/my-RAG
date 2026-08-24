@@ -183,6 +183,8 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   const [page, setPage] = useState(1);
   // 全文搜索
   const [searchText, setSearchText] = useState('');
+  // 左栏块"展开"集合：展开时显示块全文（默认只显示 200 字符预览）
+  const [expandedIdx, setExpandedIdx] = useState<Set<number>>(new Set());
   // 同步滚动开关：默认关闭(左右独立滚动,点击/搜索/溯源定位始终生效)
   const [syncScroll, setSyncScroll] = useState(false);
   const [currentMatchIdx, setCurrentMatchIdx] = useState(0);
@@ -930,14 +932,41 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
                         {/* 左栏同样渲染图片（与右栏同一显示规则：max-width 100% + 统一高度上限，
                             保证同一张图左右显示尺寸一致），用户无需点开即可确认块内图片；
                             安全截断：截断点切在图片引用内时后移到引用闭合后，避免引用不完整导致图片失配显示为文本；
-                            展示文本上叠加回答-对齐高亮（.citation-highlight，区间相对截断文本，由 MdImages 渲染） */}
+                            展示文本上叠加回答-对齐高亮（.citation-highlight，区间相对截断文本，由 MdImages 渲染）；
+                            展开后显示块全文（高亮相对全文重算） */}
                         <MdImages
-                          text={chunkDispByIndex.get(c.index)?.text ?? ''}
+                          text={
+                            expandedIdx.has(c.index)
+                              ? c.text
+                              : (chunkDispByIndex.get(c.index)?.text ?? '')
+                          }
                           maxWidth="100%"
                           maxHeight={MAX_IMG_HEIGHT}
-                          highlights={chunkDispByIndex.get(c.index)?.highlights}
+                          highlights={
+                            expandedIdx.has(c.index)
+                              ? (c.text && answerText ? computeHighlightRanges(answerText, c.text) : [])
+                              : (chunkDispByIndex.get(c.index)?.highlights ?? [])
+                          }
                         />
                       </Text>
+                      {/* 展开/收起：超过预览长度的块才显示（展开=显示整块文本） */}
+                      {(c.text?.length ?? 0) > MAX_TEXT_LEN && (
+                        <Button
+                          type="link"
+                          size="small"
+                          style={{ padding: 0, fontSize: 12, height: 'auto' }}
+                          onClick={() =>
+                            setExpandedIdx(prev => {
+                              const next = new Set(prev);
+                              if (next.has(c.index)) next.delete(c.index);
+                              else next.add(c.index);
+                              return next;
+                            })
+                          }
+                        >
+                          {expandedIdx.has(c.index) ? '收起' : '展开'}
+                        </Button>
+                      )}
                     </div>
                   </List.Item>
                 );

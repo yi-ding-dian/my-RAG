@@ -152,6 +152,47 @@ class TestTableIntegrity:
         assert table_chunks, "表格应完整保留在某个块内"
 
 
+class TestImageIntegrity:
+    """增强 1c：图片引用（markdown ![]()）不切碎
+
+    修复背景：图片引用含英文感叹号 `!`，被句子感知切分（句界集合含 `!`）
+    当作英文句界拆碎——块文本变成残缺的 `[](url)` 链接文本（前端不渲染，
+    显示为链接文本）。引用作整体保护后与表格同等待遇，原子并入某块。
+    """
+
+    IMG_TEXT = ("1.白酒发票\n\n![](/api/files/images/doc/abc.jpg)\n"
+                "\n2.内蒙古相关报销服务\n\n![](/api/files/images/doc/def.jpg)\n")
+
+    def test_image_recognized_as_protected_range(self):
+        protected = find_protected_ranges(self.IMG_TEXT)
+        assert len(protected) == 2, f"应识别 2 个图片区间: {protected}"
+        for s, e in protected:
+            assert self.IMG_TEXT[s:e].startswith("!["), \
+                "保护区间应为完整图片引用（含 !）"
+
+    def test_image_not_cut_in_naive_split(self):
+        """naive（RecursiveChunker 兜底保护）：引用完整保留、无残缺链接文本"""
+        from backend.chunking.splitter import RecursiveChunker
+        chunks = RecursiveChunker(chunk_size=800, overlap=0).chunk(self.IMG_TEXT)
+        _assert_offsets(chunks, self.IMG_TEXT)
+        _assert_ranges_intact(chunks, find_protected_ranges(self.IMG_TEXT),
+                              self.IMG_TEXT)
+        joined = "\n".join(c.text for c in chunks)
+        assert "![](/api/files/images/doc/abc.jpg)" in joined
+        assert "![](/api/files/images/doc/def.jpg)" in joined
+        # 残缺引用特征：[](...) 前无 !（完整引用自带 ](/ 子串，须用负向后顾）
+        assert not re.search(r"(?<!!)\[\]\(/api/files", joined), \
+            "不应残留残缺的 []() 链接引用"
+
+    def test_image_not_cut_in_title_split(self):
+        """title 方式：引用同样完整（MarkdownSplitter 显式注入保护区）"""
+        chunks = _title_chunker().chunk(self.IMG_TEXT)
+        joined = "\n".join(c.text for c in chunks)
+        assert "![](/api/files/images/doc/abc.jpg)" in joined
+        assert not re.search(r"(?<!!)\[\]\(/api/files", joined), \
+            "不应残留残缺的 []() 链接引用"
+
+
 class TestCodeBlockIntegrity:
     """增强 1b：围栏代码块不切开（含代码块内假标题）"""
 
