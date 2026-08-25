@@ -436,7 +436,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
       pendingLeftRef.current = index;
       setPage(Math.floor(idx / PAGE_SIZE) + 1);
     },
-    [sortedChunks],
+    [sortedChunks, setProgrammatic],
   );
 
   /** 点击左栏块：选中 + 右侧对应区间平滑滚动居中 */
@@ -455,7 +455,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
         document.getElementById(`chunk-seg-${seg ? seg.start : start}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
       }, 0);
     },
-    [chunkStartOf, segOf],
+    [chunkStartOf, segOf, setProgrammatic],
   );
 
   /** 点击原文段（反向联动）：选中所属第一个块并滚动左栏（跨页自动跳页） */
@@ -509,7 +509,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
         break;
       }
     }
-  }, [sortedChunks, chunkStartOf, segOf]);
+  }, [sortedChunks, chunkStartOf, segOf, setProgrammatic]);
 
   // ---------- 全文搜索 ----------
 
@@ -588,7 +588,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
         scrollLeftToChunk(target.index, 'nearest', 'auto');
       }
     },
-    [searchMatches, searchText, segments, rangeIdOf, chunkCoveringOf, nearestChunkOf, scrollLeftToChunk],
+    [searchMatches, searchText, segments, rangeIdOf, chunkCoveringOf, nearestChunkOf, scrollLeftToChunk, setProgrammatic],
   );
 
   /** 下一个匹配（搜索词变化后的首次操作先定位第 1 处） */

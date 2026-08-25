@@ -144,6 +144,7 @@ const RetrievalTestPage: React.FC = () => {
       messageApi.error('知识库列表加载失败，请刷新页面重试');
     });
     getActiveProfile().then((r) => setProfile(r.data)).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- messageApi 为 useMessage() 稳定实例（React 保证同引用），仅为初始化加载，加依赖会导致重复拉取
   }, []);
 
   /** 执行检索（q 传入时用 q，否则用输入框当前值）；多库时后端按 kb_ids 对比检索 */

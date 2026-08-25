@@ -307,7 +307,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         lang_list: cfg.lang_list === 'en' ? 'en' : 'ch',
       });
     }
-  }, [open, doc, form]);
+  }, [open, doc, form, isSpreadsheet]);
 
   // 解析 LLM 模型默认值兜底：字段为空 → 回填当前激活模型；值已不在模型列表
   // （模型被删除/改名）→ 同样回退激活模型，保证提交值始终合法

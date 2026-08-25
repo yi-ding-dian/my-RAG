@@ -269,7 +269,7 @@ const SettingsPage: React.FC = () => {
     } catch {
       // 非 fatal：维度检测失败不阻塞配置页
     }
-  }, []);
+  }, [message]);
 
   useEffect(() => {
     loadProfiles();
@@ -1008,7 +1008,7 @@ const SettingsPage: React.FC = () => {
                               overflow: 'hidden', textOverflow: 'ellipsis',
                               whiteSpace: 'nowrap',
                             }}>
-                              {m.base_url}　Key: {m.api_key || '-'}
+                              {m.base_url}{'　'}Key: {m.api_key || '-'}
                             </div>
                           </div>
                           <Space size="small">

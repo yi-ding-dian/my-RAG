@@ -93,8 +93,8 @@ const AppModal: React.FC<AppModalProps> = ({
   maskClosable = false,
   open,
   children,
-  width: _widthProp,
-  styles: _stylesProp,
+  width: _widthProp, // eslint-disable-line @typescript-eslint/no-unused-vars -- 拦截透传（AntD Modal 不接收 width/styles），下划线表意图
+  styles: _stylesProp, // eslint-disable-line @typescript-eslint/no-unused-vars -- 拦截透传，同上
   ...rest
 }) => {
   const [manual, setManual] = useState<{ w: number; h: number } | null>(null);

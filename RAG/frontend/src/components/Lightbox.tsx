@@ -56,8 +56,12 @@ const Lightbox: React.FC<LightboxProps> = ({ src, alt, onClose }) => {
   // 拖动结束抑制随后浏览器补发的 click（click 可能落在 stage 或遮罩，两级都消费，防残留）
   const suppressClickRef = useRef(false);
   const smoothTimerRef = useRef<number | undefined>(undefined);
-  scaleRef.current = scale;
-  translateRef.current = translate;
+  // render 期写 ref 是反模式（eslint react-hooks/refs）：挪到 effect 同步，
+  // 行为等价（每次渲染后更新，事件回调读到的都是最新值）
+  useEffect(() => {
+    scaleRef.current = scale;
+    translateRef.current = translate;
+  }, [scale, translate]);
 
   // ESC 关闭：与组件挂载周期同生命周期，卸载自动移除监听
   useEffect(() => {

@@ -528,7 +528,9 @@ const DocumentsPage: React.FC = () => {
           break;
       }
     },
-    [modal, graphModal.openGraphModal, portraitModal.openPortrait, handleCancelGraphBuild, handleDownload],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- graphModal/portraitModal 每次渲染新对象，加入会导致 useCallback 无限重建；其方法引用已在依赖中
+    [modal, graphModal.openGraphModal, portraitModal.openPortrait,
+     handleCancelGraphBuild, handleDownload],
   );
 
   // 解析/重新解析按钮：清除 QA 失败提示记录（再次失败可再次确认），打开解析配置弹窗

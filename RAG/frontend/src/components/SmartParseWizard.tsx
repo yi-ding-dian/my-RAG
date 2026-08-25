@@ -196,7 +196,7 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
       } else {
         message.error(`「${name}」连接失败，保持原模型：${res.data.reason}`);
       }
-    } catch (e: any) {
+    } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any -- axios 错误需访问 response.data.detail
       message.error(`连接测试失败，保持原模型：${e.response?.data?.detail || '网络请求失败'}`);
     } finally {
       setTestingLlm(false);
@@ -272,7 +272,7 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
       }
       onCancel();
       onSuccess();
-    } catch (e: any) {
+    } catch (e: any) { // eslint-disable-line @typescript-eslint/no-explicit-any -- axios 错误需访问 response.data.detail
       message.error(e.response?.data?.detail || '触发解析失败');
     } finally {
       setSubmitting(false);
