@@ -59,6 +59,9 @@ os.environ["EMBEDDING_BASE_URL"] = "http://127.0.0.1:59999/v1"
 os.environ["MINERU_API_URL"] = "http://127.0.0.1:59999"
 os.environ["DEEPDOC_BASE_URL"] = "http://127.0.0.1:59997"
 os.environ["RAGAS_BASE_URL"] = "http://127.0.0.1:59998"
+# 登录限速：测试环境关闭（同 IP 大量登录（TestClient 全 127.0.0.1）会误锁，
+# 破坏既有认证测试）；限速本身单独测试（test_rate_limit.py 手动开启配置）
+os.environ["LOGIN_RATE_LIMIT_ENABLED"] = "false"
 
 # 测试文档样例（中文，含两级标题，ingest 后应切成多块）
 SAMPLE_TEXT = """# Python 简介

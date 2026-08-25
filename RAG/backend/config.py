@@ -32,14 +32,28 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8091
     # CORS 白名单（逗号分隔的具体前端来源，如
-    # CORS_ORIGINS=http://127.0.0.1:3002,http://localhost:3002）：
-    # "*" 仅限开发调试（任意来源可跨域，生产有安全风险）；
-    # 生产环境必须配置具体前端来源白名单（前端域名变化需同步更新，
-    # 否则前端跨域请求失效），改动后需重启后端生效（启动时读取）
-    CORS_ORIGINS: str = "*"
+    # CORS_ORIGINS=https://rag.example.com,http://127.0.0.1:3002）：
+    # 生产/公网部署**必须**配置具体前端来源（不要留 *）；未配置（空串）时
+    # 拒绝跨域（不带 CORS 头——前端同源/nginx 代理不受影响，真实跨域来源
+    # 需显式加白名单）；"*" 仅限本地开发调试（任意来源可跨域，生产有安全
+    # 风险）；前端域名变化需同步更新，改动后需重启后端生效（启动时读取）
+    # 注意：Bearer token 场景下 "*" 不能与 allow_credentials 同时用
+    CORS_ORIGINS: str = ""
 
     # 数据目录（默认在项目下 data/，Docker 中可用环境变量覆盖为挂载卷）
     DATA_DIR: Path = BASE_DIR / "data"
+
+    # ---- 登录限速（防爆破，IP 维度失败计数窗口）----
+    # 同一 IP 在窗口内登录失败次数 >= 上限 → 锁定（返回 429）；登录成功即清零。
+    # 内存实现（单 worker 足够，重启清零）；默认开启，测试环境关闭
+    # （conftest 设置 LOGIN_RATE_LIMIT_ENABLED=false，避免同 IP 多测试污染）
+    LOGIN_RATE_LIMIT_ENABLED: bool = True
+    # 窗口（秒）：在此窗口内累计失败 LOGIN_MAX_FAILURES 次触发锁定
+    LOGIN_RATE_WINDOW: int = 60
+    # 窗口内失败上限（次数）
+    LOGIN_MAX_FAILURES: int = 5
+    # 触发后锁定时长（秒）
+    LOGIN_LOCK_SECONDS: int = 60
 
     # LLM（生产环境通过 .env / 配置档案注入真实地址与密钥）
     LLM_BASE_URL: str = "http://127.0.0.1:1234/v1"

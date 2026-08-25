@@ -16,6 +16,10 @@ from backend.deps import get_current_user
 from backend.models.user_models import (ChangePasswordRequest, LoginRequest,
                                         UserPublic, validate_password)
 from backend.services import audit_service, auth_service
+from backend.services.rate_limit import (check as rate_check,
+                                         ip_of as rate_ip_of,
+                                         record_failure as rate_record_failure,
+                                         record_success as rate_record_success)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["认证"])
@@ -29,14 +33,26 @@ async def login(request: Request, body: LoginRequest,
     失败统一 401「用户名或密码错误」（不区分用户不存在/密码错/禁用，防枚举）
     审计：成功/失败均记录（失败时操作对象记在 target_name/detail，防枚举
     文案不变）。
+    限速（防爆破）：同一 IP 窗口内失败 >= 5 次 → 429 锁定 60 秒（可配）；
+    成功自动清零。
     """
+    remaining = rate_check(request)
+    if remaining is not None:
+        logger.warning("登录限速: IP=%s 锁定中（剩余约 %ss）", rate_ip_of(request),
+                       remaining)
+        raise HTTPException(
+            status_code=429,
+            detail=f"登录尝试过于频繁，请 {remaining} 秒后再试")
     user = await auth_service.login(db, body.username, body.password)
     if user is None:
+        rate_record_failure(request)
         await audit_service.record_action(
             None, action="auth.login", target_type="user",
             target_name=body.username, detail={"username": body.username},
             status="failed", request=request)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    # 成功：清零该 IP 失败记录（防锁定正常用户换密码后回来）
+    rate_record_success(request)
     await audit_service.record_action(
         user, action="auth.login", target_type="user",
         target_id=user.id, target_name=user.username,

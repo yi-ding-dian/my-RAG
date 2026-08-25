@@ -168,11 +168,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS（生产环境建议在 .env 中限制具体来源）
-_cors_origins = config_settings.CORS_ORIGINS.strip() or "*"
+# CORS（生产环境建议在 .env 中限制具体来源；未配置 → 拒绝跨域——
+# 纯同源/nginx 代理部署不受影响，仅防"任意域名可读接口响应"）
+_cors_origins = config_settings.CORS_ORIGINS.strip()
+if _cors_origins == "*":
+    # 仅开发调试（本地前端 3002/无 nginx 代理时）：任意来源
+    _cors_origins_list = ["*"]
+elif _cors_origins:
+    # 逗号分隔白名单（生产：具体前端域名）
+    _cors_origins_list = _cors_origins.split(",")
+else:
+    # 未配置：不带 CORS 头，浏览器拒绝一切跨域读取（同源请求不受影响）
+    _cors_origins_list = []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins.split(",") if _cors_origins != "*" else ["*"],
+    allow_origins=_cors_origins_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )
