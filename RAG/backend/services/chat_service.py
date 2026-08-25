@@ -6,6 +6,15 @@
 - 生成参数（chat 段配置优先，None 回退 LLM 段默认）：
   temperature/top_p/max_tokens 覆盖 LLM 配置
 - 多轮开关 enable_multi_turn=False 时不带历史（只发 system + 当前问题）
+- 查询改写 query_rewrite（chat 段配置，默认开）：LLM 把问题改写为正式
+  独立检索查询（口语→正式 + 指代消解 + 省略补全，见 query_rewriter；
+  口语词必触发不依赖历史/指代词需有历史/失败降级原问题），与多轮开关
+  解耦（多轮关只控制对话是否带历史）；检索用改写后 query，对话展示仍是
+  原问题（prompt 事件附 rewritten_query/rewrite_ms）
+- 引用溯源保障：流式回答经 CitationGuard 过滤（与前端同规则），越界
+  [n]（编号>来源数）剥离不发前端；done 事件附 citation 统计（refs/
+  refs_invalid/sentences/cited_sentences/coverage），前端据此提示
+  "未标注引用来源"等（程序性保障：不依赖模型自觉）
 - 思考模式 thinking_mode（chat 段配置，默认 disabled 关闭思考）：在线 API
   （api.deepseek.com 等）经 extra_body 控制 thinking；本地 Qwen 思考模型
   disabled 时注入空 <think> prefill 跳过思考——请求层变换，不影响 prompt
@@ -33,7 +42,9 @@ from openai import (APIConnectionError, APIStatusError, APITimeoutError,
 from backend.config import CHAT_DIR, LLMConfig, get_active_config
 from backend.models.rag_models import (ChatHistoryItem, ChatMessage,
                                        ChatSession, Source)
+from backend.services.citation_guard import CitationGuard
 from backend.services.llm_client import get_llm_client, llm_to_dict
+from backend.services.query_rewriter import rewrite_query
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
 from backend.services.settings_service import (merge_chat_config,
@@ -235,7 +246,12 @@ class ChatService:
                           top_k: Optional[int] = None,
                           dept_config: Optional[dict] = None) -> AsyncIterator[str]:
         """SSE 流：meta(sources) -> prompt(完整提示词+耗时) -> delta(文本)
-        -> done(session_id, message_count) / error
+        -> done(session_id, message_count, citation) / error
+
+        citation（done 事件附加，来源非空时统计）：refs 有效引用标数 /
+        refs_invalid 越界剥离数 / sentences 句子数 / cited_sentences 含引用
+        句子数 / coverage 覆盖率。引用溯源程序性保障：流式 delta 经
+        CitationGuard 过滤（越界编号剥离），统计随 done 下发。
 
         top_k: 检索条数覆盖（None=取配置 retrieval.top_k，聊天页选择器透传）
         dept_config: 当前用户所在部门的完整配置（{"llm": {...},
@@ -273,6 +289,7 @@ class ChatService:
                         "history_rounds": cfg.chat.history_rounds,
                         "system_prompt": cfg.chat.system_prompt,
                         "kg_enhance": cfg.chat.kg_enhance,
+                        "query_rewrite": cfg.chat.query_rewrite,
                         "thinking_mode": cfg.chat.thinking_mode,
                     },
                     "retrieval": {
@@ -283,6 +300,37 @@ class ChatService:
                 dept,
             )["chat"]
 
+            # 0.5) 查询改写（chat.query_rewrite 开时的检索前置步骤）：
+            #    LLM 把问题改写为正式独立检索查询（口语→正式 + 指代消解 +
+            #    省略补全，见 query_rewriter）；改写结果仅用于本轮检索
+            #    （不落盘不入历史）；触发条件在 query_rewriter 内部精判：
+            #    口语词必触发（不依赖历史）/指代词需有历史（无历史消不掉）/
+            #    失败/超时 → None → 用原问题检索（绝不阻塞问答，与图谱通道
+            #    降级同风格）。不再依赖多轮开关 enable_multi_turn——它只
+            #    控制"LLM 对话是否携带历史"，与检索用历史改写解耦（用户可
+            #    多轮关省 token 的同时保留查询改写）。改写耗时单独统计
+            #    （rewrite_ms，prompt 事件下发，与检索耗时 retrieval_ms
+            #    分开——改写失败时也不污染检索耗时）。
+            search_query = message
+            rewritten_query: Optional[str] = None
+            rewrite_ms = 0
+            if merged_chat.get("query_rewrite"):
+                t_rewrite = time.perf_counter()
+                # 与第 4 步同口径：会话消息（含 role/content）截最近 N 轮
+                # （首轮为空 → 空历史占位，口语正式化仍可触发）
+                rounds = int(merged_chat["history_rounds"])
+                history_msgs = [
+                    {"role": m.role, "content": m.content}
+                    for m in session.messages[-(rounds * 2):]
+                ]
+                rewritten_query = await rewrite_query(message, history_msgs)
+                rewrite_ms = int(round((time.perf_counter() - t_rewrite)
+                                       * 1000))
+                if rewritten_query and rewritten_query != message:
+                    logger.info("查询改写: %s -> %s", message[:50],
+                                rewritten_query[:50])
+                    search_query = rewritten_query
+
             # 1) 检索（P1-2：Embedding 服务不可用等 RetrievalUnavailableError
             # 直接透传"检索服务不可用：..."，其余异常统一"检索失败: ..."前缀）
             #    部门配置覆盖检索参数：top_k（路由层选择器优先）与相似度阈值
@@ -290,11 +338,12 @@ class ChatService:
             if eff_top_k is None and dept_retrieval.get("top_k") is not None:
                 eff_top_k = int(dept_retrieval["top_k"])
             eff_min_score = dept_retrieval.get("similarity_threshold")
-            # 检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
+            #    检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
             t_retrieval = time.perf_counter()
             try:
                 sources = await get_retrieval_service().retrieve(
-                    kb_id, message, top_k=eff_top_k, min_score=eff_min_score)
+                    kb_id, search_query, top_k=eff_top_k,
+                    min_score=eff_min_score)
                 retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
                 # 可预期失败（Embedding 服务不可用等）：warning 不透传堆栈，
@@ -406,12 +455,14 @@ class ChatService:
             )
             messages.append({"role": "user", "content": cite_note})
 
-            # 4.5) prompt 事件：LLM 调用前下发完整提示词与检索/图谱耗时
+            # 4.5) prompt 事件：LLM 调用前下发完整提示词与检索/图谱/改写耗时
             # （前端"请求详情"展示；此事件在 delta 之前，生成失败也已送达）
             yield sse_event("prompt", {
                 "prompt": messages,
                 "retrieval_ms": retrieval_ms,
                 "kg_ms": kg_ms,
+                "rewrite_ms": rewrite_ms,
+                "rewritten_query": rewritten_query,
             })
 
             # 5) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
@@ -453,6 +504,13 @@ class ChatService:
             if top_p is not None:
                 request_kwargs["top_p"] = top_p
             try:
+                # 引用溯源程序性保障：流式输出经 CitationGuard 过滤（与前端
+                # renderCitationContent 同规则），越界 [n]（编号 > sources 数）
+                # 剥离不发往前端；合法编号原样通过；跨 chunk 拆分由待定缓冲
+                # 处理。guard.feed 返回 sanitized 增量（可为空——引用标待定
+                # 期间暂缓输出，不丢失）。flush 在流结束/中断路径调用释放
+                # 待定缓冲（内含可能被截断的合法引用标，行尾视为句尾特征）。
+                guard = CitationGuard(len(sources))
                 stream = await client.chat.completions.create(**request_kwargs)
                 async for chunk in stream:
                     if not chunk.choices:
@@ -460,10 +518,15 @@ class ChatService:
                     delta = chunk.choices[0].delta
                     content = delta.content if delta else None
                     if content:
-                        answer_parts.append(content)
-                        yield sse_event("delta", {"text": content})
+                        clean = guard.feed(content)
+                        if clean:
+                            answer_parts.append(clean)
+                            yield sse_event("delta", {"text": clean})
             except asyncio.CancelledError:
                 logger.info("客户端中断流式问答: %s", session.id)
+                tail = guard.flush()
+                if tail:
+                    answer_parts.append(tail)
                 if answer_parts:
                     self._finalize(session, message, answer_parts, sources)
                     saved = True
@@ -473,6 +536,9 @@ class ChatService:
                 # 可预期失败：LLM 服务超时/断连/限流/HTTP 错误 → warning
                 # 不记堆栈；用户消息语义与历史一致（"LLM 调用失败: ..."）
                 logger.warning("LLM 流式调用失败（LLM 服务异常）: %s", e)
+                tail = guard.flush()
+                if tail:
+                    answer_parts.append(tail)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
                 self._finalize(session, message, answer_parts, sources)
@@ -482,6 +548,9 @@ class ChatService:
             except Exception as e:
                 # 兜底（未知异常）：不记堆栈，信息保留
                 logger.error("LLM 流式调用失败: %s", e)
+                tail = guard.flush()
+                if tail:
+                    answer_parts.append(tail)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
                 self._finalize(session, message, answer_parts, sources)
@@ -489,12 +558,28 @@ class ChatService:
                 yield sse_event("error", {"message": err_msg})
                 return
 
+            # 5.5) 流结束（正常）：flush 待定缓冲（行尾引用标判定），
+            #      统计引用覆盖率随 done 下发（前端据此提示）。
+            #      注意 flush 在异常路径已调用，这里再次调用是幂等（空）。
+            tail = guard.flush()
+            if tail:
+                answer_parts.append(tail)
+                yield sse_event("delta", {"text": tail})
+            citation = guard.stats()
+
             # 6) done
             self._finalize(session, message, answer_parts, sources)
             saved = True
             yield sse_event("done", {
                 "session_id": session.id,
                 "message_count": len(session.messages),
+                "citation": {
+                    "refs": citation.refs,
+                    "refs_invalid": citation.refs_invalid,
+                    "sentences": citation.sentences,
+                    "cited_sentences": citation.cited_sentences,
+                    "coverage": citation.coverage,
+                },
             })
             # 对话完成 → 异步触发用户画像提取（不阻塞响应）
             if user_id:

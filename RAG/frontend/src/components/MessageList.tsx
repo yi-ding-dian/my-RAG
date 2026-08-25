@@ -3,7 +3,7 @@ import AppModal from './AppModal';
 import { Button,  Empty,  Tooltip,  theme } from 'antd';
 import { ArrowDownOutlined, FileTextOutlined, PaperClipOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { avatarUrl, type ChatMessage, type Source } from '../api/client';
+import { avatarUrl, type ChatCitationStats, type ChatMessage, type Source } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import MdImages from './MdImages';
 import SourcePanel from './SourcePanel';
@@ -15,6 +15,8 @@ interface MessageListProps {
   messages: ChatMessage[];
   /** 是否正在等待助手回复（显示思考中动画） */
   waiting?: boolean;
+  /** 检索/改写完成后 5s 内未出首字 → 显示"较慢"提示（仍等待，不误报失败） */
+  slowWaiting?: boolean;
   /** 点击回答中 [n] 引用标或引用面板"查看原文"时回调（打开溯源弹窗，可选） */
   onCitationClick?: (source: Source) => void;
 }
@@ -213,6 +215,25 @@ const formatMs = (ms: number): string =>
  * - 中间条目按 role 标注"历史 · user / assistant"
  * 内容 pre-wrap 小字展示（body 限高滚动由 Modal styles 控制）
  */
+/** 引用溯源提示（done 事件 citation 统计驱动）：
+ * - 越界引用标（后端已剥离）> 0 → 提示已剔除
+ * - 回答完全无引用标且来源非空 → 提示未标注来源（诚实披露，不假装强制）
+ */
+const CitationHint = ({ citation }: { citation: ChatCitationStats }) => {
+  const { token } = theme.useToken();
+  const text = citation.refs_invalid > 0
+    ? `已自动剔除 ${citation.refs_invalid} 处无效引用标注（编号越界）`
+    : citation.refs === 0 && citation.sentences > 0
+      ? '本次回答未标注引用来源'
+      : null;
+  if (!text) return null;
+  return (
+    <div style={{ marginTop: 6, fontSize: 12, color: token.colorTextTertiary }}>
+      ⚠️ {text}
+    </div>
+  );
+};
+
 const renderPromptEntries = (
   prompt: unknown,
   token: ReturnType<typeof theme.useToken>['token'],
@@ -303,7 +324,7 @@ const renderContent = (
 };
 
 /** 消息列表：用户右侧 / 助手左侧气泡；助手消息 pre-wrap 渲染，引用来源默认收成一行入口按钮 */
-const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitationClick }) => {
+const MessageList: React.FC<MessageListProps> = ({ messages, waiting, slowWaiting, onCitationClick }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { token } = theme.useToken();
   // 当前登录用户：聊天中自己的头像从此读取（无头像 → 默认 SVG 兜底）
@@ -433,6 +454,10 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
                         （已停止生成）
                       </div>
                     )}
+                    {/* 引用溯源提示：越界引用标已由后端剥离，或完全未标注引用 */}
+                    {!isUser && m.citation && !isStreamingLast && (
+                      <CitationHint citation={m.citation} />
+                    )}
                   </div>
                 )}
                 {m.sources && m.sources.length > 0 && !isPendingLast(idx) && (
@@ -503,7 +528,11 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
                 <span />
                 <span />
               </span>
-              <span style={{ color: token.colorTextTertiary, fontSize: 13 }}>正在思考…</span>
+              <span style={{ color: token.colorTextTertiary, fontSize: 13 }}>
+                {slowWaiting
+                  ? '⏳ 模型响应较慢，正在等待…'
+                  : '正在思考…'}
+              </span>
             </div>
           </div>
         )}
@@ -594,6 +623,12 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
           >
             {detailQuestion || '（无）'}
           </div>
+          {detailMsg.rewritten_query && (
+            <div style={{ fontSize: 12, lineHeight: '18px', marginTop: 4, color: token.colorTextSecondary }}>
+              <span style={{ color: token.colorTextTertiary }}>改写后检索词：</span>
+              {detailMsg.rewritten_query}
+            </div>
+          )}
         </div>
         {/* 耗时统计（后端统计召回/图谱构建，前端计算提问→首字总耗时） */}
         <div style={{ marginBottom: 14 }}>
@@ -601,7 +636,13 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
           <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
             召回耗时：{detailMsg.retrieval_ms !== undefined ? `${detailMsg.retrieval_ms} ms` : '—'}
             {detailMsg.kg_ms !== undefined && ` ｜ 图谱构建：${detailMsg.kg_ms} ms`}
+            {detailMsg.rewrite_ms !== undefined && detailMsg.rewrite_ms > 0 && ` ｜ 查询改写：${detailMsg.rewrite_ms} ms`}
           </div>
+          {detailMsg.rewritten_query && (
+            <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
+              改写检索词：{detailMsg.rewritten_query}
+            </div>
+          )}
           <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
             总耗时（提问→首字）：{detailMsg.total_ms !== undefined ? formatMs(detailMsg.total_ms) : '—'}
           </div>

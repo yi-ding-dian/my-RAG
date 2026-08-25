@@ -332,6 +332,10 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                               "whitelist": True, "fill_missing": True},
             "kg_enhance": {"condition": "not_none", "whitelist": True,
                            "fill_missing": True},
+            # 查询改写（多轮 LLM 改写检索词，默认关，见 config.ChatConfig）：
+            # 部门可覆盖（whitelist），旧档案缺字段 coerce 时补默认（fill_missing）
+            "query_rewrite": {"condition": "not_none", "whitelist": True,
+                              "fill_missing": True},
             # 思考模式（聊天问答）：disabled=关闭思考（默认）| enabled_low/
             # enabled_high/enabled_max=开启并指定强度。部门可覆盖（whitelist），
             # 旧档案缺字段 coerce 时补默认（fill_missing）

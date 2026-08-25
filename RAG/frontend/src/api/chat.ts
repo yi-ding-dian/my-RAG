@@ -5,6 +5,7 @@
 import api from './http';
 import { authHeader, clearAuth } from '../auth/token';
 import type {
+  ChatCitationStats,
   ChatMessage,
   ChatSession,
   RetrieveChatParams,
@@ -51,11 +52,15 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
           prompt?: unknown[];
           retrieval_ms?: number;
           kg_ms?: number;
+          rewrite_ms?: number;
+          rewritten_query?: string | null;
         };
         callbacks.onPrompt?.({
           prompt: info.prompt ?? [],
           retrieval_ms: info.retrieval_ms,
           kg_ms: info.kg_ms,
+          rewrite_ms: info.rewrite_ms,
+          rewritten_query: info.rewritten_query,
         });
         break;
       }
@@ -63,8 +68,13 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
         const info = (typeof data === 'object' && data !== null ? data : {}) as {
           session_id?: string;
           message_count?: number;
+          citation?: ChatCitationStats;
         };
-        callbacks.onDone?.({ session_id: info.session_id ?? '', message_count: info.message_count ?? 0 });
+        callbacks.onDone?.({
+          session_id: info.session_id ?? '',
+          message_count: info.message_count ?? 0,
+          citation: info.citation,
+        });
         break;
       }
       case 'error': {

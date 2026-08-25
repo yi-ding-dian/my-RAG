@@ -243,6 +243,11 @@ class ChatConfig(BaseModel):
     # 知识图谱增强：查询时 LLM 抽实体 → 图谱匹配 → 1-hop 邻接扩展，
     # 图谱上下文作为"知识图谱"来源引用注入回答（默认开；无图谱自动跳过零成本）
     kg_enhance: bool = True
+    # 查询改写：多轮对话时 LLM 结合历史把问题改写为独立检索查询（消除
+    # "它/上面那个"等指代，检索命中率提升）。默认开——仅对含指代且有多轮
+    # 历史的问题触发（见 query_rewriter._needs_rewrite），每轮多一次 LLM
+    # 调用（短超时 8s，失败自动降级用原问题）；想省调用可手动关闭
+    query_rewrite: bool = True
     # 思考模式（聊天问答 LLM 调用）：disabled=关闭思考（默认，更快更省 token）
     # | enabled_low/enabled_high/enabled_max=开启思考并指定强度。注入方式按
     # 服务商区分（见 thinking_strategy）：在线 API（api.deepseek.com 等）经

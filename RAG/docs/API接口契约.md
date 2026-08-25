@@ -203,9 +203,11 @@ SSE 流式问答。请求体：`{query 或 message, kb_id, session_id?, top_k?}`
 | 顺序 | 事件名 | data | 说明 |
 |---|---|---|---|
 | 1 | `meta` | `{sources: [...]}` | 检索来源（无命中时为空数组） |
-| 2 | `prompt` | `{prompt: [{role, content}, ...], retrieval_ms: int, kg_ms: int}` | 整块打包发给 LLM 的完整 messages 数组 + 召回耗时（毫秒）/ 图谱构建耗时（毫秒）。仅在检索命中且调用 LLM 前发出；无命中 / 检索失败不发 |
+| 2 | `prompt` | `{prompt: [{role, content}, ...], retrieval_ms: int, kg_ms: int, rewrite_ms: int, rewritten_query: str?}` | 整块打包发给 LLM 的完整 messages 数组 + 召回耗时（毫秒）/ 图谱构建耗时（毫秒）/ 查询改写耗时（毫秒，未改写为 0）/ 改写后检索查询（未改写为 null）。仅在检索命中且调用 LLM 前发出；无命中 / 检索失败不发 |
 | 3 | `delta` | `{text: str}` | 增量文本 |
-| 4 | `done` | `{session_id, message_count}` | 生成完成，会话落盘 |
+| 4 | `done` | `{session_id, message_count, citation?}` | 生成完成，会话落盘。`citation`（来源非空时附带）：引用溯源统计——`refs` 有效引用标数 / `refs_invalid` 越界剥离数（模型编号 > 来源数，后端已从 delta 中剔除）/ `sentences` 句子总数 / `cited_sentences` 含引用句子数 / `coverage` 覆盖率（0~1）。前端据此显示引用提示 |
+
+引用溯源保障：`delta` 文本经 CitationGuard 校验（规则与前端 renderCitationContent 同源——`[n]` 后须行尾/空白/标点，`见[3]附录` 类不识别），越界编号剥离（不送达前端），合法编号保留；回答完全无引用标且来源非空时前端提示"未标注引用来源"。
 | 任意 | `error` | `{message: str}` | 检索失败 / LLM 调用失败等（HTTP 仍 200） |
 
 - `prompt.prompt` 首条为 system（含引用），最后一条为 user（含"问题：{原问题}"），中间为历史轮次（多轮关闭时无）
@@ -365,6 +367,7 @@ MinerU 解析图片鉴权代理（不暴露预签名 URL，图片存 MinIO/local
 | `history_rounds` | int | 1~20 | 8 | 携带的历史轮数 |
 | `system_prompt` | str | 空串=内置默认模板 | "" | 自定义系统提示词（可含 {refs}/{knowledge} 占位符） |
 | `kg_enhance` | bool | - | true | 知识图谱增强开关 |
+| `query_rewrite` | bool | - | true | 查询改写开关：LLM 把提问改写为正式独立检索查询——口语→书面（去除"帮我/查查/呀啦呢"等口头语）+ 指代消解（"它/上面那个"→实体）+ 省略补全；口语词不依赖历史直接触发，指代词需有对话历史（无历史消不掉），也可能多轮开关关闭但会话已有历史时触发（与多轮解耦）。每轮最多一次 LLM 调用（≤8s 超时，失败/无触发词自动回退原问题，不阻塞问答）。改写结果仅用于本轮检索（不落盘不入历史），SSE `prompt` 事件附 `rewritten_query`（改写后查询）/`rewrite_ms`（改写耗时），未改写时为 null/0 |
 | `thinking_mode` | str | `disabled` / `enabled_low` / `enabled_high` / `enabled_max` | `disabled` | 聊天问答思考模式：`disabled`=关闭思考（更快更省 token，推荐）；`enabled_*`=开启思考并指定强度。注入方式按服务商区分：在线 API（api.deepseek.com 等）经请求 `extra_body` 控制（disabled → `{"thinking": {"type": "disabled"}}`；enabled → `{"thinking": {"type": "enabled"}, "reasoning_effort": low/high/max}`）；本地 Qwen 思考模型（base_url 含 localhost/127.0.0.1/192.168./10./172.16-31.）`disabled` 时在 messages 末尾注入空 `<think>` prefill 跳过思考，`enabled_*` 时不注入（保持模型默认思考，本地无法控制强度）。该注入为请求层变换，SSE `prompt` 事件内容仍为组装后原始 messages（不含注入/extra_body） |
 
 `retrieval` 段：`top_k`（1~20）、`similarity_threshold`（0~1，0=不过滤）。`llm` 段：激活模型 `base_url/api_key/model/temperature/max_tokens/timeout` 6 字段（部门 LLM 覆盖）。

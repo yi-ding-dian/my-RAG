@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
   asApiError,
+  ChatCitationStats,
   ChatMessage,
   ChatSession,
   KnowledgeBase,
@@ -66,6 +67,11 @@ const ChatPage: React.FC = () => {
   const askTimeRef = useRef(0);
   // 本次生成是否已计算"提问→首字"总耗时（只应计算一次）
   const totalMsRef = useRef(false);
+  // "模型响应较慢"提示计时器（prompt 事件后开始，首个 delta 前触发）
+  const slowTimerRef = useRef<number | null>(null);
+  const [slowWaiting, setSlowWaiting] = useState(false);
+  // 检索/改写完成 → LLM 开始生成后 5s 内无首字 → 提示较慢（保留等待）
+  const SLOW_WAIT_MS = 5000;
 
   // ---------- 知识库 ----------
   const loadKbs = useCallback(async () => {
@@ -207,6 +213,13 @@ const ChatPage: React.FC = () => {
 
   const handleDelta = useCallback(
     (text: string) => {
+      // 收到首个 delta：清"较慢"提示（t=0 说明计时未触发），并计算
+      // "提问→首字"总耗时（只计算一次）
+      if (slowTimerRef.current) {
+        window.clearTimeout(slowTimerRef.current);
+        slowTimerRef.current = null;
+        setSlowWaiting(false);
+      }
       // 首个 delta（AI 首字）：计算"提问→首字"总耗时并写入最后一条
       // assistant 消息（每次增量都会回调，只计算一次）
       if (!totalMsRef.current && askTimeRef.current) {
@@ -242,7 +255,13 @@ const ChatPage: React.FC = () => {
   // prompt 事件：完整提示词 + 检索/图谱耗时写入最后一条 assistant 消息
   // （setMessages prev 形式：此时最后一条必为刚 push 的 assistant 消息）
   const handlePrompt = useCallback(
-    (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number }) => {
+    (info: {
+      prompt: unknown[];
+      retrieval_ms?: number;
+      kg_ms?: number;
+      rewrite_ms?: number;
+      rewritten_query?: string | null;
+    }) => {
       setMessages(prev => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -252,10 +271,23 @@ const ChatPage: React.FC = () => {
             prompt: info.prompt,
             retrieval_ms: info.retrieval_ms,
             kg_ms: info.kg_ms,
+            rewrite_ms: info.rewrite_ms,
+            rewritten_query: info.rewritten_query,
           };
         }
         return next;
       });
+      // 检索/改写/图谱全部完成、LLM 流式真正开始（prompt 事件 = 检索阶段
+      // 结束点，非提问开始点——那个时刻还含改写 0-8s + 检索耗时）：5s 内
+      // 无首字 → 提示"较慢，正在等待…"（不误报失败，继续等待；首个 delta
+      // 到达时清除，done/error/停止时兜底清除）
+      if (slowTimerRef.current) {
+        window.clearTimeout(slowTimerRef.current);
+      }
+      slowTimerRef.current = window.setTimeout(() => {
+        slowTimerRef.current = null;
+        setSlowWaiting(true);
+      }, SLOW_WAIT_MS);
     },
     [],
   );
@@ -265,12 +297,32 @@ const ChatPage: React.FC = () => {
     streamingRef.current = false;
     setStreaming(false);
     abortRef.current = null;
+    // 兜底清理"较慢"提示（正常路径已由首/delta 清除，此处防 done/error/停止漏清）
+    if (slowTimerRef.current) {
+      window.clearTimeout(slowTimerRef.current);
+      slowTimerRef.current = null;
+    }
     if (kbId) loadSessions(kbId); // 刷新会话列表（含新建会话）
-  }, [flushDelta, kbId, loadSessions]);
+  }, [flushDelta, slowTimerRef, kbId, loadSessions]);
 
   const handleDone = useCallback(
-    (info: { session_id: string; message_count: number }) => {
+    (info: {
+      session_id: string;
+      message_count: number;
+      citation?: ChatCitationStats;
+    }) => {
       if (info.session_id) setActiveSessionId(info.session_id);
+      // 引用溯源统计落到最后一条 assistant 消息（MessageList 据此渲染提示）
+      if (info.citation) {
+        setMessages(prev => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === 'assistant') {
+            next[next.length - 1] = { ...last, citation: info.citation };
+          }
+          return next;
+        });
+      }
       finishStreaming();
     },
     [finishStreaming],
@@ -534,6 +586,7 @@ const ChatPage: React.FC = () => {
               key={activeSessionId}
               messages={messages}
               waiting={streaming}
+              slowWaiting={slowWaiting}
               onCitationClick={(s) => {
                 setTraceSource(s);
                 // 记录该引用所属的回答文本（按 source.id 匹配消息，供溯源弹窗原文回答-对齐高亮）

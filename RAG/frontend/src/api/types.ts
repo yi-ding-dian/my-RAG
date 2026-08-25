@@ -258,11 +258,31 @@ export interface ChatMessage {
   retrieval_ms?: number;
   /** 请求详情：图谱构建耗时（后端统计，毫秒） */
   kg_ms?: number;
+  /** 请求详情：查询改写耗时（后端统计，毫秒） */
+  rewrite_ms?: number;
+  /** 请求详情：改写后检索查询（原问题未改写时为 null） */
+  rewritten_query?: string | null;
   /** 请求详情：提问 → AI 生成首字总耗时（前端计算，毫秒） */
   total_ms?: number;
   created_at?: string;
   /** 前端会话状态专用：用户点击「停止」中断生成（仅 UI 标注，不落盘） */
   stopped?: boolean;
+  /** 引用溯源统计（done 事件下发的 citation 字段；后端校验/覆盖标记用） */
+  citation?: ChatCitationStats;
+}
+
+/** 引用溯源统计（后端 CitationGuard 产出，随 done 事件下发） */
+export interface ChatCitationStats {
+  /** 有效引用标数量 */
+  refs: number;
+  /** 越界剥离的引用标数量（模型编号 > 来源数，后端已自动剔除） */
+  refs_invalid: number;
+  /** 句子总数 */
+  sentences: number;
+  /** 含有效引用标的句子数 */
+  cited_sentences: number;
+  /** 引用覆盖率（0~1，无句子为 0） */
+  coverage: number;
 }
 
 // ========== 认证 / 用户 / 部门 ==========
@@ -517,11 +537,11 @@ export interface StreamCallbacks {
   /** 收到 event:meta，携带检索来源 */
   onMeta?: (sources: Source[]) => void;
   /** 收到 event:prompt，携带完整提示词与检索/图谱耗时（请求详情用） */
-  onPrompt?: (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number }) => void;
+  onPrompt?: (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number; rewrite_ms?: number; rewritten_query?: string | null }) => void;
   /** 收到 event:delta，增量文本 */
   onDelta?: (text: string) => void;
-  /** 收到 event:done */
-  onDone?: (info: { session_id: string; message_count: number }) => void;
+  /** 收到 event:done，携带会话信息与引用统计 */
+  onDone?: (info: { session_id: string; message_count: number; citation?: ChatCitationStats }) => void;
   /** 收到 event:error 或网络错误（用户主动停止时 message 为 '已停止'） */
   onError?: (message: string) => void;
 }
@@ -874,6 +894,8 @@ export interface ChatSettingsPayload {
     system_prompt: string;
     /** 知识图谱增强（默认 true；查询时图谱上下文作为「知识图谱」来源引用注入） */
     kg_enhance?: boolean;
+    /** 查询改写（默认 true；多轮对话时 LLM 结合历史改写检索查询，消除指代） */
+    query_rewrite?: boolean;
     /** 思考模式：disabled=关闭思考（默认）| enabled_low/high/max=开启并指定强度 */
     thinking_mode?: ThinkingMode;
   };
@@ -895,6 +917,7 @@ export interface ChatSettingsPayload {
       history_rounds?: number;
       system_prompt?: string;
       kg_enhance?: boolean;
+      query_rewrite?: boolean;
       thinking_mode?: ThinkingMode;
     };
   } | null;
