@@ -802,6 +802,46 @@ body {
   box-shadow: 0 4px 10px rgba(16, 24, 40, 0.16);
 }
 
+/* ---------- 统计分析概览页 ---------- */
+/* KPI 卡 hover 浮起 */
+.stat-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(16, 24, 40, 0.12) !important;
+}
+/* 检索质量概览 mini 指标（浅底小卡） */
+.q-mini-stat {
+  background: #fafbfc;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  height: 100%;
+}
+/* 单行紧凑竖排式 */
+.q-mini-stat--col {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+[data-theme='dark'] .q-mini-stat {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: #303030;
+}
+/* 命中排行条形 */
+.q-hit-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(22, 119, 255, 0.25);
+  margin-top: 3px;
+}
+
 /* ---------- 侧栏主体布局：antd 的 .ant-layout-sider-children 默认是 block（高度虽 100%
    但内部无 flex 约束），Menu 的 flex:1 不生效、留白出不来。
    改为 flex column 后：Logo/菜单/底部三块垂直排布，Menu(flex:1 + min-height:0) 撑开

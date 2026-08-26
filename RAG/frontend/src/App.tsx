@@ -43,6 +43,7 @@ const DocumentsPage = lazy(() => import('./pages/Documents'));
 const GlobalDocumentsPage = lazy(() => import('./pages/GlobalDocuments'));
 const KnowledgeBasesPage = lazy(() => import('./pages/KnowledgeBases'));
 const AnalyticsPage = lazy(() => import('./pages/Analytics'));
+const AnalyticsRagasDetailPage = lazy(() => import('./pages/AnalyticsRagasDetail'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
 const UsersPage = lazy(() => import('./pages/Users'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
@@ -382,6 +383,14 @@ const AppLayout: React.FC = () => {
                   element={
                     <ProtectedRoute>
                       <AnalyticsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/analytics/ragas"
+                  element={
+                    <ProtectedRoute>
+                      <AnalyticsRagasDetailPage />
                     </ProtectedRoute>
                   }
                 />
