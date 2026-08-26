@@ -1,23 +1,25 @@
+import AppTable from '../components/AppTable';
+
 import React, { useCallback, useEffect, useState } from 'react';
 import AppModal from '../components/AppModal';
 import {
-  App as AntApp, 
-  Button, 
-  Card, 
-  DatePicker, 
-  Empty, 
-  Form, 
-  Input, 
-  List, 
-  Popconfirm, 
-  Select, 
-  Space, 
-  Switch, 
-  Table, 
-  Tabs, 
-  Tag, 
-  Tooltip, 
-  Typography} from 'antd';
+  App as AntApp,
+  Button,
+  Card,
+  DatePicker,
+  Empty,
+  Form,
+  Input,
+  List,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Tabs,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
 import {
   DeleteOutlined,
   EditOutlined,
@@ -75,7 +77,7 @@ const roleMeta: Record<User['role'], { color: string; text: string }> = {
 /** 部门选择项：空值表示未分配 */
 const deptOptions = (departments: Department[]) => [
   { value: '', label: '未分配' },
-  ...departments.map(d => ({ value: d.id, label: d.name })),
+  ...departments.map((d) => ({ value: d.id, label: d.name })),
 ];
 
 /** 操作类型中文映射（与后端 /api/audit/actions 同源，前端常量兜底/展示） */
@@ -246,14 +248,16 @@ const UsersPage: React.FC = () => {
         // 部门管理员创建的用户强制归属本部门（后端同样强制覆盖）
         data.department_id = isDeptAdmin
           ? (me?.department_id ?? null)
-          : (values.department_id || null);
+          : values.department_id || null;
         await createUser(data);
         message.success('用户创建成功');
       }
       setUserModalOpen(false);
       await loadUsers();
     } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || (editingUser ? '更新失败' : '创建失败'));
+      message.error(
+        asApiError(e).response?.data?.detail || (editingUser ? '更新失败' : '创建失败'),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -334,7 +338,9 @@ const UsersPage: React.FC = () => {
       setDeptModalOpen(false);
       await loadDepartments();
     } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || (editingDept ? '更新失败' : '创建失败'));
+      message.error(
+        asApiError(e).response?.data?.detail || (editingDept ? '更新失败' : '创建失败'),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -389,7 +395,7 @@ const UsersPage: React.FC = () => {
     // 操作类型下拉（/api/audit/actions，一次加载；仅 super_admin 可见审计）
     if (me?.role !== 'super_admin') return;
     listAuditActions()
-      .then(res => setActionOptions(res.data.actions))
+      .then((res) => setActionOptions(res.data.actions))
       .catch(() => message.error('加载操作类型列表失败'));
   }, [message, me?.role]);
 
@@ -470,9 +476,7 @@ const UsersPage: React.FC = () => {
       ellipsis: true,
       render: (_, row) => {
         const type = targetTypeLabelMap[row.target_type ?? ''] ?? row.target_type ?? '';
-        return row.target_name
-          ? `${type ? `${type} · ` : ''}${row.target_name}`
-          : (type || '-');
+        return row.target_name ? `${type ? `${type} · ` : ''}${row.target_name}` : type || '-';
       },
     },
     {
@@ -521,8 +525,8 @@ const UsersPage: React.FC = () => {
       title: '部门',
       key: 'department',
       width: 160,
-      render: (_, row) => (isDeptAdmin
-        ? (
+      render: (_, row) =>
+        isDeptAdmin ? (
           <Text type="secondary">{row.department_name || '未分配'}</Text>
         ) : (
           <Select
@@ -531,9 +535,9 @@ const UsersPage: React.FC = () => {
             value={row.department_id ?? ''}
             disabled={updatingId === row.id}
             options={deptOptions(departments)}
-            onChange={v => handleChangeDepartment(row, v)}
+            onChange={(v) => handleChangeDepartment(row, v)}
           />
-        )),
+        ),
     },
     {
       title: '状态',
@@ -548,7 +552,7 @@ const UsersPage: React.FC = () => {
             checkedChildren="启用"
             unCheckedChildren="禁用"
             disabled={switchDisabled}
-            onChange={checked => {
+            onChange={(checked) => {
               // 启用：直接执行并轻提示；禁用：走下方 Popconfirm 二次确认
               if (checked) void handleToggleStatus(row, true);
             }}
@@ -589,11 +593,7 @@ const UsersPage: React.FC = () => {
         return (
           <Space>
             <Tooltip title="查看画像（只读）">
-              <Button
-                size="small"
-                icon={<ProfileOutlined />}
-                onClick={() => openMemoryView(row)}
-              />
+              <Button size="small" icon={<ProfileOutlined />} onClick={() => openMemoryView(row)} />
             </Tooltip>
             <Tooltip title="编辑">
               <Button size="small" icon={<EditOutlined />} onClick={() => openEditUser(row)} />
@@ -661,9 +661,11 @@ const UsersPage: React.FC = () => {
     <div>
       <PageHeader
         title={isDeptAdmin ? '部门成员管理' : '用户管理'}
-        description={isDeptAdmin
-          ? '管理本部门成员账号与部门信息（数据与其他部门隔离）'
-          : '管理用户账号、部门归属与操作审计日志（超级管理员全量）'}
+        description={
+          isDeptAdmin
+            ? '管理本部门成员账号与部门信息（数据与其他部门隔离）'
+            : '管理用户账号、部门归属与操作审计日志（超级管理员全量）'
+        }
       />
       <Tabs
         defaultActiveKey="users"
@@ -673,12 +675,18 @@ const UsersPage: React.FC = () => {
             label: isDeptAdmin ? '本部门成员' : '用户管理',
             children: (
               <Card
-                title={isDeptAdmin
-                  ? `本部门成员（${me?.department_name || '未分配'}）`
-                  : '用户列表'}
+                title={
+                  isDeptAdmin ? `本部门成员（${me?.department_name || '未分配'}）` : '用户列表'
+                }
                 extra={
                   <Space>
-                    <Button icon={<ReloadOutlined />} onClick={() => { loadUsers(); loadDepartments(); }}>
+                    <Button
+                      icon={<ReloadOutlined />}
+                      onClick={() => {
+                        loadUsers();
+                        loadDepartments();
+                      }}
+                    >
                       刷新
                     </Button>
                     {me?.role === 'super_admin' && (
@@ -692,7 +700,7 @@ const UsersPage: React.FC = () => {
                   </Space>
                 }
               >
-                <Table
+                <AppTable
                   dataSource={users}
                   columns={userColumns}
                   rowKey="id"
@@ -700,6 +708,7 @@ const UsersPage: React.FC = () => {
                   pagination={{ pageSize: 10 }}
                   scroll={{ x: 980 }}
                   className="table-zebra"
+                  divider
                 />
               </Card>
             ),
@@ -723,100 +732,119 @@ const UsersPage: React.FC = () => {
                   </Space>
                 }
               >
-                <Table
+                <AppTable
                   dataSource={departments}
                   columns={deptColumns}
                   rowKey="id"
                   loading={deptsLoading}
                   pagination={{ pageSize: 10 }}
                   className="table-zebra"
+                  divider
                 />
               </Card>
             ),
           },
           // 审计日志仅超级管理员可见（dept_admin 无审计权限）
-          ...(me?.role === 'super_admin' ? [{
-            key: 'audit',
-            label: '审计日志',
-            children: (
-              <Card
-                title="审计操作日志"
-                extra={
-                  <Button
-                    icon={<ReloadOutlined />}
-                    onClick={() => { loadAuditLogs(); listAuditActions()
-                      .then(res => setActionOptions(res.data.actions))
-                      .catch(() => undefined); }}
-                  >
-                    刷新
-                  </Button>
-                }
-              >
-                <Space wrap style={{ marginBottom: 16 }}>
-                  <Select
-                    placeholder="操作类型"
-                    allowClear
-                    showSearch
-                    style={{ width: 200 }}
-                    value={auditFilters.action}
-                    options={actionOptions.map(o => ({
-                      value: o.action,
-                      label: `${o.label}（${o.action}）`,
-                    }))}
-                    onChange={v => setAuditFilters(f => ({ ...f, action: v }))}
-                  />
-                  <Input
-                    placeholder="用户名"
-                    allowClear
-                    style={{ width: 140 }}
-                    value={auditFilters.username}
-                    onChange={e => setAuditFilters(f => ({ ...f, username: e.target.value }))}
-                    onPressEnter={handleAuditSearch}
-                  />
-                  <DatePicker.RangePicker
-                    showTime
-                    style={{ width: 340 }}
-                    value={auditFilters.timeRange}
-                    onChange={v => setAuditFilters(f => ({
-                      ...f,
-                      timeRange: v as [Dayjs, Dayjs] | null,
-                    }))}
-                  />
-                  <Button type="primary" icon={<SearchOutlined />} onClick={handleAuditSearch}>
-                    搜索
-                  </Button>
-                  <Button onClick={handleAuditReset}>重置</Button>
-                </Space>
-                <Table
-                  dataSource={auditLogs}
-                  columns={auditColumns}
-                  rowKey="id"
-                  loading={auditLoading}
-                  scroll={{ x: 1100 }}
-                  className="table-zebra"
-                  expandable={{
-                    expandedRowRender: row => (
-                      <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                        {prettyDetail(row.detail)}
-                      </pre>
-                    ),
-                    rowExpandable: row => !!row.detail,
-                  }}
-                  pagination={{
-                    current: auditPage,
-                    pageSize: auditPageSize,
-                    total: auditTotal,
-                    showSizeChanger: true,
-                    showTotal: t => `共 ${t} 条`,
-                    onChange: (p, ps) => {
-                      setAuditPage(p);
-                      setAuditPageSize(ps);
-                    },
-                  }}
-                />
-              </Card>
-            ),
-          }] : []),
+          ...(me?.role === 'super_admin'
+            ? [
+                {
+                  key: 'audit',
+                  label: '审计日志',
+                  children: (
+                    <Card
+                      title="审计操作日志"
+                      extra={
+                        <Button
+                          icon={<ReloadOutlined />}
+                          onClick={() => {
+                            loadAuditLogs();
+                            listAuditActions()
+                              .then((res) => setActionOptions(res.data.actions))
+                              .catch(() => undefined);
+                          }}
+                        >
+                          刷新
+                        </Button>
+                      }
+                    >
+                      <Space wrap style={{ marginBottom: 16 }}>
+                        <Select
+                          placeholder="操作类型"
+                          allowClear
+                          showSearch
+                          style={{ width: 200 }}
+                          value={auditFilters.action}
+                          options={actionOptions.map((o) => ({
+                            value: o.action,
+                            label: `${o.label}（${o.action}）`,
+                          }))}
+                          onChange={(v) => setAuditFilters((f) => ({ ...f, action: v }))}
+                        />
+                        <Input
+                          placeholder="用户名"
+                          allowClear
+                          style={{ width: 140 }}
+                          value={auditFilters.username}
+                          onChange={(e) =>
+                            setAuditFilters((f) => ({ ...f, username: e.target.value }))
+                          }
+                          onPressEnter={handleAuditSearch}
+                        />
+                        <DatePicker.RangePicker
+                          showTime
+                          style={{ width: 340 }}
+                          value={auditFilters.timeRange}
+                          onChange={(v) =>
+                            setAuditFilters((f) => ({
+                              ...f,
+                              timeRange: v as [Dayjs, Dayjs] | null,
+                            }))
+                          }
+                        />
+                        <Button
+                          type="primary"
+                          icon={<SearchOutlined />}
+                          onClick={handleAuditSearch}
+                        >
+                          搜索
+                        </Button>
+                        <Button onClick={handleAuditReset}>重置</Button>
+                      </Space>
+                      <AppTable
+                        dataSource={auditLogs}
+                        columns={auditColumns}
+                        rowKey="id"
+                        loading={auditLoading}
+                        scroll={{ x: 1100 }}
+                        className="table-zebra"
+                        expandable={{
+                          expandedRowRender: (row) => (
+                            <pre
+                              style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+                            >
+                              {prettyDetail(row.detail)}
+                            </pre>
+                          ),
+                          rowExpandable: (row) => !!row.detail,
+                        }}
+                        pagination={{
+                          current: auditPage,
+                          pageSize: auditPageSize,
+                          total: auditTotal,
+                          showSizeChanger: true,
+                          showTotal: (t) => `共 ${t} 条`,
+                          onChange: (p, ps) => {
+                            setAuditPage(p);
+                            setAuditPageSize(ps);
+                          },
+                        }}
+                        divider
+                      />
+                    </Card>
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
 
@@ -851,24 +879,22 @@ const UsersPage: React.FC = () => {
           >
             <Input placeholder="例如：张三" maxLength={64} />
           </Form.Item>
-          <Form.Item
-            name="role"
-            label="角色"
-            rules={[{ required: true, message: '请选择角色' }]}
-          >
+          <Form.Item name="role" label="角色" rules={[{ required: true, message: '请选择角色' }]}>
             <Select
               // 部门管理员仅可授予 user/dept_admin；编辑自己时不可改动角色（后端 400）
               disabled={isDeptAdmin && editingUser?.id === me?.id}
-              options={isDeptAdmin
-                ? [
-                  { value: 'dept_admin', label: '部门管理员' },
-                  { value: 'user', label: '普通用户' },
-                ]
-                : [
-                  { value: 'super_admin', label: '超级管理员' },
-                  { value: 'dept_admin', label: '部门管理员' },
-                  { value: 'user', label: '普通用户' },
-                ]}
+              options={
+                isDeptAdmin
+                  ? [
+                      { value: 'dept_admin', label: '部门管理员' },
+                      { value: 'user', label: '普通用户' },
+                    ]
+                  : [
+                      { value: 'super_admin', label: '超级管理员' },
+                      { value: 'dept_admin', label: '部门管理员' },
+                      { value: 'user', label: '普通用户' },
+                    ]
+              }
             />
           </Form.Item>
           {!isDeptAdmin && (
@@ -912,7 +938,10 @@ const UsersPage: React.FC = () => {
               tooltip="留空则不修改密码"
               rules={[...passwordStrengthRules()]}
             >
-              <Input.Password placeholder="留空则不修改密码，重置须至少 8 位且含字母和数字" maxLength={128} />
+              <Input.Password
+                placeholder="留空则不修改密码，重置须至少 8 位且含字母和数字"
+                maxLength={128}
+              />
             </Form.Item>
           )}
         </Form>
@@ -932,7 +961,11 @@ const UsersPage: React.FC = () => {
         cancelText="取消"
       >
         <Form form={deptForm} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入部门名称' }]}>
+          <Form.Item
+            name="name"
+            label="名称"
+            rules={[{ required: true, message: '请输入部门名称' }]}
+          >
             <Input placeholder="例如：研发部" maxLength={64} />
           </Form.Item>
           <Form.Item name="description" label="描述">
@@ -957,9 +990,7 @@ const UsersPage: React.FC = () => {
         title={`用户画像 - ${memoryViewUser?.username ?? ''}`}
         open={memoryModalOpen}
         onCancel={() => setMemoryModalOpen(false)}
-        footer={
-          <Button onClick={() => setMemoryModalOpen(false)}>关闭</Button>
-        }
+        footer={<Button onClick={() => setMemoryModalOpen(false)}>关闭</Button>}
         width={560}
       >
         {memoryViewLoading ? (
@@ -1001,10 +1032,7 @@ const UsersPage: React.FC = () => {
                 )}
               />
             ) : (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="暂无画像条目"
-              />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无画像条目" />
             )}
             <Text type="secondary" style={{ fontSize: 12 }}>
               管理员仅可查看（只读）；编辑/删除需用户本人登录个人设置页操作

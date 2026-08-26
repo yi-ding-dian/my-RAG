@@ -502,6 +502,68 @@ body {
   background: #f0f6ff !important;
 }
 
+/* ---------- AppTable 主题色列分隔线（divider 参数启用） ----------
+   方案 1（表头底色 + 淡线 + 斑马纹）：
+   - 表头：浅主题色底（9%，非常淡）+ 底线 30%（与其他线一致）——分层靠底色而非粗线
+   - 列线：30% 淡主题色（竖线，能区分列）
+   - 行线：20% 很淡（行区分主要靠 table-zebra 斑马纹 + hover 高亮，行线次辅助）
+   - 底部封边：25%（柔和）
+   注意：antd 表头 th 自带 box-shadow 内边框会叠加虚影，box-shadow: none 清除。
+   只作用于 .apptable-divider。 */
+.apptable-divider .ant-table-thead > tr > th {
+  border-right: 1px solid color-mix(in srgb, var(--brand-primary, #2563eb) 30%, transparent) !important;
+  /* 表头底线：30%，与列线一致 */
+  border-bottom: 1px solid color-mix(in srgb, var(--brand-primary, #2563eb) 30%, transparent) !important;
+  box-shadow: none !important;
+  /* 表头浅主题色底：9% 主题色混合白底（深/浅主题自适应，区分表头与数据区） */
+  background: color-mix(in srgb, var(--brand-primary, #2563eb) 9%, white) !important;
+}
+.apptable-divider .ant-table-tbody > tr > td {
+  border-right: 1px solid color-mix(in srgb, var(--brand-primary, #2563eb) 30%, transparent) !important;
+  /* 行分隔线：20% 很淡（行间区分主要靠斑马纹） */
+  border-bottom: 1px solid color-mix(in srgb, var(--brand-primary, #2563eb) 20%, transparent) !important;
+}
+/* 表格底部封边：25% 柔和（非实色） */
+.apptable-divider .ant-table-tbody > tr:last-child > td {
+  border-bottom: 1px solid color-mix(in srgb, var(--brand-primary, #2563eb) 25%, transparent) !important;
+}
+/* 右缘不画线（与操作列外边界一致） */
+.apptable-divider .ant-table-thead > tr > th:last-child,
+.apptable-divider .ant-table-tbody > tr > td:last-child {
+  border-right: none !important;
+}
+
+/* 暗色主题：表头底色改用 dark 混合（深色 + 主题色），行线/hover 也适配 */
+[data-theme='dark'] .apptable-divider .ant-table-thead > tr > th {
+  background: color-mix(in srgb, var(--brand-primary, #2563eb) 12%, #141414) !important;
+}
+
+/* 列宽拖拽跨列高亮：th 打 data-resize-side 标记（AppTable 注入）；
+   left=拖拽中左列（右缘 10px 浅块）、right=右邻列（左缘 10px 浅块）——
+   与手柄探测区左右对称（右半边被下个 th 盖住的问题用右邻 th ::before 补上）。
+   颜色浅主题色（colorMix 15%），悬停/拖拽时才有（拖拽中清空则消失）。 */
+.apptable-divider .ant-table-thead > tr > th[data-resize-side] {
+  box-shadow: none;
+}
+.apptable-divider .ant-table-thead > tr > th[data-resize-side='left']::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background: color-mix(in srgb, var(--brand-primary, #2563eb) 15%, transparent);
+}
+.apptable-divider .ant-table-thead > tr > th[data-resize-side='right']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background: color-mix(in srgb, var(--brand-primary, #2563eb) 15%, transparent);
+}
+
 /* ---------- 回答正文表格（MarkdownTable：管道/HTML 表格轻量渲染） ---------- */
 .md-table-wrap {
   overflow-x: auto;      /* 超宽表格横向滚动，不挤破气泡 */
@@ -1212,15 +1274,8 @@ mark:not(.citation-highlight) {
   position: relative;
   background-clip: padding-box;
 }
-.react-resizable-handle {
-  position: absolute;
-  right: -5px;
-  bottom: 0;
-  z-index: 1;
-  width: 10px;
-  height: 100%;
-  cursor: col-resize;
-}
+/* 列宽拖拽手柄：位置/样式已由 ResizableTitle.tsx 内联控制（主题色竖线 +
+   hover/拖拽反馈），此处仅保留 class 兜底，不再重复定义以避免与内联冲突 */
 
 /* ============================================================
    智能解析引导向导：跟随全局主题（.parse-config-modal / .spw-*）

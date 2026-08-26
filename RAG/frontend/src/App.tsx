@@ -186,7 +186,10 @@ const AppLayout: React.FC = () => {
   useEffect(() => setAvatarFailed(false), [user?.avatar]);
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    // height 锁定 100vh（而非 minHeight）：内容超高时由 Content 内部滚动，
+    // 页面整体（html 视口层）永不产生滚动 → 左侧 Sider 固定在位，
+    // 不会随右侧内容滚动。overflow hidden 兜底防任何子元素撑破视口
+    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
       <Sider
         theme="light"
         width={220}
@@ -329,13 +332,13 @@ const AppLayout: React.FC = () => {
         open={user?.must_change_password === true}
         onSuccess={() => { void refreshUser(); }}
       />
-      <Layout>
+      <Layout style={{ overflow: 'auto' }}>
         <Content
           style={{
             padding: 24,
             background: token.colorBgLayout,
-            overflow: 'auto',
-            minHeight: '100vh',
+            // 高度由外层 Layout（height:100vh）锁定，Content 内部滚动；
+            // 去掉 minHeight:100vh（它会把内容撑高触发 html 层滚动）
           }}
         >
           <div key={location.pathname} className="page-fade" style={{ minHeight: '100%' }}>

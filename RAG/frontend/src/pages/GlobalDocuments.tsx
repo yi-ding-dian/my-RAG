@@ -1,3 +1,5 @@
+import AppTable from '../components/AppTable';
+
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   App as AntApp,
@@ -11,18 +13,12 @@ import {
   Select,
   Space,
   Spin,
-  Table,
   Tag,
   Tooltip,
   Typography,
   theme,
 } from 'antd';
-import {
-  BookOutlined,
-  DeleteOutlined,
-  EditOutlined,
-  ReloadOutlined,
-} from '@ant-design/icons';
+import { BookOutlined, DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import {
@@ -85,8 +81,10 @@ const parserConfigSummary = (
   const parts: string[] = [];
   if (config.chunk_size != null) parts.push(`块大小 ${config.chunk_size}`);
   if (config.overlap != null) parts.push(`重叠 ${config.overlap}`);
-  if (method === 'title' && config.split_level != null) parts.push(`标题层级 H${config.split_level}`);
-  if (method === 'regex' && config.regex_pattern) parts.push(`正则 ${String(config.regex_pattern)}`);
+  if (method === 'title' && config.split_level != null)
+    parts.push(`标题层级 H${config.split_level}`);
+  if (method === 'regex' && config.regex_pattern)
+    parts.push(`正则 ${String(config.regex_pattern)}`);
   return parts.length > 0 ? parts.join(' / ') : null;
 };
 
@@ -146,16 +144,15 @@ const GlobalDocumentsPage: React.FC = () => {
 
   const loadMeta = useCallback(async () => {
     try {
-      const [deptRes, kbRes] = await Promise.all([
-        listDepartments(),
-        listKbs(),
-      ]);
+      const [deptRes, kbRes] = await Promise.all([listDepartments(), listKbs()]);
       setDepartments(deptRes.data);
-      setKbOptions(kbRes.data.map(k => ({
-        value: k.id,
-        label: k.name,
-        department_id: k.department_id ?? null,
-      })));
+      setKbOptions(
+        kbRes.data.map((k) => ({
+          value: k.id,
+          label: k.name,
+          department_id: k.department_id ?? null,
+        })),
+      );
     } catch {
       message.error('加载部门/知识库列表失败');
     }
@@ -198,14 +195,14 @@ const GlobalDocumentsPage: React.FC = () => {
   // ---------- 分组（当前页数据内按 部门 → 知识库） ----------
 
   const groups = useMemo<DeptGroup[]>(() => {
-    const deptNameById = new Map(departments.map(d => [d.id, d.name]));
+    const deptNameById = new Map(departments.map((d) => [d.id, d.name]));
     // 稳定顺序：部门下拉顺序（创建时间序）+ 未分配最后
-    const order = [...departments.map(d => d.id), UNASSIGNED];
+    const order = [...departments.map((d) => d.id), UNASSIGNED];
     const map = new Map<string, DeptGroup>();
     for (const key of order) {
       map.set(key, {
         deptKey: key,
-        deptName: key === UNASSIGNED ? '未分配部门' : deptNameById.get(key) ?? '未知部门',
+        deptName: key === UNASSIGNED ? '未分配部门' : (deptNameById.get(key) ?? '未知部门'),
         kbs: [],
       });
     }
@@ -217,21 +214,19 @@ const GlobalDocumentsPage: React.FC = () => {
         kbs: [],
       };
       if (!map.has(deptKey)) map.set(deptKey, group);
-      let kbGroup = group.kbs.find(k => k.kbId === item.kb_id);
+      let kbGroup = group.kbs.find((k) => k.kbId === item.kb_id);
       if (!kbGroup) {
         kbGroup = { kbId: item.kb_id, kbName: item.kb_name, docs: [] };
         group.kbs.push(kbGroup);
       }
       kbGroup.docs.push(item);
     }
-    return order
-      .map(key => map.get(key)!)
-      .filter(g => g.kbs.length > 0);
+    return order.map((key) => map.get(key)!).filter((g) => g.kbs.length > 0);
   }, [items, departments]);
 
   // 数据变化（筛选/翻页）后面板全部展开（defaultActiveKey 首次渲染后不再生效）
   useEffect(() => {
-    setOpenKeys(groups.map(g => g.deptKey));
+    setOpenKeys(groups.map((g) => g.deptKey));
   }, [groups]);
 
   // ---------- 操作 ----------
@@ -316,11 +311,7 @@ const GlobalDocumentsPage: React.FC = () => {
       width: 170,
       render: (_, row) => (
         <Space size="small">
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => setRenameDoc(row)}
-          >
+          <Button size="small" icon={<EditOutlined />} onClick={() => setRenameDoc(row)}>
             重命名
           </Button>
           <Popconfirm
@@ -338,7 +329,7 @@ const GlobalDocumentsPage: React.FC = () => {
   ];
 
   // 知识库下拉联动：选部门后仅显示该部门（含未分配）的知识库
-  const filteredKbOptions = kbOptions.filter(k =>
+  const filteredKbOptions = kbOptions.filter((k) =>
     !departmentId
       ? true
       : departmentId === UNASSIGNED
@@ -346,7 +337,7 @@ const GlobalDocumentsPage: React.FC = () => {
         : k.department_id === departmentId,
   );
 
-  const collapseItems = groups.map(g => {
+  const collapseItems = groups.map((g) => {
     const count = g.kbs.reduce((s, k) => s + k.docs.length, 0);
     return {
       key: g.deptKey,
@@ -358,7 +349,7 @@ const GlobalDocumentsPage: React.FC = () => {
       ),
       children: (
         <div>
-          {g.kbs.map(kbGroup => (
+          {g.kbs.map((kbGroup) => (
             <div key={kbGroup.kbId} style={{ marginBottom: 16 }}>
               <div style={{ marginBottom: 8 }}>
                 <Space size={6}>
@@ -367,7 +358,7 @@ const GlobalDocumentsPage: React.FC = () => {
                   <Tag>{kbGroup.docs.length}</Tag>
                 </Space>
               </div>
-              <Table
+              <AppTable
                 size="small"
                 dataSource={kbGroup.docs}
                 columns={columns}
@@ -375,6 +366,7 @@ const GlobalDocumentsPage: React.FC = () => {
                 pagination={false}
                 scroll={{ x: 900 }}
                 className="table-zebra"
+                divider
               />
             </div>
           ))}
@@ -402,7 +394,7 @@ const GlobalDocumentsPage: React.FC = () => {
                 allowClear
                 placeholder="全部部门"
                 options={[
-                  ...departments.map(d => ({ value: d.id, label: d.name })),
+                  ...departments.map((d) => ({ value: d.id, label: d.name })),
                   { value: UNASSIGNED, label: '未分配部门' },
                 ]}
               />
@@ -413,12 +405,12 @@ const GlobalDocumentsPage: React.FC = () => {
               style={{ width: 200 }}
               allowClear
               placeholder="全部知识库"
-              options={filteredKbOptions.map(k => ({ value: k.value, label: k.label }))}
+              options={filteredKbOptions.map((k) => ({ value: k.value, label: k.label }))}
             />
             <Segmented
               size="middle"
               value={statusFilter}
-              onChange={v => setStatusFilter(v as StatusFilter)}
+              onChange={(v) => setStatusFilter(v as StatusFilter)}
               options={statusFilterOptions}
             />
             <Input.Search
@@ -426,8 +418,8 @@ const GlobalDocumentsPage: React.FC = () => {
               placeholder="搜索文件名"
               style={{ width: 200 }}
               value={keywordInput}
-              onChange={e => setKeywordInput(e.target.value)}
-              onSearch={v => {
+              onChange={(e) => setKeywordInput(e.target.value)}
+              onSearch={(v) => {
                 setKeyword(v.trim());
               }}
             />
@@ -456,7 +448,7 @@ const GlobalDocumentsPage: React.FC = () => {
             <Collapse
               items={collapseItems}
               activeKey={openKeys}
-              onChange={keys => setOpenKeys(keys as string[])}
+              onChange={(keys) => setOpenKeys(keys as string[])}
               size="small"
             />
             <div style={{ marginTop: 16, textAlign: 'right' }}>
@@ -466,7 +458,7 @@ const GlobalDocumentsPage: React.FC = () => {
                 total={total}
                 showSizeChanger
                 pageSizeOptions={[20, 50, 100, 200]}
-                showTotal={t => `共 ${t} 条`}
+                showTotal={(t) => `共 ${t} 条`}
                 onChange={(p, ps) => {
                   setPage(p);
                   setPageSize(ps);
@@ -484,7 +476,9 @@ const GlobalDocumentsPage: React.FC = () => {
         doc={renameDoc}
         kbId={renameDoc?.kb_id}
         onCancel={() => setRenameDoc(null)}
-        onSuccess={() => { void load(true); }}
+        onSuccess={() => {
+          void load(true);
+        }}
       />
     </div>
   );

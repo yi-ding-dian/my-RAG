@@ -7,13 +7,13 @@ import {
   Popconfirm,
   Space,
   Spin,
-  Table,
   Tag,
   Tooltip,
   Typography,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import AppTable from '../AppTable';
 import {
   ApartmentOutlined,
   CheckOutlined,
@@ -125,8 +125,10 @@ const methodTooltipContent = (
       if (config.chunk_size != null) params.push(`块大小 ${config.chunk_size}`);
       if (config.overlap != null) params.push(`重叠 ${config.overlap}`);
       if (method === 'naive' && config.delimiter) params.push(`分隔符 ${String(config.delimiter)}`);
-      if (method === 'title' && config.split_level != null) params.push(`标题层级 H${config.split_level}`);
-      if (method === 'regex' && config.regex_pattern) params.push(`正则 ${String(config.regex_pattern)}`);
+      if (method === 'title' && config.split_level != null)
+        params.push(`标题层级 H${config.split_level}`);
+      if (method === 'regex' && config.regex_pattern)
+        params.push(`正则 ${String(config.regex_pattern)}`);
     }
     // 思考模式：非默认（关闭）时展示（图谱抽取/上下文摘要/Agentic 分块共用）
     if (config.thinking_mode && config.thinking_mode !== 'disabled') {
@@ -346,9 +348,7 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
         // Tooltip：方式语义 + 实际生效的参数摘要（qa/agentic 无块大小/重叠；
         // 版面识别/降级仅 pdf/docx 展示），无参数配置时也展示方式语义
         const parseTag = (
-          <Tooltip title={methodTooltipContent(v, row.parser_config, row.file_type)}>
-            {tag}
-          </Tooltip>
+          <Tooltip title={methodTooltipContent(v, row.parser_config, row.file_type)}>{tag}</Tooltip>
         );
         // 已构建知识图谱的文档：解析方式后追加紫色"图谱"标签（tooltip 说明）
         const graphTag =
@@ -403,7 +403,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
               </Button>
             </Tooltip>
           )}
-          {canManage && parseableStatuses.includes(row.status) &&
+          {canManage &&
+            parseableStatuses.includes(row.status) &&
             (row.status === 'ingested' ? (
               <Popconfirm
                 key="reparse"
@@ -477,7 +478,7 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
   ];
 
   return (
-    <Table
+    <AppTable
       dataSource={docs}
       columns={columns}
       rowKey="id"
@@ -504,23 +505,19 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
             }
       }
       locale={{
-        emptyText:
-          totalIsEmpty ? (
-            <AppEmpty
-              title="暂无文档"
-              description="点击上方上传条上传文件，或从 URL 导入网页内容"
-            />
-          ) : keyword && docs.length === 0 ? (
-            <AppEmpty
-              title="无匹配文档"
-              description={`没有文件名包含「${keyword}」的文档，可清空搜索词或切换状态筛选`}
-            />
-          ) : (
-            <AppEmpty
-              title="没有符合条件的文档"
-              description="当前筛选条件下暂无文档，可切换其他状态筛选"
-            />
-          ),
+        emptyText: totalIsEmpty ? (
+          <AppEmpty title="暂无文档" description="点击上方上传条上传文件，或从 URL 导入网页内容" />
+        ) : keyword && docs.length === 0 ? (
+          <AppEmpty
+            title="无匹配文档"
+            description={`没有文件名包含「${keyword}」的文档，可清空搜索词或切换状态筛选`}
+          />
+        ) : (
+          <AppEmpty
+            title="没有符合条件的文档"
+            description="当前筛选条件下暂无文档，可切换其他状态筛选"
+          />
+        ),
       }}
       scroll={{ x: 1100 }}
       className="table-zebra"
@@ -642,12 +639,16 @@ const TrashView: React.FC<TrashViewProps> = ({ kbId, onBack, onChanged }) => {
         </Space>
       }
     >
-      <Table
+      <AppTable
         dataSource={trashDocs}
         rowKey="id"
         loading={trashLoading}
         pagination={{ pageSize: 10 }}
-        locale={{ emptyText: <AppEmpty title="回收站为空" description="已删除的文档会出现在这里，可在 30 天内恢复" /> }}
+        locale={{
+          emptyText: (
+            <AppEmpty title="回收站为空" description="已删除的文档会出现在这里，可在 30 天内恢复" />
+          ),
+        }}
         scroll={{ x: 800 }}
         className="table-zebra"
         columns={[
@@ -700,6 +701,7 @@ const TrashView: React.FC<TrashViewProps> = ({ kbId, onBack, onChanged }) => {
             ),
           },
         ]}
+        divider
       />
     </Card>
   );

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Card, Empty, Input, Radio, Space, Spin, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Input, Radio, Space, Spin, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import AppTable from './AppTable';
 // ECharts 按需引入：仅 Graph 系列 + Tooltip/Legend 组件 + 标签防重叠 + Canvas 渲染器（控制包体，避免全量）
 import * as echarts from 'echarts/core';
 import { GraphChart } from 'echarts/charts';
@@ -122,7 +123,7 @@ const typeColor = (type: string, order: number): string => {
 
 /** 关联 chunk 文本（按 chunk_index 反查；缺块显示占位） */
 const refText = (chunks: GraphChunkItem[], chunkIndex: number): string => {
-  const found = chunks.find(c => c.index === chunkIndex);
+  const found = chunks.find((c) => c.index === chunkIndex);
   if (!found) return '';
   const t = found.text.trim();
   return t.length > 200 ? `${t.slice(0, 200)}…` : t;
@@ -150,9 +151,7 @@ const renderChunkRefs = (entity: GraphEntity, chunks: GraphChunkItem[]) => {
               lineHeight: 1.6,
             }}
           >
-            {refText(chunks, ref.chunk_index) || (
-              <Text type="secondary">关联切块文本不可用</Text>
-            )}
+            {refText(chunks, ref.chunk_index) || <Text type="secondary">关联切块文本不可用</Text>}
           </div>
         </div>
       ))}
@@ -235,11 +234,17 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
     const kw = searchKeyword.trim().toLowerCase();
     if (!kw) return null;
 
-    const matched = graph.entities.filter(e => e.name.toLowerCase().includes(kw));
+    const matched = graph.entities.filter((e) => e.name.toLowerCase().includes(kw));
     if (matched.length === 0) {
-      return { matched, nodeIds: new Set<string>(), nodes: [] as GraphEntity[], edges: [] as GraphRelation[], truncated: false };
+      return {
+        matched,
+        nodeIds: new Set<string>(),
+        nodes: [] as GraphEntity[],
+        edges: [] as GraphRelation[],
+        truncated: false,
+      };
     }
-    const centerIds = new Set(matched.map(e => e.id));
+    const centerIds = new Set(matched.map((e) => e.id));
 
     // 从中心集合沿无向关系向外扩展 layers 层
     const expand = (start: Set<string>, layers: number): Set<string> => {
@@ -251,7 +256,7 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
           if (ids.has(r.target) && !ids.has(r.source)) next.add(r.source);
         }
         if (next.size === 0) break;
-        next.forEach(id => ids.add(id));
+        next.forEach((id) => ids.add(id));
       }
       return ids;
     };
@@ -264,18 +269,20 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
       truncated = true;
       if (nodeIds.size > MAX_SUBNET_NODES) {
         const sortedNeighbors = [...nodeIds]
-          .filter(id => !centerIds.has(id))
+          .filter((id) => !centerIds.has(id))
           .sort((a, b) => (entityById.get(b)?.count ?? 0) - (entityById.get(a)?.count ?? 0));
         nodeIds = new Set<string>(centerIds);
-        sortedNeighbors.slice(0, MAX_SUBNET_NODES - centerIds.size).forEach(id => nodeIds.add(id));
+        sortedNeighbors
+          .slice(0, MAX_SUBNET_NODES - centerIds.size)
+          .forEach((id) => nodeIds.add(id));
       }
     }
 
     return {
       matched,
       nodeIds,
-      nodes: graph.entities.filter(e => nodeIds.has(e.id)),
-      edges: graph.relations.filter(r => nodeIds.has(r.source) && nodeIds.has(r.target)),
+      nodes: graph.entities.filter((e) => nodeIds.has(e.id)),
+      edges: graph.relations.filter((r) => nodeIds.has(r.source) && nodeIds.has(r.target)),
       truncated,
     };
   }, [graph, searchKeyword, hop, entityById]);
@@ -293,7 +300,7 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
     const viewRelations = isSubnetView ? subnet!.edges : graph.relations;
     if (viewEntities.length === 0) return null;
     // 中心实体 id 集合（子网视图高亮用）
-    const centerIds = isSubnetView ? new Set(subnet!.matched.map(e => e.id)) : new Set<string>();
+    const centerIds = isSubnetView ? new Set(subnet!.matched.map((e) => e.id)) : new Set<string>();
 
     // 实体类型保序去重 → category 索引（图例按类型分组，子网视图只含子网内类型）
     const typeOrder: string[] = [];
@@ -305,7 +312,7 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
       }
     }
 
-    const nodes = viewEntities.map(e => {
+    const nodes = viewEntities.map((e) => {
       const baseSize = Math.max(14, Math.min(36, 10 + Math.sqrt(Math.max(1, e.count)) * 4.2));
       const isCenter = centerIds.has(e.id);
       const node: Record<string, unknown> = {
@@ -331,7 +338,7 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
       return node;
     });
 
-    const edges = viewRelations.map(r => ({
+    const edges = viewRelations.map((r) => ({
       id: r.id,
       name: r.type, // 线标签显示关系类型（hover 时）
       source: r.source,
@@ -418,7 +425,12 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
             curveness: 0,
           },
           // 线标签：常态隐藏（关系多时保持可读），hover 连线时显示关系类型
-          edgeLabel: { show: false, fontSize: 10, color: isDark ? '#ddd' : '#555', formatter: '{b}' },
+          edgeLabel: {
+            show: false,
+            fontSize: 10,
+            color: isDark ? '#ddd' : '#555',
+            formatter: '{b}',
+          },
           label: {
             show: true,
             position: 'right',
@@ -427,7 +439,7 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
             // 长名称截断，避免标签铺满图面
             formatter: (p: unknown) => {
               const name = asGraphCallbackParams(p).name;
-              return name && name.length > 10 ? `${name.slice(0, 10)}…` : name ?? '';
+              return name && name.length > 10 ? `${name.slice(0, 10)}…` : (name ?? '');
             },
           },
           // 名称标签重叠时自动隐藏（LabelLayout，节点多时保持可读）
@@ -575,12 +587,12 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
           allowClear
           placeholder="搜索实体，查看以它为中心的关系网"
           value={searchKeyword}
-          onChange={e => setSearchKeyword(e.target.value)}
+          onChange={(e) => setSearchKeyword(e.target.value)}
           style={{ width: 320 }}
         />
         {isSearching && (
           <>
-            <Radio.Group size="small" value={hop} onChange={e => setHop(e.target.value as 1 | 2)}>
+            <Radio.Group size="small" value={hop} onChange={(e) => setHop(e.target.value as 1 | 2)}>
               <Radio.Button value={1}>1 层</Radio.Button>
               <Radio.Button value={2}>2 层</Radio.Button>
             </Radio.Group>
@@ -662,7 +674,7 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
           onClose={() => setActiveEntity(null)}
         />
       )}
-      <Table<GraphEntity>
+      <AppTable<GraphEntity>
         size="small"
         rowKey="id"
         dataSource={viewEntities}
@@ -671,19 +683,21 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
         scroll={{ x: 700 }}
         // 点击行展开：显示该实体关联的 chunk 文本（与图节点详情共用渲染）
         expandable={{
-          expandedRowRender: row => (
+          expandedRowRender: (row) => (
             <div style={{ padding: '4px 8px' }}>{renderChunkRefs(row, chunks)}</div>
           ),
         }}
+        divider
       />
       <div style={{ margin: '16px 0 8px', fontWeight: 500 }}>关系</div>
-      <Table<GraphRelation>
+      <AppTable<GraphRelation>
         size="small"
         rowKey="id"
         dataSource={viewRelations}
         columns={relationColumns}
         pagination={{ pageSize: 8, showTotal: (t: number) => `共 ${t} 条关系` }}
         scroll={{ x: 700 }}
+        divider
       />
     </div>
   );

@@ -1,19 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import AppModal from '../components/AppModal';
 import {
-  App as AntApp, 
-  Button, 
-  Form, 
-  Input, 
-  InputNumber, 
-  Popconfirm, 
-  Select, 
-  Space, 
-  Switch, 
-  Table, 
-  Tag, 
-  Tooltip, 
-  Typography} from 'antd';
+  App as AntApp,
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
+import AppTable from '../components/AppTable';
 import {
   CopyOutlined,
   LinkOutlined,
@@ -121,7 +122,7 @@ const ExtQueriesPage: React.FC = () => {
       const [kbRes, deptRes] = await Promise.all([listKbs(), listDepartments()]);
       setKbs(kbRes.data);
       const map: Record<string, string> = {};
-      deptRes.data.forEach(d => {
+      deptRes.data.forEach((d) => {
         map[d.id] = d.name;
       });
       setDeptName(map);
@@ -138,9 +139,9 @@ const ExtQueriesPage: React.FC = () => {
   // 知识库下拉选项：库名 + （部门名 / 全局）
   const kbOptions = useMemo(
     () =>
-      kbs.map(k => ({
+      kbs.map((k) => ({
         value: k.id,
-        label: `${k.name}（${k.department_id ? deptName[k.department_id] ?? '未知部门' : '全局'}）`,
+        label: `${k.name}（${k.department_id ? (deptName[k.department_id] ?? '未知部门') : '全局'}）`,
       })),
     [kbs, deptName],
   );
@@ -148,7 +149,8 @@ const ExtQueriesPage: React.FC = () => {
   const kbNameOf = useCallback(
     (item: ExtQuery) =>
       (item.kb_names ?? []).map(
-        k => `${k.name}${k.department_id ? `（${deptName[k.department_id] ?? '未知部门'}）` : '（全局）'}`,
+        (k) =>
+          `${k.name}${k.department_id ? `（${deptName[k.department_id] ?? '未知部门'}）` : '（全局）'}`,
       ),
     [deptName],
   );
@@ -252,16 +254,15 @@ const ExtQueriesPage: React.FC = () => {
     {
       title: '名称',
       dataIndex: 'name',
-      render: (name: string) => (
-        <Typography.Text strong>{name}</Typography.Text>
-      ),
+      width: 260,
+      render: (name: string) => <Typography.Text strong>{name}</Typography.Text>,
     },
     {
       title: '暴露的知识库',
       dataIndex: 'kb_ids',
       render: (_: unknown, item: ExtQuery) => (
         <Space size={[4, 4]} wrap>
-          {kbNameOf(item).map(n => (
+          {kbNameOf(item).map((n) => (
             <Tag key={n}>{n}</Tag>
           ))}
         </Space>
@@ -317,7 +318,9 @@ const ExtQueriesPage: React.FC = () => {
             cancelText="取消"
             onConfirm={() => handleResetToken(item)}
           >
-            <Button type="link" size="small">重置令牌</Button>
+            <Button type="link" size="small">
+              重置令牌
+            </Button>
           </Popconfirm>
           <Button
             type="link"
@@ -352,7 +355,13 @@ const ExtQueriesPage: React.FC = () => {
         description="将知识库开放给外部人员查询（无需系统账号）：选择暴露的知识库并配置查询参数后生成带令牌的链接，外部人员打开链接即可提问。链接即访问凭证，请妥善保管；泄露可随时重置或停用。"
         extra={
           <>
-            <Button icon={<ReloadOutlined />} onClick={() => { load(); loadOptions(); }}>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => {
+                load();
+                loadOptions();
+              }}
+            >
               刷新
             </Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -362,13 +371,14 @@ const ExtQueriesPage: React.FC = () => {
         }
       />
 
-      <Table
+      <AppTable
         rowKey="id"
         loading={loading}
         dataSource={items}
         columns={columns}
         pagination={false}
         locale={{ emptyText: '暂无外部查询配置，点击右上角「新建外部查询」创建' }}
+        divider
       />
 
       {/* 新建 / 编辑弹窗 */}
@@ -417,22 +427,58 @@ const ExtQueriesPage: React.FC = () => {
           </Form.Item>
           <Space size={16} wrap>
             <Form.Item name={['config', 'temperature']} label="温度（0-2）">
-              <InputNumber min={0} max={2} step={0.1} style={{ width: 140 }} placeholder="跟随全局" />
+              <InputNumber
+                min={0}
+                max={2}
+                step={0.1}
+                style={{ width: 140 }}
+                placeholder="跟随全局"
+              />
             </Form.Item>
             <Form.Item name={['config', 'top_p']} label="Top P（0-1）">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: 140 }} placeholder="跟随全局" />
+              <InputNumber
+                min={0}
+                max={1}
+                step={0.05}
+                style={{ width: 140 }}
+                placeholder="跟随全局"
+              />
             </Form.Item>
             <Form.Item name={['config', 'top_k']} label="检索条数（1-20）">
-              <InputNumber min={1} max={20} step={1} style={{ width: 140 }} placeholder="跟随全局" />
+              <InputNumber
+                min={1}
+                max={20}
+                step={1}
+                style={{ width: 140 }}
+                placeholder="跟随全局"
+              />
             </Form.Item>
             <Form.Item name={['config', 'similarity_threshold']} label="相似度阈值（0-1）">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: 140 }} placeholder="跟随全局" />
+              <InputNumber
+                min={0}
+                max={1}
+                step={0.05}
+                style={{ width: 140 }}
+                placeholder="跟随全局"
+              />
             </Form.Item>
             <Form.Item name={['config', 'max_tokens']} label="最大输出 Token">
-              <InputNumber min={1} max={16384} step={128} style={{ width: 140 }} placeholder="跟随全局" />
+              <InputNumber
+                min={1}
+                max={16384}
+                step={128}
+                style={{ width: 140 }}
+                placeholder="跟随全局"
+              />
             </Form.Item>
             <Form.Item name={['config', 'history_rounds']} label="历史轮数（1-20）">
-              <InputNumber min={1} max={20} step={1} style={{ width: 140 }} placeholder="跟随全局" />
+              <InputNumber
+                min={1}
+                max={20}
+                step={1}
+                style={{ width: 140 }}
+                placeholder="跟随全局"
+              />
             </Form.Item>
             <Form.Item
               name={['config', 'enable_multi_turn']}

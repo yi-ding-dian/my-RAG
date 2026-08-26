@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   App as AntApp,
   Button,
@@ -11,7 +11,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -43,13 +42,24 @@ import {
 } from '../api/client';
 import AppEmpty from '../components/AppEmpty';
 import PageHeader from '../components/PageHeader';
-import ResizableTitle from '../components/ResizableTitle';
+import AppTable from '../components/AppTable';
 import { useAuth } from '../auth/AuthContext';
-import type { ResizeCallbackData } from 'react-resizable';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
 
+/** 行高兜底（antd5 middle ≈40px；仅在表格尚无真实数据行时使用，数据渲染
+ *  后立即用实测行高校正——保守偏大，宁可少算一行也不出滚动条） */
+const FALLBACK_ROW_H = 40;
+/** 有效行高下限（防止量到 0 高的测量行等异常值，低于视同无效走兜底） */
+const MIN_MEASURE_H = 16;
+/** 每页行数上下限兜底（防极窄/极矮视口计算出离谱值） */
+const MIN_PAGE_ROWS = 1;
+const MAX_PAGE_ROWS = 100;
+
+/** 分页器占位高度（antd Pagination 默认 32px；total=0 时空壳不占高，
+ *  固定占位保证 applyLayout 量测时机无关、数值稳定） */
+const PAGER_H = 32;
 /** 系统日志保留行数上限（超出丢最旧） */
 const MAX_LOG_LINES = 500;
 /** 每次 tail 拉取行数（与后端默认一致） */
@@ -92,7 +102,7 @@ const levelColor = (level: string | null): string => {
   }
 };
 
-const LEVEL_OPTIONS = ['INFO', 'WARNING', 'ERROR', 'DEBUG'].map(l => ({
+const LEVEL_OPTIONS = ['INFO', 'WARNING', 'ERROR', 'DEBUG'].map((l) => ({
   value: l,
   label: l,
 }));
@@ -158,7 +168,15 @@ const LogsPage: React.FC = () => {
           flexDirection: 'column',
           overflow: 'hidden',
         }}
-        styles={{ body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
+        styles={{
+          body: {
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          },
+        }}
       >
         <Tabs
           className="logs-page-tabs"
@@ -171,9 +189,7 @@ const LogsPage: React.FC = () => {
                   { key: 'audit', label: '操作审计', children: <AuditTab app={app} /> },
                   { key: 'system', label: '系统日志', children: <SystemLogTab app={app} /> },
                 ]
-              : [
-                  { key: 'audit', label: '操作审计', children: <AuditTab app={app} /> },
-                ]
+              : [{ key: 'audit', label: '操作审计', children: <AuditTab app={app} /> }]
           }
         />
       </Card>
@@ -199,45 +215,144 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
     timeRange?: [Dayjs, Dayjs] | null;
   }>({
     // 默认最近 7 天（不强制，用户可改）
-    timeRange: [dayjs().subtract(VIEW_DAYS - 1, 'day').startOf('day'), dayjs().endOf('day')],
+    timeRange: [
+      dayjs()
+        .subtract(VIEW_DAYS - 1, 'day')
+        .startOf('day'),
+      dayjs().endOf('day'),
+    ],
   });
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  // 动态每页行数：由 AuditTab 实测布局算出（固定件高度与行高全部从 DOM
+  // 实测量取，见 applyLayout）——可放多少行就显示多少行，表格自适应内容高，
+  // 无滚动、无空白、分页器始终可见。此处只是首帧粗估占位，挂载后立即校正。
+  const [pageRows, setPageRows] = useState(() => {
+    if (typeof window === 'undefined') return 10;
+    // 首帧粗估（页头/Tab/Card 边距 + 筛选栏 + 表头 + 分页器 ≈ 300px）
+    return Math.min(
+      MAX_PAGE_ROWS,
+      Math.max(MIN_PAGE_ROWS, Math.floor((window.innerHeight - 300) / FALLBACK_ROW_H)),
+    );
+  });
+  const pageSize = pageRows;
   const [total, setTotal] = useState(0);
   const [items, setItems] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(false);
   // 按天删除审计记录
   const [delDate, setDelDate] = useState<Dayjs | null>(null);
+  // 布局实测 refs：内容容器 / 筛选栏 / 表格（量表头与数据行高）/ 分页器
+  const contentRef = useRef<HTMLDivElement>(null);
+  const filterRef = useRef<HTMLDivElement>(null);
+  const tableRef = useRef<HTMLDivElement>(null);
+  const pagerRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    try {
-      const params: AuditLogQuery = {
-        page,
-        page_size: pageSize,
-        action: auditFilters.action || undefined,
-        username: auditFilters.username?.trim() || undefined,
-      };
-      if (auditFilters.timeRange?.[0] && auditFilters.timeRange[1]) {
-        params.start_time = auditFilters.timeRange[0].format('YYYY-MM-DD HH:mm:ss');
-        params.end_time = auditFilters.timeRange[1].format('YYYY-MM-DD HH:mm:ss');
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const params: AuditLogQuery = {
+          page,
+          page_size: pageSize,
+          action: auditFilters.action || undefined,
+          username: auditFilters.username?.trim() || undefined,
+        };
+        if (auditFilters.timeRange?.[0] && auditFilters.timeRange[1]) {
+          params.start_time = auditFilters.timeRange[0].format('YYYY-MM-DD HH:mm:ss');
+          params.end_time = auditFilters.timeRange[1].format('YYYY-MM-DD HH:mm:ss');
+        }
+        const res = await listAuditLogs(params);
+        setItems(res.data.items);
+        setTotal(res.data.total);
+      } catch {
+        if (!silent) message.error('加载审计日志失败');
+      } finally {
+        if (!silent) setLoading(false);
       }
-      const res = await listAuditLogs(params);
-      setItems(res.data.items);
-      setTotal(res.data.total);
-    } catch {
-      if (!silent) message.error('加载审计日志失败');
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, [page, pageSize, auditFilters, message]);
+    },
+    [page, pageSize, auditFilters, message],
+  );
+
+  // 每页行数实时自适应（核心布局逻辑）：
+  // 固定件（筛选栏/表头/分页器）与数据行高全部从 DOM 实测量取（offsetHeight，
+  // 含各自 margin），行数 = (容器高 - 固定占用) / 行高 向下取整 → 内容总高
+  // 恰好 ≤ 容器高：无滚动条（表格不设 scroll.y、容器 overflow:hidden）、
+  // 分页器始终可见、行数随视口实时变化（不写死）。行高在表格尚无真实数据
+  // 行时用兜底 FALLBACK_ROW_H，数据渲染后由下方 useLayoutEffect 校正。
+  const applyLayout = useCallback(() => {
+    const el = contentRef.current;
+    const filterEl = filterRef.current;
+    const tableEl = tableRef.current;
+    const pagerEl = pagerRef.current;
+    if (!el || !filterEl || !tableEl || !pagerEl) return;
+    const offsetH = (e: HTMLElement) => {
+      const cs = getComputedStyle(e);
+      return e.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+    };
+    const thead = tableEl.querySelector('.ant-table-thead') as HTMLElement | null;
+    if (!thead) return;
+    // 只量真实数据行（.ant-table-row；排除空数据占位行 .ant-table-placeholder 与
+    // rc-table 常驻 tbody 首位的 .ant-table-measure-row 测量行——其高度为 0，
+    // 量到会把每页行数公式推到 MAX_PAGE_ROWS，分页器被挤出容器）
+    const row = tableEl.querySelector(
+      '.ant-table-tbody > tr.ant-table-row:not(.ant-table-placeholder)',
+    ) as HTMLElement | null;
+    const rowH = row && row.offsetHeight >= MIN_MEASURE_H ? row.offsetHeight : FALLBACK_ROW_H;
+    // 表格横向滚动条（AppTable 强制 scroll.x=列宽总和 1410px，超过可视宽度时
+    // 表格底部出现横向滚动条，applyLayout 不扣除会多算可放行数，内容超高把
+    // 分页器挤出容器）。offsetHeight - clientHeight 恰为滚动条实际高度，
+    // macOS overlay 滚动条为 0 自动兼容
+    const contentEl = tableEl.querySelector('.ant-table-content') as HTMLElement | null;
+    const hScrollH =
+      contentEl && contentEl.scrollWidth > contentEl.clientWidth
+        ? contentEl.offsetHeight - contentEl.clientHeight
+        : 0;
+    const available =
+      el.clientHeight - offsetH(filterEl) - offsetH(thead) - offsetH(pagerEl) - hScrollH;
+    if (available <= 0) return; // 容器未就绪/过小：保持当前行数
+    // 行高直接用实测值取整（Playwright 实测 offsetHeight 与渲染高度零偏差，
+    // 无需加安全值——宁可少算一行留空余，也不挤出分页器）
+    const rows = Math.min(
+      MAX_PAGE_ROWS,
+      Math.max(MIN_PAGE_ROWS, Math.floor(available / rowH)),
+    );
+    setPageRows((prev) => (prev === rows ? prev : rows));
+  }, []);
+
+  // 容器/筛选栏/表格/分页器尺寸变化（窗口缩放、筛选栏换行、Tab 切换、表格
+  // 行数/滚动条出现）→ 重算行数。行数随高度实时收敛；极端情况内容被
+  // overflow:hidden 裁切一帧也会立即恢复，不会出现滚动条
+  useEffect(() => {
+    const targets = [
+      contentRef.current,
+      filterRef.current,
+      tableRef.current,
+      pagerRef.current,
+    ].filter(Boolean) as HTMLElement[];
+    if (targets.length === 0) return;
+    applyLayout();
+    const ro = new ResizeObserver(applyLayout);
+    targets.forEach((t) => ro.observe(t));
+    return () => ro.disconnect();
+  }, [applyLayout]);
+
+  // 数据渲染后（tbody 出现真实行）用实测行高校正一次：首帧兜底行高可能与
+  // 实际有 1px 级偏差，校正后行数精确（最多收敛一轮）
+  useLayoutEffect(() => {
+    applyLayout();
+  }, [items, applyLayout]);
+
+  // pageSize 随视口变化后页码可能越界（行数变多 → 总页数变少）→ 钳回合理页
+  const maxPage = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => {
+    if (page > maxPage) setPage(maxPage);
+  }, [page, maxPage, pageSize]);
 
   // 首次挂载：操作类型下拉（首屏审计数据由下方 [load] effect 加载）
   useEffect(() => {
     void listAuditActions()
-      .then(res => setActionOptions(res.data.actions))
+      .then((res) => setActionOptions(res.data.actions))
       .catch(() => message.error('加载操作类型列表失败'));
   }, [message]);
 
@@ -248,21 +363,30 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
 
   // 5s 自动轮询：只静默刷新当前页（不打断翻页）；关开关即停
   const loadRef = useRef(load);
-  useEffect(() => { loadRef.current = load; }, [load]);
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = setInterval(() => { void loadRef.current(true); }, POLL_INTERVAL);
+    const timer = setInterval(() => {
+      void loadRef.current(true);
+    }, POLL_INTERVAL);
     return () => clearInterval(timer);
   }, [autoRefresh]);
 
   // 查询：筛选条件新引用 + 回第 1 页（[load] effect 驱动重新加载）
   const handleSearch = () => {
-    setAuditFilters(prev => ({ ...prev }));
+    setAuditFilters((prev) => ({ ...prev }));
     setPage(1);
   };
   const handleReset = () => {
     setAuditFilters({
-      timeRange: [dayjs().subtract(VIEW_DAYS - 1, 'day').startOf('day'), dayjs().endOf('day')],
+      timeRange: [
+        dayjs()
+          .subtract(VIEW_DAYS - 1, 'day')
+          .startOf('day'),
+        dayjs().endOf('day'),
+      ],
     });
     setPage(1);
   };
@@ -299,125 +423,89 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
     return m;
   }, [actionOptions]);
 
-  // 列宽拖拽：拖拽后的宽度存在 colWidths（按列 key），未拖过的列用初始 width
-  const [colWidths, setColWidths] = useState<Record<string, number>>({});
-  const handleResize = useCallback(
-    (key: React.Key) =>
-      (_: React.SyntheticEvent<Element>, { size }: ResizeCallbackData) => {
-        setColWidths(prev => ({ ...prev, [String(key)]: size.width }));
+  const columns = useMemo<ColumnsType<AuditLog>>(
+    () => [
+      {
+        title: '时间',
+        dataIndex: 'created_at',
+        key: 'created_at',
+        width: 170,
+        render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
       },
-    [],
-  );
-
-  const columns = useMemo<ColumnsType<AuditLog>>(() => [
-    {
-      title: '时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: colWidths.created_at ?? 170,
-      onHeaderCell: () => ({
-        width: colWidths.created_at ?? 170,
-        onResize: handleResize('created_at'),
-      }),
-      render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
-    },
-    {
-      title: '用户',
-      dataIndex: 'username',
-      key: 'username',
-      width: colWidths.username ?? 130,
-      onHeaderCell: () => ({
-        width: colWidths.username ?? 130,
-        onResize: handleResize('username'),
-      }),
-      render: (v: string) => (v ? <Text strong>{v}</Text> : <Text type="secondary">未认证</Text>),
-    },
-    {
-      title: '角色',
-      dataIndex: 'role',
-      key: 'role',
-      width: colWidths.role ?? 110,
-      onHeaderCell: () => ({
-        width: colWidths.role ?? 110,
-        onResize: handleResize('role'),
-      }),
-      render: (role: string) => {
-        const meta = roleMeta[role];
-        return meta ? <Tag color={meta.color}>{meta.text}</Tag> : <Tag>{role || '-'}</Tag>;
+      {
+        title: '用户',
+        dataIndex: 'username',
+        key: 'username',
+        width: 130,
+        render: (v: string) => (v ? <Text strong>{v}</Text> : <Text type="secondary">未认证</Text>),
       },
-    },
-    {
-      title: '操作',
-      dataIndex: 'action',
-      key: 'action',
-      width: colWidths.action ?? 150,
-      onHeaderCell: () => ({
-        width: colWidths.action ?? 150,
-        onResize: handleResize('action'),
-      }),
-      render: (a: string) => <Tag color="blue">{actionLabelMap[a] ?? a}</Tag>,
-    },
-    {
-      title: '目标',
-      key: 'target',
-      width: colWidths.target ?? 200,
-      onHeaderCell: () => ({
-        width: colWidths.target ?? 200,
-        onResize: handleResize('target'),
-      }),
-      ellipsis: true,
-      render: (_, row) => {
-        const type = targetTypeLabelMap[row.target_type ?? ''] ?? row.target_type ?? '';
-        return row.target_name
-          ? `${type ? `${type} · ` : ''}${row.target_name}`
-          : (type || '-');
+      {
+        title: '角色',
+        dataIndex: 'role',
+        key: 'role',
+        width: 110,
+        render: (role: string) => {
+          const meta = roleMeta[role];
+          return meta ? <Tag color={meta.color}>{meta.text}</Tag> : <Tag>{role || '-'}</Tag>;
+        },
       },
-    },
-    {
-      title: '详情',
-      key: 'detail',
-      width: colWidths.detail ?? 420,
-      onHeaderCell: () => ({
-        width: colWidths.detail ?? 420,
-        onResize: handleResize('detail'),
-      }),
-      ellipsis: true,
-      render: (_, row) => (row.detail ? row.detail.slice(0, 80) : '-'),
-    },
-    {
-      title: 'IP',
-      dataIndex: 'ip',
-      key: 'ip',
-      width: colWidths.ip ?? 140,
-      onHeaderCell: () => ({
-        width: colWidths.ip ?? 140,
-        onResize: handleResize('ip'),
-      }),
-      render: (v: string) => v || '-',
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      // 最后一列不提供拖拽手柄（避免拖出表格边界）
-      width: colWidths.status ?? 90,
-      render: (s: string) =>
-        s === 'success' ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>,
-    },
-  ], [actionLabelMap, colWidths, handleResize]);
-
-  // 表格总宽 = 当前各列宽度之和（跟随列宽拖拽动态变化）。
-  // 必须让 scroll.x === 总宽：antd 表格为 fixed 布局，scroll.x > 总宽时浏览器会按
-  // 比例放大各列渲染宽度，拖拽中比例随总宽变化 → 列实际位移量 ≠ 鼠标位移量，
-  // 导致列宽拖拽严重漂移（实测拖 -100 实际变 -145）。动态对齐后缩放比例恒为 1。
-  const tableWidth = useMemo(
-    () => columns.reduce((s, c) => s + ((c.width as number) || 0), 0),
-    [columns],
+      {
+        title: '操作',
+        dataIndex: 'action',
+        key: 'action',
+        width: 150,
+        render: (a: string) => <Tag color="blue">{actionLabelMap[a] ?? a}</Tag>,
+      },
+      {
+        title: '目标',
+        key: 'target',
+        width: 200,
+        ellipsis: true,
+        render: (_, row) => {
+          const type = targetTypeLabelMap[row.target_type ?? ''] ?? row.target_type ?? '';
+          return row.target_name ? `${type ? `${type} · ` : ''}${row.target_name}` : type || '-';
+        },
+      },
+      {
+        title: '详情',
+        key: 'detail',
+        width: 420,
+        ellipsis: true,
+        render: (_, row) => (row.detail ? row.detail.slice(0, 80) : '-'),
+      },
+      {
+        title: 'IP',
+        dataIndex: 'ip',
+        key: 'ip',
+        width: 140,
+        render: (v: string) => v || '-',
+      },
+      {
+        title: '状态',
+        dataIndex: 'status',
+        key: 'status',
+        // 最后一列不提供拖拽手柄（避免拖出表格边界）
+        width: 90,
+        resizable: false,
+        render: (s: string) =>
+          s === 'success' ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>,
+      },
+    ],
+    [actionLabelMap],
   );
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-      <Space wrap style={{ marginBottom: 16, flexShrink: 0 }}>
+    <div
+      ref={contentRef}
+      // 布局策略：flex column，固定件（筛选栏/表头/分页器）flexShrink:0，
+      // 表格自适应内容高（不设 scroll.y）。每页行数由 applyLayout 按实测
+      // 固定件高度与行高算出 → 内容总高恰好 ≤ 本容器高：无滚动条、无空白、
+      // 分页器始终可见。overflow:hidden 兜底：极端情况内容超高时宁可短暂
+      // 裁切（ResizeObserver 立即重算收敛）也绝不出现滚动条
+      style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+    >
+      <div ref={filterRef} style={{ marginBottom: 16, flexShrink: 0 }}>
+        <Space wrap>
         <Switch
           size="small"
           checked={autoRefresh}
@@ -430,26 +518,30 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
           placeholder="操作类型"
           style={{ width: 170 }}
           value={auditFilters.action}
-          onChange={v => setAuditFilters(prev => ({ ...prev, action: v }))}
-          options={actionOptions.map(a => ({ value: a.action, label: a.label }))}
+          onChange={(v) => setAuditFilters((prev) => ({ ...prev, action: v }))}
+          options={actionOptions.map((a) => ({ value: a.action, label: a.label }))}
         />
         <Input
           allowClear
           placeholder="用户名"
           style={{ width: 140 }}
           value={auditFilters.username}
-          onChange={e => setAuditFilters(prev => ({ ...prev, username: e.target.value }))}
+          onChange={(e) => setAuditFilters((prev) => ({ ...prev, username: e.target.value }))}
         />
         <RangePicker
           showTime={{ format: 'HH:mm:ss' }}
           format="YYYY-MM-DD HH:mm:ss"
           value={auditFilters.timeRange}
-          onChange={v => setAuditFilters(prev => ({
-            ...prev,
-            timeRange: v as [Dayjs, Dayjs] | null,
-          }))}
+          onChange={(v) =>
+            setAuditFilters((prev) => ({
+              ...prev,
+              timeRange: v as [Dayjs, Dayjs] | null,
+            }))
+          }
         />
-        <Button type="primary" onClick={handleSearch}>查询</Button>
+        <Button type="primary" onClick={handleSearch}>
+          查询
+        </Button>
         <Button onClick={handleReset}>重置</Button>
         {canDeleteAudit && (
           <>
@@ -459,41 +551,45 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
               placeholder="选择删除日期"
               style={{ width: 150 }}
             />
-            <Button danger icon={<DeleteOutlined />} onClick={handleDeleteByDate}>删除该天</Button>
+            <Button danger icon={<DeleteOutlined />} onClick={handleDeleteByDate}>
+              删除该天
+            </Button>
           </>
         )}
       </Space>
-      <Table
-        size="middle"
-        rowKey="id"
-        columns={columns}
-        dataSource={items}
-        loading={loading}
-        pagination={false}
-        // 表头单元格替换为 ResizableTitle：列头右侧出现拖拽手柄，可自由调整列宽
-        components={{ header: { cell: ResizableTitle } }}
-        // x = 当前列宽总和（动态，见上方 tableWidth 注释）：保证拖拽精确且
-        // 总宽超出容器宽度时出现横向滚动
-        // y 用 calc 相对视口计算：扣除 Content padding(48) + 页头(72) + Card body
-        // padding(48) + Tab 头(56) + 筛选栏(48) + 表头(39) + 分页(48) 后，剩余高度
-        // 给表格 body 内部滚动（分页器与筛选栏固定）
-        scroll={{ x: tableWidth, y: 'calc(100vh - 365px)' }}
-        locale={{
-          emptyText: <AppEmpty title="暂无审计记录" description="尚无符合条件的关键操作记录" />,
-        }}
-        className="table-zebra"
-      />
-      <div style={{ marginTop: 16, textAlign: 'right', flexShrink: 0 }}>
+      </div>
+      <div ref={tableRef} style={{ flexShrink: 0 }}>
+        <AppTable
+          size="middle"
+          rowKey="id"
+          columns={columns}
+          dataSource={items}
+          loading={loading}
+          pagination={false}
+          divider
+          // 不设 scroll.y（表格自适应内容高）——每页行数由 applyLayout 按
+          // 实测布局算出（可放多少行显示多少行），总高恰好 ≤ 容器：分页器
+          // 紧贴数据下方，无滚动、无空白；行数随视口高度实时变化不写死
+          locale={{
+            emptyText: <AppEmpty title="暂无审计记录" description="尚无符合条件的关键操作记录" />,
+          }}
+          className="table-zebra"
+        />
+      </div>
+      <div
+        ref={pagerRef}
+        style={{ marginTop: 16, textAlign: 'right', flexShrink: 0, minHeight: PAGER_H }}
+      >
         <Pagination
           current={page}
           pageSize={pageSize}
           total={total}
-          showSizeChanger
-          pageSizeOptions={[10, 20, 50]}
-          showTotal={t => `共 ${t} 条`}
-          onChange={(p, ps) => {
+          // 不提供"每页条数"选择器：行数由视口高度动态决定（撑满一屏，无空白，
+          // 不写死显示多少行）
+          showSizeChanger={false}
+          showTotal={(t) => `共 ${t} 条`}
+          onChange={(p) => {
             setPage(p);
-            setPageSize(ps);
           }}
         />
       </div>
@@ -521,7 +617,13 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
   const [detailLoading, setDetailLoading] = useState(false);
 
   // 最近 7 天日期下拉（倒序：今天在最上）
-  const dateOptions = useMemo(() => recentDates().reverse().map(d => ({ value: d, label: d })), []);
+  const dateOptions = useMemo(
+    () =>
+      recentDates()
+        .reverse()
+        .map((d) => ({ value: d, label: d })),
+    [],
+  );
 
   const loadFiles = useCallback(async () => {
     try {
@@ -532,22 +634,29 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
     }
   }, []);
 
-  const fetchTail = useCallback(async (initial = false) => {
-    try {
-      const res = await tailSystemLogs(selectedDate, initial ? -1 : offsetRef.current, TAIL_LIMIT);
-      offsetRef.current = res.data.offset;
-      if (res.data.lines.length > 0) {
-        setLines(prev => {
-          const merged = [...prev, ...res.data.lines];
-          return merged.length > MAX_LOG_LINES
-            ? merged.slice(merged.length - MAX_LOG_LINES)
-            : merged;
-        });
+  const fetchTail = useCallback(
+    async (initial = false) => {
+      try {
+        const res = await tailSystemLogs(
+          selectedDate,
+          initial ? -1 : offsetRef.current,
+          TAIL_LIMIT,
+        );
+        offsetRef.current = res.data.offset;
+        if (res.data.lines.length > 0) {
+          setLines((prev) => {
+            const merged = [...prev, ...res.data.lines];
+            return merged.length > MAX_LOG_LINES
+              ? merged.slice(merged.length - MAX_LOG_LINES)
+              : merged;
+          });
+        }
+      } catch {
+        if (initial) message.error('加载系统日志失败');
       }
-    } catch {
-      if (initial) message.error('加载系统日志失败');
-    }
-  }, [selectedDate, message]);
+    },
+    [selectedDate, message],
+  );
 
   // 挂载：文件列表（今天日志尾部由下方 [selectedDate] effect 加载）
   useEffect(() => {
@@ -564,9 +673,13 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
 
   // 5s 轮询：拉新行 + 刷新文件列表（暂停即停）
   const fetchTailRef = useRef(fetchTail);
-  useEffect(() => { fetchTailRef.current = fetchTail; }, [fetchTail]);
+  useEffect(() => {
+    fetchTailRef.current = fetchTail;
+  }, [fetchTail]);
   const loadFilesRef = useRef(loadFiles);
-  useEffect(() => { loadFilesRef.current = loadFiles; }, [loadFiles]);
+  useEffect(() => {
+    loadFilesRef.current = loadFiles;
+  }, [loadFiles]);
   useEffect(() => {
     if (paused) return;
     const timer = setInterval(() => {
@@ -631,20 +744,23 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
 
   // 点击文件名 → 进入详情视图：tail 尾部模式一次拉取该天最近 2000 行
   // （文件 ≤10MB，2000 行够日常查看；满额即视为截断，提示下载完整文件）
-  const loadDetail = useCallback(async (file: LogFileInfo) => {
-    setView('detail');
-    setDetailFile(file);
-    setDetailLines([]);
-    setDetailLoading(true);
-    try {
-      const res = await tailSystemLogs(file.date, -1, 2000);
-      setDetailLines(res.data.lines);
-    } catch {
-      message.error('加载日志文件内容失败');
-    } finally {
-      setDetailLoading(false);
-    }
-  }, [message]);
+  const loadDetail = useCallback(
+    async (file: LogFileInfo) => {
+      setView('detail');
+      setDetailFile(file);
+      setDetailLines([]);
+      setDetailLoading(true);
+      try {
+        const res = await tailSystemLogs(file.date, -1, 2000);
+        setDetailLines(res.data.lines);
+      } catch {
+        message.error('加载日志文件内容失败');
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [message],
+  );
 
   // 返回文件管理列表（详情数据清空，列表侧轮询数据不受影响）
   const backToList = () => {
@@ -673,8 +789,10 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
 
   // 文件管理：只展示最近 7 天（按日期倒序）
   const visibleFiles = useMemo(() => {
-    const cutoff = dayjs().subtract(VIEW_DAYS - 1, 'day').format('YYYY-MM-DD');
-    return files.filter(f => f.date >= cutoff);
+    const cutoff = dayjs()
+      .subtract(VIEW_DAYS - 1, 'day')
+      .format('YYYY-MM-DD');
+    return files.filter((f) => f.date >= cutoff);
   }, [files]);
   const totalBytes = visibleFiles.reduce((s, f) => s + f.size_bytes, 0);
 
@@ -713,7 +831,12 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
           <Button size="small" icon={<DownloadOutlined />} onClick={() => void handleDownload(row)}>
             下载
           </Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDeleteFile(row.date)}>
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => handleDeleteFile(row.date)}
+          >
             删除
           </Button>
         </Space>
@@ -724,9 +847,11 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
   // 过滤（仅作用已加载行）+ 倒序（最新在上）
   const filteredLines = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
-    const out = lines.filter(l =>
-      (!levelFilter.length || (l.level != null && levelFilter.includes(l.level)))
-      && (!kw || l.line.toLowerCase().includes(kw)));
+    const out = lines.filter(
+      (l) =>
+        (!levelFilter.length || (l.level != null && levelFilter.includes(l.level))) &&
+        (!kw || l.line.toLowerCase().includes(kw)),
+    );
     return [...out].reverse();
   }, [lines, keyword, levelFilter]);
 
@@ -739,8 +864,12 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {/* 页头：返回 + 文件名 + 大小（固定不随内容滚动） */}
         <Space wrap style={{ marginBottom: 16, flexShrink: 0 }} size={12}>
-          <Button icon={<ArrowLeftOutlined />} onClick={backToList}>返回</Button>
-          <Text strong style={{ fontSize: 14 }}>{file.filename}</Text>
+          <Button icon={<ArrowLeftOutlined />} onClick={backToList}>
+            返回
+          </Button>
+          <Text strong style={{ fontSize: 14 }}>
+            {file.filename}
+          </Text>
           <Text type="secondary">大小 {formatBytes(file.size_bytes)}</Text>
           <Text type="secondary">修改于 {dayjs(file.mtime).format('YYYY-MM-DD HH:mm:ss')}</Text>
           {truncated && (
@@ -769,13 +898,10 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
               dataSource={detailLines}
               locale={{
                 emptyText: (
-                  <AppEmpty
-                    title="暂无日志内容"
-                    description={`${file.date} 无日志内容`}
-                  />
+                  <AppEmpty title="暂无日志内容" description={`${file.date} 无日志内容`} />
                 ),
               }}
-              renderItem={item => (
+              renderItem={(item) => (
                 <List.Item style={{ padding: '4px 0' }}>
                   <Space size={10} align="start" style={{ width: '100%' }}>
                     <Tag
@@ -810,7 +936,7 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
         <Switch
           size="small"
           checked={!paused}
-          onChange={v => setPaused(!v)}
+          onChange={(v) => setPaused(!v)}
           checkedChildren="自动刷新"
           unCheckedChildren="已暂停"
         />
@@ -819,7 +945,7 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
           placeholder="关键字过滤（当前已加载行）"
           style={{ width: 200 }}
           value={keyword}
-          onChange={e => setKeyword(e.target.value)}
+          onChange={(e) => setKeyword(e.target.value)}
         />
         <Select
           mode="multiple"
@@ -830,11 +956,16 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
           onChange={setLevelFilter}
           options={LEVEL_OPTIONS}
         />
-        <Button icon={<ReloadOutlined />} onClick={() => void fetchTail(false)}>刷新</Button>
-        <Button icon={<ClearOutlined />} onClick={clearLines}>清空</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => void fetchTail(false)}>
+          刷新
+        </Button>
+        <Button icon={<ClearOutlined />} onClick={clearLines}>
+          清空
+        </Button>
         <Text type="secondary">
-          已加载 {lines.length} 行{levelFilter.length || keyword.trim()
-            ? `（当前显示 ${filteredLines.length} 行）` : ''}，保留最近 {MAX_LOG_LINES} 行
+          已加载 {lines.length} 行
+          {levelFilter.length || keyword.trim() ? `（当前显示 ${filteredLines.length} 行）` : ''}
+          ，保留最近 {MAX_LOG_LINES} 行
         </Text>
       </Space>
 
@@ -855,7 +986,8 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
         {visibleFiles.length === 0 ? (
           <Text type="secondary">最近 {VIEW_DAYS} 天无运行日志文件</Text>
         ) : (
-          <Table
+          <AppTable
+            divider
             size="small"
             rowKey="filename"
             columns={fileColumns}
@@ -870,30 +1002,32 @@ const SystemLogTab: React.FC<{ app: AppInstance }> = ({ app }) => {
         <List
           size="small"
           dataSource={filteredLines}
-        locale={{
-          emptyText: (
-            <AppEmpty
-              title="暂无日志"
-              description={paused ? '已暂停自动刷新，点击「刷新」手动拉取' : `${selectedDate} 无日志内容`}
-            />
-          ),
-        }}
-        renderItem={item => (
-          <List.Item style={{ padding: '4px 0' }}>
-            <Space size={10} align="start" style={{ width: '100%' }}>
-              <Tag
-                color={levelColor(item.level)}
-                style={{ minWidth: 68, textAlign: 'center', marginInlineEnd: 0 }}
-              >
-                {item.level ?? 'LOG'}
-              </Tag>
-              <Text type="secondary" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
-                {item.ts ?? ''}
-              </Text>
-              <Text style={{ wordBreak: 'break-all', fontSize: 13 }}>{item.message}</Text>
-            </Space>
-          </List.Item>
-        )}
+          locale={{
+            emptyText: (
+              <AppEmpty
+                title="暂无日志"
+                description={
+                  paused ? '已暂停自动刷新，点击「刷新」手动拉取' : `${selectedDate} 无日志内容`
+                }
+              />
+            ),
+          }}
+          renderItem={(item) => (
+            <List.Item style={{ padding: '4px 0' }}>
+              <Space size={10} align="start" style={{ width: '100%' }}>
+                <Tag
+                  color={levelColor(item.level)}
+                  style={{ minWidth: 68, textAlign: 'center', marginInlineEnd: 0 }}
+                >
+                  {item.level ?? 'LOG'}
+                </Tag>
+                <Text type="secondary" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
+                  {item.ts ?? ''}
+                </Text>
+                <Text style={{ wordBreak: 'break-all', fontSize: 13 }}>{item.message}</Text>
+              </Space>
+            </List.Item>
+          )}
         />
       </div>
     </div>

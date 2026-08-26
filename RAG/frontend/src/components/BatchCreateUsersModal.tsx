@@ -10,16 +10,11 @@
  * 执行：复用现有 listDepartments / createDepartment / createUser 接口，不新增后端接口；
  * 部门不存在时自动创建；逐个串行建号并展示进度（建号中 x/y）与结果汇总（成功 n / 失败 m + 原因列表）。
  */
+import AppTable from '../components/AppTable';
+
 import React, { useEffect, useMemo, useState } from 'react';
 import AppModal from './AppModal';
-import {
-  Alert, 
-  App as AntApp, 
-  Input, 
-  Table, 
-  Tag, 
-  Tooltip, 
-  Typography} from 'antd';
+import { Alert, App as AntApp, Input, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   asApiError,
@@ -58,7 +53,7 @@ const parseBatch = (text: string, deptNames: Set<string>): ParsedRow[] => {
     const line = idx + 1;
     const trimmed = raw.trim();
     if (!trimmed || trimmed.startsWith('#')) return;
-    const parts = trimmed.split(',').map(p => p.trim());
+    const parts = trimmed.split(',').map((p) => p.trim());
     const username = (parts[0] ?? '').trim();
     const displayName = (parts[1] ?? '').trim();
     const deptName = (parts[2] ?? '').trim() || DEFAULT_DEPT;
@@ -117,10 +112,10 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
     }
   }, [open]);
 
-  const deptNames = useMemo(() => new Set(departments.map(d => d.name)), [departments]);
+  const deptNames = useMemo(() => new Set(departments.map((d) => d.name)), [departments]);
   const rows = useMemo(() => parseBatch(text, deptNames), [text, deptNames]);
-  const validRows = rows.filter(r => r.errors.length === 0);
-  const hasError = rows.some(r => r.errors.length > 0);
+  const validRows = rows.filter((r) => r.errors.length === 0);
+  const hasError = rows.some((r) => r.errors.length > 0);
 
   const handleOk = async () => {
     if (validRows.length === 0 || running) return;
@@ -132,7 +127,7 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
     try {
       // 执行前拉取最新部门列表，建 name→id 映射；新建的部门实时补充进映射
       const deptRes = await listDepartments();
-      const deptIdByName = new Map<string, string>(deptRes.data.map(d => [d.name, d.id]));
+      const deptIdByName = new Map<string, string>(deptRes.data.map((d) => [d.name, d.id]));
       for (let i = 0; i < validRows.length; i++) {
         const row = validRows[i];
         try {
@@ -152,7 +147,10 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
           });
           ok.push(row.username);
         } catch (e: unknown) {
-          failed.push({ username: row.username, reason: asApiError(e).response?.data?.detail || '创建失败' });
+          failed.push({
+            username: row.username,
+            reason: asApiError(e).response?.data?.detail || '创建失败',
+          });
         }
         setProgress({ done: i + 1, total: validRows.length });
       }
@@ -245,7 +243,7 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
       />
       <Input.TextArea
         value={text}
-        onChange={e => setText(e.target.value)}
+        onChange={(e) => setText(e.target.value)}
         rows={6}
         disabled={running}
         placeholder={`每行一个用户，格式：用户名,显示名,部门名,角色\n示例：\nzhangsan,张三,研发部,admin\nlisi,李四,,user\n# 以 # 开头的行是注释，空行忽略`}
@@ -259,10 +257,9 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
           description={
             summary.failed.length > 0 ? (
               <div>
-                {summary.failed.slice(0, 10).map(f => (
+                {summary.failed.slice(0, 10).map((f) => (
                   <div key={f.username}>
-                    <Text type="danger">@{f.username}</Text>
-                    ：{f.reason}
+                    <Text type="danger">@{f.username}</Text>：{f.reason}
                   </div>
                 ))}
                 {summary.failed.length > 10 && (
@@ -274,7 +271,7 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
         />
       )}
       {rows.length > 0 && (
-        <Table
+        <AppTable
           style={{ marginTop: 8 }}
           size="small"
           rowKey="line"
@@ -282,6 +279,7 @@ const BatchCreateUsersModal: React.FC<Props> = ({ open, onCancel, onSuccess, dep
           dataSource={rows}
           pagination={false}
           scroll={{ y: 220 }}
+          divider
         />
       )}
     </AppModal>
