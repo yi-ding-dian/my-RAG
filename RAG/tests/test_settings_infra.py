@@ -115,9 +115,10 @@ class TestConnectionInfra:
                            headers=admin_headers)
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        for key in ("llm", "embedding", "mineru", "mysql", "minio"):
+        for key in ("llm", "embedding", "mineru", "deepdoc", "mysql", "minio",
+                    "vector_store"):
             assert key in data, f"连接测试响应缺键: {key}"
-        for key in ("mysql", "minio"):
+        for key in ("mysql", "minio", "vector_store"):
             assert set(data[key]) == {"ok", "latency_ms", "message"}, \
                 f"{key} 段结构不符: {data[key]}"
         # 测试环境 mysql 为 URL 覆盖模式 → 明确提示且不崩溃
@@ -138,7 +139,7 @@ class TestConnectionInfra:
             "password": "p", "database": "db", "url": "",
         }))
         assert result["ok"] is True, result
-        assert "连接成功" in result["message"]
+        assert result["message"].startswith("127.0.0.1:3306/db"), result
 
     def test_mysql_connect_fail_still_result(self, monkeypatch):
         """_test_mysql 连接失败 → ok=False + 失败信息（接口不抛）"""
