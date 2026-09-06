@@ -3,6 +3,8 @@
 # 用法: ./deploy/start.sh    （任意目录执行均可，自动定位项目根）
 # 效果: 建/复用 .venv → 装依赖 → 构建前端 → 启动后端 8091 → 轮询就绪 → 启动前端 dev 3002
 # 停止: ./deploy/stop.sh
+# 说明: PID 文件记录 后端+前端 两个 PID（如 "BACKEND_PID FRONTEND_PID"），
+#       正常退出不删除（停靠 stop.sh 清理；防重复启动判断据此生效）
 set -e
 
 # 项目根 = 本脚本所在目录的上级（deploy/ -> 项目根）
@@ -10,13 +12,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 PID_FILE="$SCRIPT_DIR/.my-rag.pid"
-
-cleanup() {
-    local code=$?
-    [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
-    exit $code
-}
-trap cleanup EXIT
 
 echo "============================================"
 echo "  my-RAG 知识库系统 启动（源码部署）"
@@ -65,11 +60,14 @@ if [ ! -d "$FRONTEND_DIR/dist" ]; then
     echo "[OK] 前端构建完成"
 fi
 
-# 4. 检查是否已在运行（防重复启动）
+# 4. 检查是否已在运行（防重复启动；双 PID 任一存活即视为运行中）
 if [ -f "$PID_FILE" ]; then
-    OLD_PID=$(cat "$PID_FILE")
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "[OK] 服务已在运行 (PID: $OLD_PID)"
+    read -r OLD_BACKEND OLD_FRONTEND < "$PID_FILE"
+    ALIVE=""
+    [ -n "$OLD_BACKEND" ] && kill -0 "$OLD_BACKEND" 2>/dev/null && ALIVE=$OLD_BACKEND
+    [ -z "$ALIVE" ] && [ -n "$OLD_FRONTEND" ] && kill -0 "$OLD_FRONTEND" 2>/dev/null && ALIVE=$OLD_FRONTEND
+    if [ -n "$ALIVE" ]; then
+        echo "[OK] 服务已在运行 (PID: $OLD_BACKEND / $OLD_FRONTEND)"
         echo "访问地址: http://localhost:8091"
         echo "前端: http://localhost:3002"
         exit 0
@@ -86,7 +84,7 @@ PYTHONPATH="$PROJECT_DIR" nohup "$PYTHON" -m uvicorn backend.main:app \
 BACKEND_PID=$!
 echo "[OK] 后端已启动 (PID: $BACKEND_PID)"
 
-# 6. 启动前端 dev（3002，热更新）
+# 6. 启动前端 dev（3002，热更新；记录 PID 供 stop 精确停止）
 echo "[..] 启动前端 dev (port 3002)..."
 FRONTEND_PID=""
 if [ -d "$FRONTEND_DIR/node_modules" ]; then
@@ -99,7 +97,7 @@ else
     echo "[!] 前端 node_modules 不存在，跳过 dev（仅后端托管 dist）"
 fi
 
-echo "$BACKEND_PID" > "$PID_FILE"
+echo "$BACKEND_PID $FRONTEND_PID" > "$PID_FILE"
 
 # 7. 轮询等待后端就绪（最长 30 秒）
 echo "[..] 等待后端就绪..."

@@ -30,8 +30,9 @@ def create_ext(client, headers, name="外部查询", kb_ids=None, config=None):
 class TestAdminCRUD:
     """管理 API：CRUD / 权限 / 校验"""
 
-    def test_create_list_with_token_and_kb_names(self, client, admin_headers):
-        """创建返回完整 token + kb_names；列表同样含完整 token（内网管理端）"""
+    def test_create_list_with_token_masked(self, client, admin_headers):
+        """创建返回完整 token + kb_names；列表仅回传打码 token（防批量泄露），
+        完整凭证经 GET /ext-queries/{id}/token 单独取回（带审计）"""
         kb = create_kb(client, name="制度库")
         item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
                           config={"temperature": 0.5, "top_k": 3})
@@ -44,7 +45,15 @@ class TestAdminCRUD:
         assert item["config"]["enable_multi_turn"] is True
         items = client.get("/api/ext-queries", headers=admin_headers).json()
         assert len(items) == 1
-        assert items[0]["token"] == item["token"]
+        # 列表打码：与完整 token 不同且为"前4****后3"掩码格式
+        assert items[0]["token"] != item["token"]
+        assert items[0]["token"] == f"{item['token'][:4]}****{item['token'][-3:]}"
+        assert "****" in items[0]["token"]
+        # 完整 token 单独接口取回（超管可复制分发）
+        res = client.get(f"/api/ext-queries/{item['id']}/token",
+                         headers=admin_headers)
+        assert res.status_code == 200
+        assert res.json()["token"] == item["token"]
 
     def test_create_validation(self, client, admin_headers):
         """名称/库数/库存在性/config 白名单与范围校验"""
@@ -109,7 +118,8 @@ class TestAdminCRUD:
         assert got["name"] == "改名"
         assert got["kb_ids"] == [kb_b["id"]]
         assert got["config"]["temperature"] == 0.9
-        assert got["token"] == item["token"]
+        assert got["token"] != item["token"]  # 编辑返回也不带明文（打码回传）
+        assert "****" in got["token"]
         # 编辑到不存在的库 → 400
         resp = client.put(f"/api/ext-queries/{item['id']}",
                           json={"kb_ids": ["nonexist"]}, headers=admin_headers)

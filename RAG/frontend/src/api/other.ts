@@ -111,9 +111,13 @@ export const downloadLogFile = async (date: string): Promise<Blob> => {
   return res.blob();
 };
 
-// ========== 外部查询 API（仅 super_admin；token 为访问凭证，内网管理端返回明文） ==========
+// ========== 外部查询 API（仅 super_admin；token 为访问凭证，列表仅回传打码值） ==========
 
 export const listExtQueries = () => api.get<ExtQuery[]>('/ext-queries');
+
+/** 取完整 token（独立接口，带审计）：复制分发链接时临时取回，列表不回传明文 */
+export const getExtQueryToken = (id: string) =>
+  api.get<{ token: string; id: string }>(`/ext-queries/${id}/token`);
 
 export const createExtQuery = (data: ExtQueryCreateInput) =>
   api.post<ExtQuery>('/ext-queries', data);

@@ -29,6 +29,7 @@ import {
   createExtQuery,
   deleteExtQuery,
   extQueryLink,
+  getExtQueryToken,
   listDepartments,
   listExtQueries,
   listKbs,
@@ -289,7 +290,15 @@ const ExtQueriesPage: React.FC = () => {
               size="small"
               icon={<CopyOutlined />}
               disabled={!item.enabled}
-              onClick={() => copyLink(extQueryLink(item.id, item.token))}
+              onClick={async () => {
+                try {
+                  // 列表只回传打码 token：复制时走独立接口取完整凭证（带审计）
+                  const res = await getExtQueryToken(item.id);
+                  await copyLink(extQueryLink(item.id, res.data.token));
+                } catch {
+                  message.error('获取访问令牌失败，请重试');
+                }
+              }}
             />
           </Tooltip>
         </Space>

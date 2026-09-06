@@ -146,13 +146,40 @@ def _bearer_token(request: Request) -> Optional[str]:
 admin_router = APIRouter(prefix="/api/ext-queries", tags=["外部查询管理"])
 
 
+def _mask_token(token: str) -> str:
+    """token 打码：访问即凭证，列表/详情不回传明文（仅保留首尾少量字符）"""
+    if not token:
+        return ""
+    if len(token) <= 10:
+        return "********"
+    return f"{token[:4]}****{token[-3:]}"
+
+
 @admin_router.get("")
 async def list_ext_queries(db: AsyncSession = Depends(get_db),
                            user: UserPublic = Depends(require_super_admin)):
-    """列表（含完整 token：内网管理端可直接复制链接分发；外部访问凭证即 token，
-    超管负责保管——泄露可重置/停用）"""
+    """列表（token 打码回传——完整凭证需单独接口取回，防列表批量泄露）"""
     kb_map = await _list_kb_map(db)
-    return _attach_kb_names(get_ext_query_service().list(), kb_map)
+    items = _attach_kb_names(get_ext_query_service().list(), kb_map)
+    for it in items:
+        if it.get("token"):
+            it["token"] = _mask_token(it["token"])
+    return items
+
+
+@admin_router.get("/{ext_id}/token")
+async def get_ext_query_token(request: Request, ext_id: str,
+                              db: AsyncSession = Depends(get_db),
+                              user: UserPublic = Depends(require_super_admin)):
+    """取完整 token（仅超管）：复制分发链接用——列表不回传明文，
+    需要改记录（创建/重置）之外仅在本次响应返回，全程审计"""
+    item = get_ext_query_service().get(ext_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="外部查询配置不存在")
+    await audit_service.record_action(
+        user, action="ext.token-view", target_type="ext_query",
+        target_id=ext_id, target_name=item.get("name", ""), request=request)
+    return {"token": item.get("token") or "", "id": ext_id}
 
 
 @admin_router.post("", status_code=201)
@@ -199,7 +226,10 @@ async def update_ext_query(request: Request, config_id: str,
         target_name=(item["name"] or "")[:100],
         detail={"kb_count": len(item["kb_ids"])}, request=request)
     kb_map = await _list_kb_map(db)
-    return _attach_kb_names([item], kb_map)[0]
+    item = _attach_kb_names([item], kb_map)[0]
+    if item.get("token"):
+        item["token"] = _mask_token(item["token"])
+    return item
 
 
 @admin_router.post("/{config_id}/reset-token")
@@ -230,6 +260,8 @@ async def toggle_ext_query(request: Request, config_id: str,
         user, action="ext.toggle", target_type="ext_query", target_id=config_id,
         target_name=(item["name"] or "")[:100],
         detail={"enabled": item["enabled"]}, request=request)
+    if item.get("token"):
+        item["token"] = _mask_token(item["token"])
     return item
 
 
