@@ -263,14 +263,18 @@ class ContextualRetrievalConfig(BaseModel):
 
 
 class IngestionConfig(BaseModel):
-    """入库并发配置（后台解析任务并发上限，超管在系统配置页可调，即时生效）
+    """入库并发/配额配置（后台解析任务并发上限 + 知识库文档数护栏，
+    超管在系统配置页可调，即时生效）
 
     - concurrency：同时解析入库的文档数上限（默认 3，范围 1~10）。
       超出上限的任务在信号量队列等待，避免批量解析打爆 MinerU/embedding；
       运行时由 ingestion_service 每次 acquire 前实时读取，改动即生效
       （信号量按配置值惰性重建，见 _get_ingest_semaphore）
+    - kb_doc_limit：单知识库最大文档数，0=不限；上传/URL 导入时校验，
+      超限返回友好 400（防单库无限膨胀/多用户上传耗尽磁盘）
     """
     concurrency: int = 3
+    kb_doc_limit: int = 0
 
 
 class AgenticConfig(BaseModel):

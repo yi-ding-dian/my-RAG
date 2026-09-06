@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.chunking.splitter import Chunk
+from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
 from backend.models.rag_models import (ChunkInfo, DocumentDetail,
@@ -94,6 +95,15 @@ async def upload_document(request: Request, kb_id: str,
         raise HTTPException(
             status_code=400,
             detail=f"不支持的文件类型: .{ext}（支持 {sorted(SUPPORTED_EXTS)}）")
+
+    # 知识库文档数配额（kb_doc_limit>0 时启用；0=不限）：
+    # 防"单库无限膨胀/多用户上传耗尽磁盘"，超限给出友好提示
+    limit = get_active_config().ingestion.kb_doc_limit
+    if limit and limit > 0 and \
+            get_document_service().count_by_kb(kb_id) >= limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"知识库文档数已达上限（{limit} 个），请删除部分文档或调大配额后再上传")
 
     # 同名检测（读文件前尽早返回；list_by_kb 默认 include_deleted=False，
     # 回收站中的同名文档不参与，跨知识库互不影响）
@@ -247,6 +257,13 @@ async def import_from_url(request: Request, kb_id: str, req: UrlImportRequest,
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise HTTPException(status_code=400, detail="仅支持 http/https 网址导入")
+    # 配额护栏（同 upload：kb_doc_limit>0 时启用）
+    limit = get_active_config().ingestion.kb_doc_limit
+    if limit and limit > 0 and \
+            get_document_service().count_by_kb(kb_id) >= limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"知识库文档数已达上限（{limit} 个），请删除部分文档或调大配额后再导入")
     try:
         title, text = await fetch_webpage(url)
     except WebFetchError as e:

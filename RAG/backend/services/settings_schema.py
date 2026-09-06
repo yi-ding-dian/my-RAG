@@ -316,6 +316,7 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
         overrides={
             "concurrency": {"condition": "truthy", "fill_missing": True,
                             "range": (1, 10)},
+            "kb_doc_limit": {"fill_missing": True, "range": (0, 50000)},
         },
         fill_section=True),
     "chat": _reflect_section("chat", ChatConfig,
