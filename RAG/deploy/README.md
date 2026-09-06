@@ -66,3 +66,18 @@ Python 依赖统一在根目录 `requirements.txt`（含 jieba 等检索/认证/
   `https://kb.example.com` 时改为该来源），否则前端跨域请求会被浏览器拒绝
   （后端接口不可用）。
 - CORS 白名单在**后端启动时读取**，修改 `.env` 后需重启后端生效。
+
+## 安全合规清单（客户现场部署必读）
+
+1. **HTTPS**：默认 nginx 走 HTTP（`docker/nginx.conf`）。合规要求时按文件内
+   「可选：启用 HTTPS」注释启用 443（证书挂载路径/步骤已写清）；建议同时把
+   `.env` 的 `CORS_ORIGINS` 改为 `https://` 来源。
+2. **敏感文件权限**：`data/settings.json`（含全部 api_key）与 `.env` 会自动/建议
+   收紧为 `600`（本机当前用户可读）。若历史文件为 644，执行
+   `chmod 600 data/settings.json .env`。
+3. **数据盘与备份加密**：生产环境建议数据盘全盘加密；备份文件加密存储，
+   审计/会话导出含业务内容，按敏感数据处置。
+4. **密钥管理**：`JWT_SECRET` 必须 ≥16 位强随机；模型 api_key 只在创建/重置时
+   明文回传一次，列表仅打码展示；外部查询 token 泄露可随时重置/停用。
+5. **发布前自检**：`bash scripts/security_check.sh`（JWT 强度/settings 权限/
+   CORS/HTTPS 状态四查一提示，失败项阻断退出码 1）。

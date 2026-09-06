@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import uuid
 from typing import Dict, List, Optional
@@ -123,6 +124,12 @@ class SettingsService(SettingsTester):
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        # 敏感配置落盘防护：settings.json 含全部 api_key，
+        # 权限收紧为 600（仅当前用户可读），防同机其他用户读取
+        try:
+            os.chmod(SETTINGS_FILE, 0o600)
+        except OSError:
+            logger.warning("settings.json 权限收紧失败: %s", SETTINGS_FILE)
 
     # ================= 默认值 =================
 
