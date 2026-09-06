@@ -830,8 +830,8 @@ export interface ServiceProfile {
   chunking: ChunkingConfig;
   /** 上下文检索增强配置（完整文档视角阈值，字；旧后端可能缺失，前端做可选兼容） */
   contextual_retrieval?: { max_full_doc_chars?: number };
-  /** 入库并发配置（同时解析入库的文档数上限 1~10，默认 3；旧后端可能缺失，前端做可选兼容） */
-  ingestion?: { concurrency?: number };
+  /** 入库配置：同时解析入库的并发（1~10）与单库文档上限（0=不限；旧后端可能缺失，前端做可选兼容） */
+  ingestion?: { concurrency?: number; kb_doc_limit?: number };
   /** 节点向量存储段（旧档案可能缺失，前端做可选兼容；backend=chroma|milvus） */
   vector_store?: { backend?: string; milvus_uri?: string };
   /** 会话参数段（旧后端可能缺失，前端做可选兼容） */

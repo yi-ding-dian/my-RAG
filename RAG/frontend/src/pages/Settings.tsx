@@ -107,6 +107,7 @@ interface ProfileFormValues {
   chunk_overlap: number;
   contextual_retrieval_max_full_doc_chars: number;
   ingestion_concurrency: number;
+  ingestion_kb_doc_limit: number;
   mysql_host: string;
   mysql_port: number;
   mysql_user: string;
@@ -160,7 +161,10 @@ const toProfileInput = (vals: ProfileFormValues, llmSection?: {
   contextual_retrieval: {
     max_full_doc_chars: vals.contextual_retrieval_max_full_doc_chars,
   },
-  ingestion: { concurrency: vals.ingestion_concurrency },
+  ingestion: {
+    concurrency: vals.ingestion_concurrency,
+    kb_doc_limit: vals.ingestion_kb_doc_limit ?? 0,
+  },
   mysql: {
     host: vals.mysql_host,
     port: vals.mysql_port,
@@ -207,6 +211,7 @@ const toFormValues = (p: ServiceProfile) => ({
   contextual_retrieval_max_full_doc_chars:
     p.contextual_retrieval?.max_full_doc_chars ?? 20000,
   ingestion_concurrency: p.ingestion?.concurrency ?? 3,
+  ingestion_kb_doc_limit: p.ingestion?.kb_doc_limit ?? 0,
   mysql_host: p.mysql?.host,
   mysql_port: p.mysql?.port,
   mysql_user: p.mysql?.user,
@@ -449,6 +454,7 @@ const SettingsPage: React.FC = () => {
       chunk_size: 800, chunk_overlap: 100,
       contextual_retrieval_max_full_doc_chars: 20000,
       ingestion_concurrency: 3,
+      ingestion_kb_doc_limit: 0,
       // MySQL / MinIO 预填后端默认值（密码类留空，保存时后端用默认或保持原值）
       mysql_host: '127.0.0.1', mysql_port: 5455, mysql_user: 'ragflow',
       mysql_database: 'my_rag',
@@ -978,6 +984,15 @@ const SettingsPage: React.FC = () => {
                           tooltip="同时解析入库的文档数上限，超出排队等待（并发过高可能打爆解析/向量服务）"
                         >
                           <InputNumber min={1} max={10} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col span={6}>
+                        <Form.Item
+                          name="ingestion_kb_doc_limit"
+                          label="单库文档上限"
+                          tooltip="单知识库最大文档数，0=不限；上传/URL 导入时校验，超限提示后删除文档或调大配额"
+                        >
+                          <InputNumber min={0} max={50000} step={100} style={{ width: '100%' }} />
                         </Form.Item>
                       </Col>
                     </Row>
