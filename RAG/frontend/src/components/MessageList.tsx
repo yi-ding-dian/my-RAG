@@ -1,9 +1,23 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import AppModal from './AppModal';
-import { Button,  Empty,  Tooltip,  theme } from 'antd';
-import { ArrowDownOutlined, FileTextOutlined, PaperClipOutlined } from '@ant-design/icons';
+import {
+  App as AntApp,
+  Button,
+  Empty,
+  Input,
+  Popover,
+  Tooltip,
+  theme,
+} from 'antd';
+import {
+  ArrowDownOutlined,
+  DislikeOutlined,
+  FileTextOutlined,
+  LikeOutlined,
+  PaperClipOutlined,
+} from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { avatarUrl, type ChatMessage, type Source } from '../api/client';
+import { avatarUrl, submitFeedback, type ChatMessage, type Source } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import MdImages from './MdImages';
 import SourcePanel from './SourcePanel';
@@ -19,6 +33,10 @@ interface MessageListProps {
   waitingHint?: string;
   /** 点击回答中 [n] 引用标或引用面板"查看原文"时回调（打开溯源弹窗，可选） */
   onCitationClick?: (source: Source) => void;
+  /** 会话 ID（反馈关联：定位消息序号） */
+  sessionId?: string;
+  /** 知识库 ID（反馈关联） */
+  kbId?: string;
 }
 
 /** 消息头像尺寸：32px 圆形，与气泡间距 8px，垂直顶部对齐（多行文本时在首行） */
@@ -305,7 +323,101 @@ const renderContent = (
 };
 
 /** 消息列表：用户右侧 / 助手左侧气泡；助手消息 pre-wrap 渲染，引用来源默认收成一行入口按钮 */
-const MessageList: React.FC<MessageListProps> = ({ messages, waiting, waitingHint, onCitationClick }) => {
+/** 回答反馈条：👍/👎（点踩展开纠正说明）——提交到 /chat/feedback */
+const FeedbackBar: React.FC<{ idx: number; sessionId?: string; kbId?: string }> = ({
+  idx,
+  sessionId,
+  kbId,
+}) => {
+  const { message } = AntApp.useApp();
+  const [feedbacked, setFeedbacked] = useState<'up' | 'down' | ''>('');
+  const [popOpen, setPopOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handle = async (rating: 'up' | 'down', r: string) => {
+    setSubmitting(true);
+    try {
+      await submitFeedback({
+        rating,
+        kb_id: kbId,
+        session_id: sessionId,
+        msg_idx: idx,
+        reason: r,
+      });
+      setFeedbacked(rating);
+      setPopOpen(false);
+      message.success(rating === 'up' ? '感谢反馈' : '已反馈，我们会优化');
+    } catch {
+      message.error('反馈提交失败，请重试');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 2 }}>
+      <Tooltip title={feedbacked === 'up' ? '已感谢反馈' : '回答有帮助'}>
+        <Button
+          type="text"
+          size="small"
+          icon={<LikeOutlined />}
+          loading={submitting}
+          style={{ color: feedbacked === 'up' ? '#52c41a' : undefined }}
+          aria-label="点赞"
+          onClick={() => feedbacked === '' && void handle('up', '')}
+        />
+      </Tooltip>
+      <Popover
+        open={popOpen}
+        onOpenChange={setPopOpen}
+        trigger="click"
+        content={
+          <div style={{ width: 260 }}>
+            <Input.TextArea
+              rows={2}
+              maxLength={500}
+              placeholder="哪里不对？可填写纠正/原因（可选）"
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+            />
+            <div style={{ marginTop: 8, textAlign: 'right' }}>
+              <Button
+                size="small"
+                type="primary"
+                loading={submitting}
+                onClick={() => void handle('down', reason)}
+              >
+                提交
+              </Button>
+            </div>
+          </div>
+        }
+        placement="bottomLeft"
+      >
+        <Tooltip title={feedbacked === 'down' ? '已记录反馈' : '回答有问题'}>
+          <Button
+            type="text"
+            size="small"
+            icon={<DislikeOutlined />}
+            style={{ color: feedbacked === 'down' ? '#ff4d4f' : undefined }}
+            aria-label="点踩"
+            onClick={() => feedbacked === '' && setPopOpen(true)}
+          />
+        </Tooltip>
+      </Popover>
+    </div>
+  );
+};
+
+const MessageList: React.FC<MessageListProps> = ({
+  messages,
+  waiting,
+  waitingHint,
+  onCitationClick,
+  sessionId,
+  kbId,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { token } = theme.useToken();
   // 当前登录用户：聊天中自己的头像从此读取（无头像 → 默认 SVG 兜底）
@@ -436,6 +548,10 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, waitingHin
                       </div>
                     )}
                   </div>
+                )}
+                {/* 回答反馈（👍👎；流式进行中/用户消息不展示） */}
+                {!isUser && !isStreamingLast && (
+                  <FeedbackBar idx={idx} sessionId={sessionId} kbId={kbId} />
                 )}
                 {m.sources && m.sources.length > 0 && !isPendingLast(idx) && (
                   <div style={{ marginTop: 8 }}>

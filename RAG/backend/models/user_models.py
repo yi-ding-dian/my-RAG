@@ -210,6 +210,24 @@ class DepartmentUpdate(BaseModel):
     description: Optional[str] = Field(None, max_length=512)
 
 
+class FeedbackORM(Base):
+    """聊天回答反馈（点赞/点踩 + 可选纠正原因；v1 最小闭环）
+
+    - rating: up / down；reason: 可选补充说明（纠错/原因）
+    - 定位维度：session_id + msg_idx（会话内消息序号，-1=未关联）
+    """
+    __tablename__ = "chat_feedback"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    kb_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    msg_idx: Mapped[int] = mapped_column(Integer, default=-1)
+    rating: Mapped[str] = mapped_column(String(8))  # up / down
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32))
+
+
 class LoginRequest(BaseModel):
     """登录请求（JSON body，非 form）"""
     username: str = Field(..., min_length=1, description="用户名")

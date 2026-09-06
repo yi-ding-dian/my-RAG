@@ -25,11 +25,13 @@ from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
 from backend.models.rag_models import (ChatHistoryItem, ChatRequest,
+                                       FeedbackRequest,
                                        RenameSessionRequest, RetrieveRequest,
                                        RetrieveResponse)
 from backend.models.user_models import UserPublic
 from backend.services import audit_service, department_service
 from backend.services.chat_service import get_chat_service, sse_event
+from backend.services.feedback_service import create_feedback
 from backend.services.knowledge_graph_service import build_kg_source
 from backend.services.retrieval_service import get_retrieval_service
 
@@ -252,3 +254,19 @@ async def export_history(request: Request, session_id: str,
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
+
+
+@router.post("/feedback", include_in_schema=True)
+async def submit_feedback(body: FeedbackRequest,
+                          db: AsyncSession = Depends(get_db),
+                          user: UserPublic = Depends(get_current_user)):
+    """提交回答反馈（👍👎 + 可选纠正原因；任何登录用户）
+
+    - rating 非法 → 400；落库成功 → {"ok": true}，重复提交允许（幂等由前端控制）
+    """
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="反馈类型非法（up/down）")
+    ok = await create_feedback(
+        user.id, body.rating, kb_id=body.kb_id, session_id=body.session_id,
+        msg_idx=body.msg_idx, reason=body.reason or "")
+    return {"ok": ok}

@@ -239,6 +239,15 @@ class RetrieveResponse(BaseModel):
     sources: List[Source]
 
 
+class FeedbackRequest(BaseModel):
+    """聊天回答反馈提交（用户端 👍👎 + 可选纠正说明）"""
+    rating: str = Field(..., description="up / down")
+    kb_id: Optional[str] = Field(None, description="关联知识库 ID")
+    session_id: Optional[str] = Field(None, description="会话 ID")
+    msg_idx: int = Field(-1, description="会话内消息序号（-1=未关联）")
+    reason: Optional[str] = Field(None, max_length=1000, description="原因/纠正说明")
+
+
 class ChunkInfo(BaseModel):
     """切块条目（契约: {text, index, char_start, char_end}）"""
     text: str = Field("", description="切块文本")

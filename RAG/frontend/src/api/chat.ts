@@ -245,3 +245,12 @@ export const exportSession = async (sessionId: string): Promise<void> => {
   a.remove();
   URL.revokeObjectURL(url);
 };
+
+/** 提交回答反馈（👍👎 + 可选纠正原因；任何登录用户） */
+export const submitFeedback = (data: {
+  rating: 'up' | 'down';
+  kb_id?: string;
+  session_id?: string;
+  msg_idx?: number;
+  reason?: string;
+}) => api.post('/chat/feedback', data);

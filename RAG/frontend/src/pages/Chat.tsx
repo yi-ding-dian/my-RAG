@@ -566,6 +566,8 @@ const ChatPage: React.FC = () => {
               messages={messages}
               waiting={streaming}
               waitingHint={statusHint}
+              sessionId={activeSessionId}
+              kbId={kbId}
               onCitationClick={(s) => {
                 setTraceSource(s);
                 // 记录该引用所属的回答文本（按 source.id 匹配消息，供溯源弹窗原文回答-对齐高亮）

@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_active_config
 from backend.db import get_db
-from backend.deps import get_current_user, kb_or_404
+from backend.deps import get_current_user, kb_or_404, require_super_admin
 from backend.models.user_models import UserORM, UserPublic
 from backend.services import audit_service, ragas_sampling
 from backend.services.chat_service import get_chat_service
@@ -505,3 +505,11 @@ async def ragas_precheck(user: UserPublic = Depends(get_current_user)):
     if not embedding["available"]:
         logger.info("RAGAS precheck Embedding 不可用: %s", embedding["reason"])
     return {"llm": llm, "embedding": embedding}
+
+
+@router.get("/chat-feedback")
+async def chat_feedback_stats(
+        user: UserPublic = Depends(require_super_admin)):
+    """用户回答反馈汇总（仅超管）：总数/好评/差评 + 最近反馈"""
+    from backend.services.feedback_service import feedback_stats
+    return await feedback_stats()

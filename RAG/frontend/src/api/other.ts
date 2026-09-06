@@ -43,6 +43,26 @@ export const ragasPrecheck = () =>
 export const getRetrievalQuality = (kbId: string) =>
   api.get<RetrievalQuality>('/stats/quality', { params: { kb_id: kbId } });
 
+/** 用户回答反馈汇总（仅超管）：总数/好评/差评 + 最近反馈 */
+export interface ChatFeedbackStats {
+  total: number;
+  up: number;
+  down: number;
+  recent: Array<{
+    id: string;
+    user_id: string;
+    kb_id: string | null;
+    session_id: string | null;
+    msg_idx: number;
+    rating: string;
+    reason: string;
+    created_at: string;
+  }>;
+}
+
+export const getChatFeedbackStats = () =>
+  api.get<ChatFeedbackStats>('/stats/chat-feedback');
+
 export const getRagasReport = (taskId: string) =>
   api.get<RagasReport>(`/stats/ragas/tasks/${taskId}`);
 
