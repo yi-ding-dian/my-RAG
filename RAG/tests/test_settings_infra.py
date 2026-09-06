@@ -121,9 +121,10 @@ class TestConnectionInfra:
         for key in ("mysql", "minio", "vector_store"):
             assert set(data[key]) == {"ok", "latency_ms", "message"}, \
                 f"{key} 段结构不符: {data[key]}"
-        # 测试环境 mysql 为 URL 覆盖模式 → 明确提示且不崩溃
-        assert data["mysql"]["ok"] is False
-        assert "URL 覆盖模式" in data["mysql"]["message"]
+        # 测试环境 mysql 为 URL 覆盖模式 → 视为可用并展示数据源（非失败）
+        assert data["mysql"]["ok"] is True
+        assert "sqlite" in data["mysql"]["message"] or "://" in data["mysql"]["message"]
+        # message 只展示数据源标识（配置什么显示什么），不再赘述覆盖模式文案
 
     def test_mysql_connect_ok_mocked(self, monkeypatch):
         """_test_mysql 直连成功路径（mock aiomysql.connect）"""
