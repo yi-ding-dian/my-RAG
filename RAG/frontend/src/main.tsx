@@ -8,6 +8,7 @@ import 'antd/dist/reset.css';
 import './index.css';
 
 import App from './App';
+import ErrorBoundary from './components/ErrorBoundary';
 import { ThemeProvider, useTheme, buildTheme } from './theme';
 
 dayjs.locale('zh-cn');
@@ -18,7 +19,10 @@ const ThemedRoot: React.FC = () => {
   return (
     <ConfigProvider locale={zhCN} theme={buildTheme(preset)}>
       <AntApp>
-        <App />
+        {/* 全局错误边界：渲染异常不再白屏 */}
+        <ErrorBoundary>
+          <App />
+        </ErrorBoundary>
       </AntApp>
     </ConfigProvider>
   );
