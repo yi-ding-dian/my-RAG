@@ -154,9 +154,11 @@ class TestWhitelistFromSchema:
         assert router_settings.CHAT_SECTION_FIELDS == set(ss.CHAT_FIELD_NAMES)
         assert router_settings.CHAT_RETRIEVAL_FIELDS == set(
             ss.CHAT_RETRIEVAL_FIELD_NAMES)
+        assert router_settings.CHAT_AGENTIC_FIELDS == set(
+            ss.CHAT_AGENTIC_FIELD_NAMES)
         assert router_settings.CHAT_LLM_FIELDS == set(ss.LLM_FIELD_NAMES)
         assert router_settings.CHAT_SECTIONS == ss.CHAT_SECTIONS == {
-            "chat", "retrieval", "llm"}
+            "chat", "retrieval", "llm", "agentic"}
 
     def test_unknown_chat_field_still_400(self, client, admin_headers):
         """白名单派生后：chat 段未知字段仍 400（防越权语义不变）"""

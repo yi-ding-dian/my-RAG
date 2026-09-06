@@ -55,7 +55,7 @@ class TestBackfillUnit:
             a = doc_svc.create(kb_id=kb_id, original_name="A.txt", size=10)
             a_chunks = [{"text": "A 内容一", "char_start": 0, "char_end": 4}]
             _force_ingested(doc_svc, a.id, a_chunks)
-            vec.add(kb_id, a.id, "A.txt", ["A 内容一"],
+            await vec.add(kb_id, a.id, "A.txt", ["A 内容一"],
                     [char_vector("A 内容一")])
             # B：ingested 但 collection 无向量（模拟重建期间向量被 drop 清掉）
             b = doc_svc.create(kb_id=kb_id, original_name="B.txt", size=10)
@@ -71,7 +71,7 @@ class TestBackfillUnit:
 
             assert task["done"] == 2 and task["failed"] == 0
             assert task["total"] == 2  # total 含增量文档（A+B，C 未入库不算）
-            allv = vec.get_all(kb_id)
+            allv = await vec.get_all(kb_id)
             doc_ids = {m.get("document_id") for _, _, m in allv}
             assert doc_ids == {a.id, b.id}
             b_metas = [m for _, _, m in allv if m.get("document_id") == b.id]
@@ -96,14 +96,14 @@ class TestBackfillUnit:
             a = doc_svc.create(kb_id=kb_id, original_name="A.txt", size=10)
             _force_ingested(doc_svc, a.id,
                             [{"text": "A 内容一", "char_start": 0, "char_end": 4}])
-            vec.add(kb_id, a.id, "A.txt", ["A 内容一"],
+            await vec.add(kb_id, a.id, "A.txt", ["A 内容一"],
                     [char_vector("A 内容一")])
             task = {"done": 0, "failed": 0, "errors": [], "current_doc": None}
             # 快照不含 A（模拟重建期间新入库），但 collection 已有其向量
             await dim_check._backfill_missing_vectors(
                 kb_id, task, vec, FakeEmb(), snapshot_ids=set())
             assert task["done"] == 0 and task["failed"] == 0
-            assert len(vec.get_all(kb_id)) == 1  # 未重复写入
+            assert len(await vec.get_all(kb_id)) == 1  # 未重复写入
 
         asyncio.run(_run())
 
@@ -124,7 +124,7 @@ class TestBackfillUnit:
             task = {"done": 0, "failed": 0, "errors": [], "current_doc": None}
             await dim_check._backfill_missing_vectors(
                 kb_id, task, vec, FakeEmb(), snapshot_ids=set())
-            metas = [m for _, _, m in vec.get_all(kb_id)]
+            metas = [m for _, _, m in await vec.get_all(kb_id)]
             assert len(metas) == 1
             assert metas[0]["doc_active"] is False
 
@@ -173,6 +173,6 @@ class TestRebuildIncrementalIntegration:
         assert st["done"] >= 1
         # B 的向量在 collection 中（重建完成不丢重建期间新入库的文档）
         doc_ids = {m.get("document_id")
-                   for _, _, m in get_vector_store().get_all(kb["id"])}
+                   for _, _, m in asyncio.run(get_vector_store().get_all(kb["id"]))}
         assert doc_a["id"] in doc_ids
         assert doc_b["id"] in doc_ids

@@ -40,7 +40,7 @@ def _ingest_two_docs(client, kb_id):
 
 def _real_items(kb_id):
     """从真实 chroma 拉全量 (id, text, meta)"""
-    return get_vector_store().get_all(kb_id)
+    return asyncio.run(get_vector_store().get_all(kb_id))
 
 
 class _FixedVecStore:
@@ -50,21 +50,21 @@ class _FixedVecStore:
         self._real = real
         self._hits = list(fixed_hits)
 
-    def search(self, kb_id, query_emb, top_k=5, where=None):
+    async def search(self, kb_id, query_emb, top_k=5, where=None):
         # 与真实 Chroma where 语义一致：doc_active=True 过滤（缺失键视为活跃）
         if where is not None and where.get("doc_active") is True:
             return [h for h in self._hits[:top_k]
                     if (h[2] or {}).get("doc_active", True)]
         return self._hits[:top_k]
 
-    def count(self, kb_id):
-        return self._real.count(kb_id)
+    async def count(self, kb_id):
+        return await self._real.count(kb_id)
 
-    def get_embedding_dimension(self, kb_id):
-        return self._real.get_embedding_dimension(kb_id)
+    async def get_embedding_dimension(self, kb_id):
+        return await self._real.get_embedding_dimension(kb_id)
 
-    def get_all(self, kb_id):
-        return self._real.get_all(kb_id)
+    async def get_all(self, kb_id):
+        return await self._real.get_all(kb_id)
 
 
 class _FakeHttpxClient:
@@ -252,7 +252,7 @@ class TestHybridRetrieval:
         first = asyncio.run(svc.retrieve(kb["id"], "量子霸权", top_k=5))
         assert any(s.text == kw[1] for s in first)
         # 删除含关键词的文档（count 变化 → 下次检索自动重建 BM25）
-        get_vector_store().delete_by_document(kb["id"], kw[2]["document_id"])
+        asyncio.run(get_vector_store().delete_by_document(kb["id"], kw[2]["document_id"]))
         second = asyncio.run(svc.retrieve(kb["id"], "量子霸权", top_k=5))
         assert second, "剩余文档仍可检索"
         assert not any(s.text == kw[1] for s in second), \

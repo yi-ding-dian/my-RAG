@@ -1,26 +1,11 @@
-"""向量存储后端（可插拔抽象，当前实现 chroma，milvus 预留）
+"""向量存储后端（可插拔抽象,当前实现 chroma,新增 milvus 服务化)
 
-- 上层全部通过 get_vector_store() 获取门面 VectorStore（单例），
-  VectorStore 内部委托给 VectorBackend 后端实现，按 settings.VECTOR_BACKEND
-  选择（.env VECTOR_BACKEND=chroma|milvus）。
-- 后端接口契约（VectorBackend ABC）：
-  - 每个知识库一个隔离集合（collection / collection 等价物），名字 kb_{kb_id}；
-  - add：id = f"{doc_id}_{i}"，metadata 仅 str/int/float/bool，
-    显式补 doc_active 键（软删除过滤标志，见 ChromaVectorBackend）；
-  - search：余弦相似度，返回按相似度降序的 (id, text, metadata, score)，
-    其中相似度 = 1 - distance（算距离的后端自行换算），where 为等值
-    metadata 过滤 dict（如 {"doc_active": True}）；
-  - update_metadata：替换某文档全部 chunk 的部分 metadata 键
-    （其余键保真），失败返回 False；
-  - 无向量 / collection 不存在是合法状态：search 空、count 0、
-    delete 静默成功、update_metadata 返回 True（无操作视为成功）。
-- 接入新后端（milvus 等）步骤：
-  1) 实现 VectorBackend 全部方法（一个类，内部用 milvus client）；
-  2) _create_backend 注册名字分支；
-  3) config 补充该后端连接配置（已预留 VECTOR_BACKEND/MILVUS_URI）。
+  VectorStore 内部委托给 VectorBackend 后端实现,按配置
+  （配置文件 VECTOR_BACKEND=chroma|milvus,MILVUS_URI 为 milvus 地址）选择。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
@@ -306,6 +291,238 @@ class ChromaVectorBackend(VectorBackend):
             logger.warning("向量库删除失败: kb=%s err=%s", kb_id, e)
 
 
+def normalize_milvus_uri(uri: str) -> str:
+    """MilvusClient 要求 URI 带 scheme(如 http://);用户可能只填 host:port
+    ——缺 scheme 时补默认 http://(Milvus 默认监听 19530 gRPC,走 http 协议)"""
+    if uri and not uri.startswith(("http://", "https://", "unix://", "tcp://")):
+        return f"http://{uri}"
+    return uri
+
+
+class MilvusVectorBackend(VectorBackend):
+    """Milvus 服务化实现（pymilvus 3.x MilvusClient 现代 API）
+
+    与 ChromaVectorBackend 行为对齐（同一种"库=集合/语义"契约）：
+    - collection 名 kb_{kb_id}，COSINE 度量，相似度 score = 1 - distance；
+    - schema = id(varchar 主键) + vector(FLOAT_VECTOR) + dynamic field：
+      text 与全部 metadata（document_id/document_name/chunk_index/
+      char_start/parent_text/doc_active…）均走动态 JSON 字段，
+      查询 output_fields=['*'] 取回；
+    - where 等值 dict 转 Milvus filter expr（如 doc_active == true）；
+    - 集合不存在/连接失败：search 空、count 0、delete 静默、
+      update_metadata True（与 Chroma 防御性契约一致）。
+    """
+
+    def __init__(self, uri: str = ""):
+        from pymilvus import MilvusClient
+        self._uri = normalize_milvus_uri(uri or str(settings.MILVUS_URI))
+        self._client = MilvusClient(uri=self._uri)
+
+    def _collection_name(self, kb_id: str) -> str:
+        return f"kb_{kb_id}"
+
+    def _ensure_collection(self, kb_id: str, dim: int) -> None:
+        name = self._collection_name(kb_id)
+        if not self._client.has_collection(name):
+            self._client.create_collection(
+                collection_name=name,
+                dimension=dim,
+                metric_type="COSINE",
+                id_type="string",
+                auto_id=False,
+                max_length=128,
+                enable_dynamic_field=True,
+            )
+
+    @staticmethod
+    def _expr_where(where: Optional[dict]) -> str:
+        """where 等值 dict → Milvus filter 表达式（布尔/int/float/str）"""
+        if not where:
+            return ""
+        parts = []
+        for k, v in where.items():
+            if isinstance(v, bool):
+                parts.append(f'{k} == {"true" if v else "false"}')
+            elif isinstance(v, (int, float)):
+                parts.append(f"{k} == {v}")
+            else:
+                s = str(v).replace('"', '\\"')
+                parts.append(f'{k} == "{s}"')
+        return " and ".join(parts)
+
+    def add(self, kb_id: str, doc_id: str, document_name: str,
+            chunks: List[str], embeddings: List[List[float]],
+            metadatas: List[Dict] | None = None) -> None:
+        if not chunks or not embeddings or len(chunks) != len(embeddings):
+            raise ValueError("chunks 与 embeddings 长度不一致或为空")
+        dim = len(embeddings[0])
+        name = self._collection_name(kb_id)
+        try:
+            self._ensure_collection(kb_id, dim)
+        except Exception as e:
+            raise RuntimeError(f"Milvus 集合创建失败: {e}") from e
+        if metadatas is None:
+            metadatas = [
+                {"document_id": doc_id, "document_name": document_name,
+                 "chunk_index": i} for i in range(len(chunks))
+            ]
+        elif len(metadatas) != len(chunks):
+            raise ValueError("metadatas 与 chunks 长度不一致")
+        rows = []
+        for i, (text, emb, m) in enumerate(zip(chunks, embeddings, metadatas)):
+            rows.append({
+                "id": f"{doc_id}_{i}",
+                "vector": emb,
+                "text": text,
+                **m,
+                "doc_active": m.get("doc_active", True),
+            })
+        try:
+            self._client.upsert(collection_name=name, data=rows)
+        except Exception as e:
+            logger.warning("Milvus 向量入库失败: kb=%s doc=%s err=%s",
+                           kb_id, doc_id, str(e)[:150])
+            raise
+        logger.info("Milvus 向量入库: kb=%s doc=%s chunks=%d",
+                    kb_id, doc_id, len(chunks))
+
+    def search(self, kb_id: str, query_embedding: List[float],
+               top_k: int = 5, where: Optional[dict] = None) -> List[Hit]:
+        name = self._collection_name(kb_id)
+        try:
+            if not self._client.has_collection(name):
+                return []
+            res = self._client.search(
+                collection_name=name,
+                data=[query_embedding],
+                limit=max(1, top_k),
+                filter=self._expr_where(where) or None,
+                metric_type="COSINE",
+                output_fields=["*"],
+            )
+        except Exception as e:
+            logger.warning("Milvus 向量检索失败: kb=%s err=%s",
+                           kb_id, str(e)[:150])
+            return []
+        hits: List[Hit] = []
+        for row in (res[0] if res else []):
+            ent = row.get("entity") or {}
+            meta = {k: v for k, v in ent.items()
+                    if k not in ("id", "text", "vector")}
+            hits.append((row.get("id") or "", ent.get("text") or "", meta,
+                         1.0 - float(row.get("distance", 1.0))))
+        hits.sort(key=lambda h: h[3], reverse=True)
+        return hits
+
+    def delete_by_document(self, kb_id: str, doc_id: str) -> None:
+        name = self._collection_name(kb_id)
+        try:
+            if not self._client.has_collection(name):
+                return
+            self._client.delete(collection_name=name,
+                                filter=f'document_id == "{doc_id}"')
+            logger.info("Milvus 向量删除: kb=%s doc=%s", kb_id, doc_id)
+        except Exception as e:
+            logger.warning("Milvus 向量删除失败: kb=%s doc=%s err=%s",
+                           kb_id, doc_id, str(e)[:150])
+
+    def update_metadata(self, kb_id: str, doc_id: str, **meta) -> bool:
+        """整行覆盖式更新（Milvus 无局部 update）：按 document_id 取回完整
+        行（含 text/vector 动态字段）→ 合并新 metadata → upsert 回写"""
+        name = self._collection_name(kb_id)
+        try:
+            if not self._client.has_collection(name):
+                return True
+            rows = self._client.query(
+                collection_name=name,
+                filter=f'document_id == "{doc_id}"',
+                output_fields=["*"],
+                limit=16384,
+            )
+            if not rows:
+                return True  # 无向量：无操作视为成功
+            new_rows = []
+            for r in rows:
+                nr = dict(r)
+                nr.pop("id", None)
+                nr.pop("vector", None)
+                nr.update(meta)
+                new_rows.append({"id": r["id"], **nr})
+            self._client.upsert(collection_name=name, data=new_rows)
+            logger.info("Milvus 向量 metadata 更新: kb=%s doc=%s blocks=%d",
+                        kb_id, doc_id, len(new_rows))
+            return True
+        except Exception as e:
+            logger.warning("Milvus 向量 metadata 更新失败: kb=%s doc=%s err=%s",
+                           kb_id, doc_id, str(e)[:150])
+            return False
+
+    def count(self, kb_id: str) -> int:
+        name = self._collection_name(kb_id)
+        try:
+            if not self._client.has_collection(name):
+                return 0
+            res = self._client.query(collection_name=name,
+                                     filter="",
+                                     output_fields=["count(*)"])
+            return int(res[0]["count(*)"]) if res else 0
+        except Exception:
+            return 0
+
+    def get_embedding_dimension(self, kb_id: str) -> Optional[int]:
+        try:
+            name = self._collection_name(kb_id)
+            if not self._client.has_collection(name):
+                return None
+            desc = self._client.describe_collection(name)
+            for f in desc.get("fields", []):
+                params = f.get("params") or {}
+                if params.get("dim"):
+                    return int(params["dim"])
+            return None
+        except Exception as e:
+            logger.warning("Milvus 维度检测失败: kb=%s err=%s", kb_id, e)
+            return None
+
+    def get_all(self, kb_id: str) -> List[Tuple[str, str, Dict]]:
+        name = self._collection_name(kb_id)
+        try:
+            if not self._client.has_collection(name):
+                return []
+            out: List[Tuple[str, str, Dict]] = []
+            offset = 0
+            limit = 4096  # Milvus query 单次上限内的安全窗
+            while True:
+                rows = self._client.query(
+                    collection_name=name, filter="",
+                    output_fields=["*"], limit=limit, offset=offset)
+                if not rows:
+                    break
+                for r in rows:
+                    tid = r.get("id", "")
+                    out.append((
+                        tid,
+                        r.get("text") or "",
+                        {k: v for k, v in r.items()
+                         if k not in ("id", "text", "vector")},
+                    ))
+                offset += len(rows)
+                if len(rows) < limit:
+                    break
+            return out
+        except Exception as e:
+            logger.warning("Milvus 全量拉取失败: kb=%s err=%s", kb_id,
+                           str(e)[:150])
+            return []
+
+    def drop_collection(self, kb_id: str) -> None:
+        try:
+            self._client.drop_collection(self._collection_name(kb_id))
+            logger.info("Milvus 向量库删除: kb=%s", kb_id)
+        except Exception as e:
+            logger.warning("Milvus 向量库删除失败: kb=%s err=%s", kb_id, e)
+
+
 class VectorStore:
     """向量存储门面：按配置选择后端，方法与 VectorBackend 契约一致。
 
@@ -313,43 +530,52 @@ class VectorStore:
     实现委托给 _backend；新增后端时无需改动上层调用方。
     """
 
-    def __init__(self, backend: Optional[VectorBackend] = None):
-        self._backend = backend or _create_backend(settings.VECTOR_BACKEND)
+    def __init__(self, backend: Optional[VectorBackend] = None,
+                 backend_name: str = "", backend_uri: str = ""):
+        self._backend = backend or _create_backend(
+            settings.VECTOR_BACKEND, settings.MILVUS_URI)
+        self._backend_name = backend_name or settings.VECTOR_BACKEND
+        self._backend_uri = backend_uri or settings.MILVUS_URI
 
-    def add(self, *args, **kwargs):
-        return self._backend.add(*args, **kwargs)
+    @property
+    def sync(self) -> VectorBackend:
+        """同步视图：直接调用后端同步实现（仅供 asyncio.to_thread 场景，
+        如 _purge_local 这类"纯同步部分放线程池"的调用，避免套娃）"""
+        return self._backend
 
-    def search(self, *args, **kwargs):
-        return self._backend.search(*args, **kwargs)
+    # 后端实现均为同步（Chroma 嵌入式 / PyMilvus SDK），统一移到线程执行，
+    # 避免阻塞事件循环（多 worker 前置修复：检索/入库不再占用主循环）
+    async def add(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.add, *args, **kwargs)
 
-    def delete_by_document(self, *args, **kwargs):
-        return self._backend.delete_by_document(*args, **kwargs)
+    async def search(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.search, *args, **kwargs)
 
-    def update_metadata(self, *args, **kwargs):
-        return self._backend.update_metadata(*args, **kwargs)
+    async def delete_by_document(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.delete_by_document, *args, **kwargs)
 
-    def count(self, *args, **kwargs):
-        return self._backend.count(*args, **kwargs)
+    async def update_metadata(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.update_metadata, *args, **kwargs)
 
-    def get_embedding_dimension(self, *args, **kwargs):
-        return self._backend.get_embedding_dimension(*args, **kwargs)
+    async def count(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.count, *args, **kwargs)
 
-    def get_all(self, *args, **kwargs):
-        return self._backend.get_all(*args, **kwargs)
+    async def get_embedding_dimension(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.get_embedding_dimension, *args, **kwargs)
 
-    def drop_collection(self, *args, **kwargs):
-        return self._backend.drop_collection(*args, **kwargs)
+    async def get_all(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.get_all, *args, **kwargs)
+
+    async def drop_collection(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.drop_collection, *args, **kwargs)
 
 
-def _create_backend(name: str) -> VectorBackend:
+def _create_backend(name: str, uri: str = "") -> VectorBackend:
     """按配置创建后端实例（接入新后端在此注册）"""
     if name == "chroma":
         return ChromaVectorBackend()
     if name == "milvus":
-        raise RuntimeError(
-            "向量后端 milvus 尚未接入：接口已就绪（VectorBackend），"
-            "请先实现 MilvusVectorBackend 并在 vector_store._create_backend 注册"
-            f"（MILVUS_URI={settings.MILVUS_URI}），或将 VECTOR_BACKEND 改回 chroma")
+        return MilvusVectorBackend(uri=uri or settings.MILVUS_URI)
     raise ValueError(
         f"未知向量后端: {name!r}（支持: chroma / milvus）")
 
@@ -358,7 +584,27 @@ _vector_store: Optional[VectorStore] = None
 
 
 def get_vector_store() -> VectorStore:
+    """按当前配置档案 vector_store 段惰性创建 / 热切换后端
+
+    配置档案切换 backend（前端保存后即时生效语义）后，首次调用本函数时
+    按新后端重建门面（MilvusClient 实例复用连接开销低）；已持有旧实例的
+    调用方继续用旧后端直到下一次获取(下一请求生效)。线程安全：uvicorn
+    单进程模型下赋值原子;多进程场景各进程独立,随重启收敛。
+    """
     global _vector_store
-    if _vector_store is None:
-        _vector_store = VectorStore()
+    from backend.config import get_active_config
+    try:
+        cfg = get_active_config().vector_store
+        backend_name = cfg.backend
+        uri = cfg.milvus_uri or settings.MILVUS_URI
+    except Exception:
+        # 档案不可用（初始化早期）→ env 兜底（与历史行为一致）
+        backend_name, uri = settings.VECTOR_BACKEND, settings.MILVUS_URI
+    if _vector_store is not None and (
+            _vector_store._backend_name == backend_name
+            and _vector_store._backend_uri == uri):
+        return _vector_store
+    _vector_store = VectorStore(
+        backend=_create_backend(backend_name, uri),
+        backend_name=backend_name, backend_uri=uri)
     return _vector_store

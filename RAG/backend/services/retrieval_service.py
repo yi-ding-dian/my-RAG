@@ -110,7 +110,7 @@ class RetrievalService:
         # query 抛错被 search 吞掉 → 静默"未检索到相关内容"；这里提前暴露明确错误，
         # chat_service 捕获后以 error 事件透传给用户（提示重建向量）
         vec = get_vector_store()
-        dim_check = vec.get_embedding_dimension(kb_id)
+        dim_check = await vec.get_embedding_dimension(kb_id)
         if dim_check is not None and dim_check != len(query_vec[0]):
             from backend.services.dim_check import VectorDimensionError
             raise VectorDimensionError(
@@ -119,8 +119,8 @@ class RetrievalService:
 
         # 3) 向量检索候选（where 过滤软删文档：回收站文档 chunk 标记
         # doc_active=False，检索自动排除；历史数据由 vector_store 惰性补齐键）
-        hits = vec.search(kb_id, query_vec[0], top_k=candidate_count,
-                          where={"doc_active": True})
+        hits = await vec.search(kb_id, query_vec[0], top_k=candidate_count,
+                                where={"doc_active": True})
 
         # 3) 混合融合 / 纯向量
         if enable_hybrid:
@@ -248,7 +248,7 @@ class RetrievalService:
           或 count 变化后自然重建
         """
         vec = get_vector_store()
-        count = await asyncio.to_thread(vec.count, kb_id)
+        count = await vec.count(kb_id)
         if count == 0:
             self._bm25_cache.pop(kb_id, None)
             return None, []
@@ -263,7 +263,7 @@ class RetrievalService:
             if cached is not None and cached[0].size == count:
                 return cached
             try:
-                items = await asyncio.to_thread(vec.get_all, kb_id)
+                items = await vec.get_all(kb_id)
                 if not items:
                     return None, []
                 bm25 = await asyncio.to_thread(BM25Index,

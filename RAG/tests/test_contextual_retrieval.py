@@ -303,7 +303,7 @@ class TestIngestContextual:
         assert len(rec.inputs) == len(metas)
         # 向量库 documents 含前缀 + metadata context 透传
         from backend.services.vector_store import get_vector_store
-        items = get_vector_store().get_all(kb["id"])
+        items = asyncio.run(get_vector_store().get_all(kb["id"]))
         assert len(items) == len(metas)
         assert all("【上下文】" in t for _, t, _ in items)
         assert all((m.get("context") or "") for _, _, m in items)
@@ -326,7 +326,7 @@ class TestIngestContextual:
         final = wait_for_status(client, kb["id"], doc["id"])
         assert all(len(c["context"]) <= 100 for c in final["chunks_meta"])
         from backend.services.vector_store import get_vector_store
-        items = get_vector_store().get_all(kb["id"])
+        items = asyncio.run(get_vector_store().get_all(kb["id"]))
         assert all(len(m.get("context", "")) <= 500 for _, _, m in items)
 
     def test_llm_failure_does_not_block(self, client, monkeypatch, admin_headers):

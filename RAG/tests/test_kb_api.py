@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 import re
 
 from conftest import create_kb, upload_and_ingest, upload_doc, wait_for_status
@@ -254,7 +256,7 @@ class TestDocumentDetail:
         doc = upload_and_ingest(client, kb["id"])
         upload_path = UPLOAD_DIR / doc["name"]
         assert upload_path.exists()
-        assert get_vector_store().count(kb["id"]) == doc["chunk_count"]
+        assert asyncio.run(get_vector_store().count(kb["id"])) == doc["chunk_count"]
 
         # 软删除：移入回收站
         resp = client.delete(f"/api/kbs/{kb['id']}/documents/{doc['id']}",
@@ -270,7 +272,7 @@ class TestDocumentDetail:
         assert trash[0]["deleted"] is True and trash[0]["deleted_at"]
         # 软删保留文件与向量（恢复无需重新解析）
         assert upload_path.exists()
-        assert get_vector_store().count(kb["id"]) == doc["chunk_count"]
+        assert asyncio.run(get_vector_store().count(kb["id"])) == doc["chunk_count"]
 
         # 彻底删除（purge）：元数据 404 + 上传文件删除 + 向量清除
         resp = client.post(
@@ -281,7 +283,7 @@ class TestDocumentDetail:
             f"/api/kbs/{kb['id']}/documents/{doc['id']}",
             headers=admin_headers).status_code == 404
         assert not upload_path.exists()
-        assert get_vector_store().count(kb["id"]) == 0
+        assert asyncio.run(get_vector_store().count(kb["id"])) == 0
 
     def test_delete_kb_cascade(self, client, mock_embedding, admin_headers):
         """删除知识库：collection/文档元数据/上传文件全部级联清除"""
@@ -303,7 +305,7 @@ class TestDocumentDetail:
         # 上传文件清空
         assert list(UPLOAD_DIR.iterdir()) == []
         # 向量 collection 已删
-        assert get_vector_store().count(kb_id) == 0
+        assert asyncio.run(get_vector_store().count(kb_id)) == 0
         # 文档服务内无残留
         assert get_document_service().list_by_kb(kb_id) == []
 

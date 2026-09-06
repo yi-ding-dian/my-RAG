@@ -383,7 +383,7 @@ def _purge_local(kb_id: str, doc_id: str) -> bool:
     放线程池执行（asyncio.to_thread）：空回收站批量 purge 时同步阻塞
     不占用事件循环，其他请求（列表/检索）不被卡住。
     """
-    get_vector_store().delete_by_document(kb_id, doc_id)
+    get_vector_store().sync.delete_by_document(kb_id, doc_id)
     # 向量删除后 count 变化，BM25 自动重建（显式失效双保险）
     get_retrieval_service().invalidate_bm25(kb_id)
     # 图谱引用清理（失败仅 warning，不阻塞删除主流程）
@@ -615,7 +615,7 @@ async def delete_document(request: Request, kb_id: str, doc_id: str,
     if doc.deleted:
         raise HTTPException(status_code=409, detail="文档已在回收站")
     # 先更新向量标志再标记元数据：失败则中止，保持两侧一致
-    if not get_vector_store().update_metadata(kb_id, doc_id, doc_active=False):
+    if not await get_vector_store().update_metadata(kb_id, doc_id, doc_active=False):
         raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
     get_document_service().soft_delete(doc_id)
     # 软删不改变向量 count，BM25 索引不会自动失效，必须显式失效
@@ -640,7 +640,7 @@ async def restore_document(request: Request, kb_id: str, doc_id: str,
     doc = _get_doc_or_404(kb_id, doc_id)
     if not doc.deleted:
         raise HTTPException(status_code=409, detail="文档不在回收站")
-    if not get_vector_store().update_metadata(kb_id, doc_id, doc_active=True):
+    if not await get_vector_store().update_metadata(kb_id, doc_id, doc_active=True):
         raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
     restored = get_document_service().restore(doc_id)
     get_retrieval_service().invalidate_bm25(kb_id)

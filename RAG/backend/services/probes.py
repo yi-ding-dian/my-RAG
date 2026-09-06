@@ -76,7 +76,13 @@ def _coerce_bool(value) -> bool:
 
 
 def _join_errors(errors: list, fallback: str) -> str:
-    return "；".join(errors)[:200] or fallback
+    # 保序去重：多个探测端点对同一错误各自 append 一条（如 MinerU 逐端点
+    # 均 "Connection refused"），显示会重复——合并同类项后拼接到 200 字符
+    unique: list = []
+    for e in errors:
+        if e not in unique:
+            unique.append(e)
+    return "；".join(unique)[:200] or fallback
 
 
 # ==================== MinerU ====================

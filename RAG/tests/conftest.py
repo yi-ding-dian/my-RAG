@@ -114,6 +114,9 @@ def reset_services():
     storage_service._storage = None
     storage_service._storage_key = None
 
+    from backend.services import agentic_service
+    agentic_service._agentic_service = None
+
     from backend import db as db_module
     db_module.reset_db_engine()
 

@@ -174,6 +174,9 @@ class ChatMessage(BaseModel):
     role: str = Field(..., description="user/assistant")
     content: str = Field("", description="消息内容")
     sources: List[Source] = Field(default_factory=list, description="该消息引用的来源快照")
+    # Agentic 决策轨迹（改写查询/分档分数/尝试次数；默认关闭=空 dict）
+    agentic: dict = Field(default_factory=dict,
+                          description="Agentic 检索决策轨迹（关闭时为空）")
 
 
 class ChatSession(BaseModel):

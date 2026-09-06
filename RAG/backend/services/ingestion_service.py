@@ -900,13 +900,13 @@ class IngestionService:
         # 模型后），新维度写入 Chroma 会报错；这里提前校验，失败中止入库并
         # 写回友好 error（而不是 add 报错后给晦涩异常）。校验在删旧向量之前，
         # 维度不匹配时不破坏已有向量。
-        current_dim = vec.get_embedding_dimension(doc.kb_id)
+        current_dim = await vec.get_embedding_dimension(doc.kb_id)
         if embeddings and current_dim is not None \
                 and current_dim != len(embeddings[0]):
             raise VectorDimensionError(
                 f"Embedding 模型维度不匹配（collection {current_dim} 维 vs "
                 f"模型 {len(embeddings[0])} 维），请更换模型或重建向量")
-        vec.delete_by_document(doc.kb_id, doc_id)
+        await vec.delete_by_document(doc.kb_id, doc_id)
         metadatas = []
         for i, c in enumerate(chunk_objects):
             meta = {
@@ -934,8 +934,8 @@ class IngestionService:
                 meta["retrieval_mode"] = parser_config.get(
                     "retrieval_mode", "parent")
             metadatas.append(meta)
-        vec.add(doc.kb_id, doc_id, doc.original_name, embed_texts,
-                embeddings, metadatas=metadatas)
+        await vec.add(doc.kb_id, doc_id, doc.original_name, embed_texts,
+                      embeddings, metadatas=metadatas)
         # 混合检索 BM25 索引失效（下次检索自动重建；函数内导入防循环依赖）
         from backend.services.retrieval_service import get_retrieval_service
         get_retrieval_service().invalidate_bm25(doc.kb_id)

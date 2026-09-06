@@ -34,6 +34,7 @@ from backend.config import CHAT_DIR, LLMConfig, get_active_config
 from backend.models.rag_models import (ChatHistoryItem, ChatMessage,
                                        ChatSession, Source)
 from backend.services.llm_client import get_llm_client, llm_to_dict
+from backend.services.agentic_service import get_agentic_service
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
 from backend.services.settings_service import (merge_chat_config,
@@ -253,6 +254,7 @@ class ChatService:
         """
         session = self._load_or_create(session_id, kb_id, message, user_id)
         answer_parts: List[str] = []
+        agentic_meta: dict = {}  # Agentic 决策轨迹（会话落盘用；默认关闭=空）
         saved = False
         dept = dept_config or {}
         dept_retrieval = (dept.get("retrieval")
@@ -260,10 +262,10 @@ class ChatService:
         dept_llm = dept.get("llm") if isinstance(dept.get("llm"), dict) else {}
 
         try:
-            # 0) 聊天配置字段级合并（提前计算：知识图谱增强开关在此读取；
-            #    纯函数无副作用，第 4 步直接复用，避免重复合并）
+            # 0) 聊天配置字段级合并（提前计算：知识图谱增强开关/Agentic 配置
+            #    在此读取；纯函数无副作用，后续步骤直接复用，避免重复合并）
             cfg = get_active_config()
-            merged_chat = merge_chat_config(
+            merged = merge_chat_config(
                 {
                     "chat": {
                         "temperature": cfg.chat.temperature,
@@ -279,9 +281,21 @@ class ChatService:
                         "top_k": cfg.retrieval.top_k,
                         "similarity_threshold": cfg.retrieval.similarity_threshold,
                     },
+                    "agentic": {
+                        "enabled": cfg.agentic.enabled,
+                        "max_retries": cfg.agentic.max_retries,
+                        "recheck_threshold": cfg.agentic.recheck_threshold,
+                        "abstain_threshold": cfg.agentic.abstain_threshold,
+                    },
                 },
                 dept,
-            )["chat"]
+            )
+            merged_chat = merged["chat"]
+            merged_agentic = merged.get("agentic", {})
+            # LLM 合并配置提前计算（Agentic 查询改写需要；第 5 步直接复用，
+            # 纯函数无副作用——地址/密钥/模型/生成参数与历史一致）
+            merged_llm_dict = merge_department_llm(
+                _llm_to_dict(get_active_config().llm), dept_llm)
 
             # 1) 检索（P1-2：Embedding 服务不可用等 RetrievalUnavailableError
             # 直接透传"检索服务不可用：..."，其余异常统一"检索失败: ..."前缀）
@@ -290,11 +304,38 @@ class ChatService:
             if eff_top_k is None and dept_retrieval.get("top_k") is not None:
                 eff_top_k = int(dept_retrieval["top_k"])
             eff_min_score = dept_retrieval.get("similarity_threshold")
+            # 1.5) Agentic 检索决策（聊天设置 agentic.enabled，默认关闭）：
+            # 开启时由决策层完成"检索 → 分档 → （改写重检）→ 决策/拒答"，
+            # 语义见 agentic_service 模块注释；关闭时走原单次检索。
+            agentic_enabled = bool(merged_agentic.get("enabled", False))
+            agentic_abstain = False
+            agentic_trace: list = []
+            agentic_final_query = message
             # 检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
             t_retrieval = time.perf_counter()
             try:
-                sources = await get_retrieval_service().retrieve(
-                    kb_id, message, top_k=eff_top_k, min_score=eff_min_score)
+                if agentic_enabled:
+                    # 决策层带进度迭代：阶段事件（agentic_status）实时转发，
+                    # 前端按阶段换提示（检索中/改写中/重新检索中），不干等
+                    agentic_result = None
+                    async for kind, payload in get_agentic_service().run_iter(
+                            kb_id, message, llm_cfg=merged_llm_dict,
+                            top_k=eff_top_k, min_score=eff_min_score):
+                        if kind == "phase":
+                            yield sse_event("agentic_status", payload)
+                        else:
+                            agentic_result = payload
+                    sources = agentic_result.sources
+                    agentic_trace = agentic_result.trace
+                    agentic_final_query = agentic_result.query
+                    # 拒答（乱问/无相关内容/重试用尽）：复用"无命中"提示路径，
+                    # 语义 = 未检索到相关内容；后续 KG 增强一并跳过
+                    agentic_abstain = agentic_result.decision == "abstain"
+                    if agentic_abstain:
+                        sources = []
+                else:
+                    sources = await get_retrieval_service().retrieve(
+                        kb_id, message, top_k=eff_top_k, min_score=eff_min_score)
                 retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
                 # 可预期失败（Embedding 服务不可用等）：warning 不透传堆栈，
@@ -322,11 +363,23 @@ class ChatService:
             from backend.services.knowledge_graph_service import build_kg_source
             # 图谱构建单独计时（毫秒，与检索耗时分开统计）
             t_kg = time.perf_counter()
-            kg_source = await build_kg_source(
-                kb_id, message, merged_chat.get("kg_enhance", True))
+            kg_source = None
+            if not agentic_abstain:
+                kg_source = await build_kg_source(
+                    kb_id, message, merged_chat.get("kg_enhance", True))
+                if kg_source:
+                    sources.append(kg_source)
             kg_ms = int(round((time.perf_counter() - t_kg) * 1000))
-            if kg_source:
-                sources.append(kg_source)
+
+            # 2.5) Agentic 决策轨迹事件（仅开启时下发；meta 之前：
+            # 前端"请求详情"展示改写/分档/尝试次数）
+            if agentic_enabled:
+                agentic_meta = {
+                    "original_query": message,
+                    "final_query": agentic_final_query,
+                    "trace": agentic_trace,
+                }
+                yield sse_event("agentic", agentic_meta)
 
             # 3) meta
             yield sse_event("meta", {
@@ -339,7 +392,7 @@ class ChatService:
                        "请尝试换一种问法，或先在知识库中上传相关文档。")
                 answer_parts.append(tip)
                 yield sse_event("delta", {"text": tip})
-                self._finalize(session, message, answer_parts, sources)
+                self._finalize(session, message, answer_parts, sources, agentic_meta)
                 saved = True
                 yield sse_event("done", {
                     "session_id": session.id,
@@ -418,9 +471,8 @@ class ChatService:
             #    部门 llm 段字段级覆盖全局 LLM——地址/密钥/模型/生成参数，
             #    _get_client 按合并配置独立缓存，部门切换即重建；
             #    调用点传合并 dict（conftest mock_llm 记录并断言 dict 结构），
-            #    内部消费经 LLMConfig.from_dict 类型化（扩展字段忽略）
-            merged_llm_dict = merge_department_llm(
-                _llm_to_dict(get_active_config().llm), dept_llm)
+            #    内部消费经 LLMConfig.from_dict 类型化（扩展字段忽略；
+            #    merged_llm_dict 已在第 0 步提前计算——Agentic 改写共用）
             merged_llm = LLMConfig.from_dict(merged_llm_dict)
             client = self._get_client(merged_llm_dict)
             # 4.75) 思考模式策略（请求层变换，必须在 prompt 事件之后应用）：
@@ -465,7 +517,7 @@ class ChatService:
             except asyncio.CancelledError:
                 logger.info("客户端中断流式问答: %s", session.id)
                 if answer_parts:
-                    self._finalize(session, message, answer_parts, sources)
+                    self._finalize(session, message, answer_parts, sources, agentic_meta)
                     saved = True
                 raise
             except (APITimeoutError, APIConnectionError, RateLimitError,
@@ -475,7 +527,7 @@ class ChatService:
                 logger.warning("LLM 流式调用失败（LLM 服务异常）: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources)
+                self._finalize(session, message, answer_parts, sources, agentic_meta)
                 saved = True
                 yield sse_event("error", {"message": err_msg})
                 return
@@ -484,7 +536,7 @@ class ChatService:
                 logger.error("LLM 流式调用失败: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources)
+                self._finalize(session, message, answer_parts, sources, agentic_meta)
                 saved = True
                 yield sse_event("error", {"message": err_msg})
                 return
@@ -503,7 +555,7 @@ class ChatService:
             # 兜底：异常路径下只要已有文本也落盘（优雅收尾）
             if not saved and answer_parts:
                 try:
-                    self._finalize(session, message, answer_parts, [])
+                    self._finalize(session, message, answer_parts, [], agentic_meta)
                 except Exception:
                     logger.exception("兜底落盘失败: %s", session.id)
 
@@ -612,13 +664,15 @@ class ChatService:
                            user_id)
 
     def _finalize(self, session: ChatSession, message: str,
-                  answer_parts: List[str], sources: List[Source]):
+                  answer_parts: List[str], sources: List[Source],
+                  agentic: Optional[dict] = None):
         """落盘会话（追加 user 消息 + assistant 消息，含 sources 快照）"""
         session.messages.append(ChatMessage(role="user", content=message))
         session.messages.append(ChatMessage(
             role="assistant",
             content="".join(answer_parts),
             sources=sources,
+            agentic=agentic or {},
         ))
         self._save_session(session)
 

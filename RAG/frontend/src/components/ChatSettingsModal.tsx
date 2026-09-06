@@ -40,6 +40,11 @@ interface ChatSettingsFormValues {
   chat_max_tokens?: number | null; // 可空=跟随模型默认
   chat_system_prompt?: string; // 自定义系统提示词（空串=使用内置默认模板）
   chat_thinking_mode: ThinkingMode; // 思考模式（默认 disabled=关闭思考）
+  // Agentic 检索增强
+  agentic_enabled: boolean; // 开关，默认关（=原检索链路）
+  agentic_max_retries: number; // 0-5，默认 1
+  agentic_recheck_threshold: number; // 0-1，默认 0.55
+  agentic_abstain_threshold: number; // 0-1，默认 0.25
 }
 
 interface ChatSettingsModalProps {
@@ -67,6 +72,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const useDefaultTemperature = Form.useWatch('use_default_temperature', form) ?? true;
+  const agenticEnabled = Form.useWatch('agentic_enabled', form) ?? false;
 
   // 打开时加载活跃档案聊天设置并回填表单
   useEffect(() => {
@@ -77,7 +83,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
     getChatSettings()
       .then(res => {
         if (cancelled) return;
-        const { retrieval, chat } = res.data;
+        const { retrieval, chat, agentic } = res.data;
         setLoaded(true);
         form.setFieldsValue({
           retrieval_similarity_threshold: retrieval?.similarity_threshold ?? 0,
@@ -91,6 +97,10 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           chat_max_tokens: chat?.max_tokens ?? undefined,
           chat_system_prompt: chat?.system_prompt ?? '',
           chat_thinking_mode: chat?.thinking_mode ?? 'disabled',
+          agentic_enabled: agentic?.enabled ?? false,
+          agentic_max_retries: agentic?.max_retries ?? 1,
+          agentic_recheck_threshold: agentic?.recheck_threshold ?? 0.55,
+          agentic_abstain_threshold: agentic?.abstain_threshold ?? 0.25,
         });
       })
       .catch((e: unknown) => {
@@ -132,6 +142,12 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           // 空串=恢复内置默认模板（后端空串例外路径）
           system_prompt: values.chat_system_prompt ?? '',
           thinking_mode: values.chat_thinking_mode,
+        },
+        agentic: {
+          enabled: values.agentic_enabled,
+          max_retries: values.agentic_max_retries,
+          recheck_threshold: values.agentic_recheck_threshold,
+          abstain_threshold: values.agentic_abstain_threshold,
         },
       });
       message.success('聊天设置已保存，即时生效');
@@ -212,6 +228,65 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
             >
               <Switch />
             </Form.Item>
+          </Card>
+
+          {/* Agentic 检索增强 */}
+          <Card title="Agentic 检索增强" size="small" style={{ marginBottom: 16 }}>
+            <Form.Item
+              name="agentic_enabled"
+              label="检索决策增强"
+              valuePropName="checked"
+              extra="开启后问答链路增加「检索→分档→（查询改写重检）→拒答」决策：检索到高相关内容直接回答，中间档自动改写查询重检一次，乱问/知识库无相关内容自动拒答（默认关闭=原检索链路）"
+              style={{ marginBottom: 0 }}
+            >
+              <Switch />
+            </Form.Item>
+            {agenticEnabled && (
+              <>
+                <Row gutter={16} style={{ marginTop: 8 }}>
+                  <Col span={12}>
+                    <Form.Item
+                      name="agentic_max_retries"
+                      label="改写重试次数"
+                      extra="查询改写后重新检索的分档次数上限（0-5）"
+                      rules={[
+                        { required: true, message: '请输入改写重试次数' },
+                        { type: 'number', min: 0, max: 5, message: '范围 0-5' },
+                      ]}
+                    >
+                      <InputNumber min={0} max={5} style={{ width: '100%' }} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item
+                      name="agentic_recheck_threshold"
+                      label="直接回答阈值"
+                      extra="相似度 ≥ 该值直接回答，不改写不重试"
+                    >
+                      <Slider
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        tooltip={{ formatter: v => `${Math.round((v ?? 0) * 100)}%` }}
+                      />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Form.Item
+                  name="agentic_abstain_threshold"
+                  label="拒答阈值"
+                  extra="相似度低于该值直接拒答（知识库中无相关内容/乱问），不改写不重试"
+                  style={{ marginBottom: 0 }}
+                >
+                  <Slider
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    tooltip={{ formatter: v => `${Math.round((v ?? 0) * 100)}%` }}
+                  />
+                </Form.Item>
+              </>
+            )}
           </Card>
 
           {/* 对话设置 */}

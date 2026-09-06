@@ -133,9 +133,9 @@ def _parse_config(raw: Optional[str]) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    # 段内仅保留对象结构（llm/chat/retrieval 段必须为 dict）
+    # 段内仅保留对象结构（llm/chat/retrieval/agentic 段必须为 dict）
     out: dict = {}
-    for section in ("llm", "chat", "retrieval"):
+    for section in ("llm", "chat", "retrieval", "agentic"):
         if isinstance(data.get(section), dict):
             out[section] = data[section]
     return out
@@ -275,7 +275,7 @@ async def save_department_config(db: AsyncSession, dept_id: str,
     if orm is None:
         return None
     cur = _parse_config(orm.department_config)
-    for section in ("llm", "chat", "retrieval"):
+    for section in ("llm", "chat", "retrieval", "agentic"):
         if not isinstance(payload.get(section), dict):
             continue
         sec = cur.setdefault(section, {})

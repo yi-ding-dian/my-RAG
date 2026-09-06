@@ -32,11 +32,12 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
-from backend.config import (ChatConfig, ChunkingConfig, ContextualRetrievalConfig,
+from backend.config import (AgenticConfig, ChatConfig, ChunkingConfig,
+                            ContextualRetrievalConfig,
                             DeepDocConfig, EmbeddingConfig, IngestionConfig,
                             LLMConfig, MinerUConfig, MinIOConfig, MySQLConfig,
                             RerankConfig, RetrievalConfig, ServiceConfig,
-                            build_default_config)
+                            VectorStorageConfig, build_default_config)
 
 # ==================== 密钥与类型辅助（schema 反射依赖，定义于 schema 之前） ====================
 
@@ -339,6 +340,20 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                               "fill_missing": True},
         },
         pass_null=True),
+    "agentic": _reflect_section("agentic", AgenticConfig,
+        overrides={
+            "enabled": {"condition": "not_none", "whitelist": True,
+                        "fill_missing": True},
+            "max_retries": {"condition": "not_none", "range": (0, 5),
+                            "whitelist": True, "fill_missing": True},
+            # 阈值字段为 0~1 浮点：不加 range（range 走 int 校验），
+            # 数字性由 cast=float 校验，边界由 agentic_service 运行时 clamp
+            "recheck_threshold": {"condition": "not_none", "whitelist": True,
+                                  "fill_missing": True},
+            "abstain_threshold": {"condition": "not_none", "whitelist": True,
+                                  "fill_missing": True},
+        },
+        fill_section=True),
     "mysql": _reflect_section("mysql", MySQLConfig,
         overrides={
             "host": {"strip": True},
@@ -359,6 +374,12 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             "region": {"strip": True, "condition": "not_none"},
         },
         fill_section=True),
+    "vector_store": _reflect_section("vector_store", VectorStorageConfig,
+        overrides={
+            "backend": {"strip": True},
+            "milvus_uri": {"strip": True},
+        },
+        fill_section=True),
 }
 
 
@@ -374,6 +395,7 @@ def _whitelist_fields(section: str) -> Tuple[str, ...]:
 # 也从此处派生——schema 是唯一来源，改一处全联动）
 CHAT_FIELD_NAMES = _whitelist_fields("chat")
 CHAT_RETRIEVAL_FIELD_NAMES = _whitelist_fields("retrieval")
+CHAT_AGENTIC_FIELD_NAMES = _whitelist_fields("agentic")
 LLM_FIELD_NAMES = _whitelist_fields("llm")
 
 # 可经 /api/settings/chat 读写的段（含至少一个 whitelist 字段的段）

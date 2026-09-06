@@ -260,9 +260,28 @@ export interface ChatMessage {
   kg_ms?: number;
   /** 请求详情：提问 → AI 生成首字总耗时（前端计算，毫秒） */
   total_ms?: number;
+  /** 请求详情：Agentic 检索决策轨迹（改写查询/分档分数/尝试次数；未开启时无） */
+  agentic?: AgenticTrace;
   created_at?: string;
   /** 前端会话状态专用：用户点击「停止」中断生成（仅 UI 标注，不落盘） */
   stopped?: boolean;
+}
+
+/** Agentic 检索决策轨迹（SSE event:agentic + 会话落盘 agentic 字段同构） */
+export interface AgenticTrace {
+  /** 用户原始提问 */
+  original_query: string;
+  /** 最终采用的检索查询（改写后可能与原提问不同） */
+  final_query: string;
+  /** 每轮检索决策：尝试次数/查询/最高相似度/来源数/是否改写 */
+  trace: Array<{
+    attempt: number;
+    query: string;
+    best_score: number | null;
+    sources_count: number;
+    from_rewrite: boolean;
+    rewrite_failed: boolean;
+  }>;
 }
 
 // ========== 认证 / 用户 / 部门 ==========
@@ -513,11 +532,27 @@ export interface StreamChatParams {
   top_k?: number;
 }
 
+/** Agentic 决策进度阶段（SSE event:agentic_status，前端按阶段换提示文案） */
+export type AgenticStatusStage = 'retrieving' | 'rewriting' | 'rechecking';
+
+/** Agentic 决策进度事件 */
+export interface AgenticStatus {
+  stage: AgenticStatusStage;
+  /** 检索轮次（retrieving/rechecking 附带：第几轮检索） */
+  attempt?: number;
+  /** 改写后的查询（rechecking 附带，展示"已改写为…"） */
+  query?: string;
+}
+
 export interface StreamCallbacks {
   /** 收到 event:meta，携带检索来源 */
   onMeta?: (sources: Source[]) => void;
   /** 收到 event:prompt，携带完整提示词与检索/图谱耗时（请求详情用） */
   onPrompt?: (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number }) => void;
+  /** 收到 event:agentic，携带 Agentic 检索决策轨迹（默认关闭时不收到） */
+  onAgentic?: (info: AgenticTrace) => void;
+  /** 收到 event:agentic_status，携带检索/改写/重检进度（默认关闭时不收到） */
+  onAgenticStatus?: (info: AgenticStatus) => void;
   /** 收到 event:delta，增量文本 */
   onDelta?: (text: string) => void;
   /** 收到 event:done */
@@ -797,6 +832,8 @@ export interface ServiceProfile {
   contextual_retrieval?: { max_full_doc_chars?: number };
   /** 入库并发配置（同时解析入库的文档数上限 1~10，默认 3；旧后端可能缺失，前端做可选兼容） */
   ingestion?: { concurrency?: number };
+  /** 节点向量存储段（旧档案可能缺失，前端做可选兼容；backend=chroma|milvus） */
+  vector_store?: { backend?: string; milvus_uri?: string };
   /** 会话参数段（旧后端可能缺失，前端做可选兼容） */
   chat?: ChatConfig;
   mysql: MySQLConfigProfile;
@@ -819,6 +856,7 @@ export interface ProfileTestResult {
   deepdoc: ConnectionTestResult;
   mysql: ConnectionTestResult;
   minio: ConnectionTestResult;
+  vector_store: ConnectionTestResult;
 }
 
 /** 单个 LLM 模型连接测试（GET {base_url}/models，≤5s；勾选激活时先调用） */
@@ -877,6 +915,17 @@ export interface ChatSettingsPayload {
     /** 思考模式：disabled=关闭思考（默认）| enabled_low/high/max=开启并指定强度 */
     thinking_mode?: ThinkingMode;
   };
+  /** Agentic 检索增强（默认关闭；分档：分数 ≥ recheck 直接答，< abstain 拒答） */
+  agentic?: {
+    /* 总开关：开启后在"检索→生成"之间插入改写/分档/拒答决策 */
+    enabled?: boolean;
+    /** 查询改写重试上限（0~5；改写后重新检索再分档） */
+    max_retries?: number;
+    /** 直接回答阈值（0~1：相似度 ≥ 该值不进入改写循环） */
+    recheck_threshold?: number;
+    /** 拒答阈值（0~1：相似度 < 该值直接拒答，不改写不重试） */
+    abstain_threshold?: number;
+  };
   /** 合并后的 LLM 配置（全局活跃 + 本部门覆盖；api_key 已脱敏） */
   llm?: DeptLlmConfig;
   /**
@@ -896,6 +945,12 @@ export interface ChatSettingsPayload {
       system_prompt?: string;
       kg_enhance?: boolean;
       thinking_mode?: ThinkingMode;
+    };
+    agentic?: {
+      enabled?: boolean;
+      max_retries?: number;
+      recheck_threshold?: number;
+      abstain_threshold?: number;
     };
   } | null;
 }

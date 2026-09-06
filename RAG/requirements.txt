@@ -8,6 +8,8 @@ httpx>=0.27.0
 chromadb>=0.6.0
 # 混合检索（BM25）中文分词
 jieba>=0.42.1
+# Agentic RAG 检索决策层（查询改写/分档/拒答编排，仅问答链路使用）
+langgraph>=1.0.0
 pypdf>=4.0.0
 python-docx>=1.1.0
 # 系统 libsqlite3 < 3.35 时 chromadb 无法启动，用其自带新版 sqlite（Docker slim 镜像可不用）

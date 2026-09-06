@@ -57,6 +57,7 @@ def _whitelist(section: str) -> frozenset:
 
 CHAT_SECTION_FIELDS = _whitelist("chat")
 CHAT_RETRIEVAL_FIELDS = _whitelist("retrieval")
+CHAT_AGENTIC_FIELDS = _whitelist("agentic")
 CHAT_LLM_FIELDS = _whitelist("llm")
 CHAT_SECTIONS = frozenset(
     s for s, spec in SECTION_SCHEMA.items()
@@ -134,7 +135,7 @@ def _effective_chat_payload(profile: dict,
     dept = None
     if dept_config:
         dept = {}
-        for section in ("llm", "chat", "retrieval"):
+        for section in ("llm", "chat", "retrieval", "agentic"):
             sec = dept_config.get(section)
             if isinstance(sec, dict) and sec:
                 sec = dict(sec)
@@ -216,6 +217,7 @@ def _validate_chat_payload(body: dict) -> dict:
     payload: dict = {}
     _validate_chat_section("chat", body, payload, "不允许修改聊天设置字段")
     _validate_chat_section("retrieval", body, payload, "不允许修改检索字段")
+    _validate_chat_section("agentic", body, payload, "不允许修改 Agentic 配置字段")
     _validate_chat_section("llm", body, payload, "不允许修改 LLM 配置字段")
     if not payload:
         raise HTTPException(

@@ -128,7 +128,7 @@ class TestSoftDelete:
         doc = upload_and_ingest(client, kb["id"])
         upload_path = UPLOAD_DIR / doc["name"]
         assert upload_path.exists()
-        assert get_vector_store().count(kb["id"]) == doc["chunk_count"]
+        assert asyncio.run(get_vector_store().count(kb["id"])) == doc["chunk_count"]
 
         resp = _delete(client, kb["id"], doc["id"], admin_headers)
         assert resp.status_code == 200, resp.text
@@ -150,7 +150,7 @@ class TestSoftDelete:
         assert meta["deleted"] is True and meta["deleted_at"]
         # 软删保留文件与向量（恢复无需重新解析）
         assert upload_path.exists()
-        assert get_vector_store().count(kb["id"]) == doc["chunk_count"]
+        assert asyncio.run(get_vector_store().count(kb["id"])) == doc["chunk_count"]
 
     def test_soft_delete_uningested_doc(self, client, admin_headers):
         """未入库（无向量）文档软删/恢复/彻底删除均正常"""
@@ -211,7 +211,7 @@ class TestSoftDelete:
                           headers=admin_headers).status_code == 404
         assert not (UPLOAD_DIR / doc["name"]).exists()
         assert not storage_key.exists()
-        assert get_vector_store().count(kb["id"]) == 0
+        assert asyncio.run(get_vector_store().count(kb["id"])) == 0
         # 回收站清空 + 列表无
         assert _trash(client, kb["id"], admin_headers).json() == []
         assert client.get(f"/api/kbs/{kb['id']}/documents",
@@ -236,7 +236,7 @@ class TestSoftDelete:
         assert resp.status_code == 200, resp.text
         assert resp.json()["count"] == 2
         assert _trash(client, kb["id"], admin_headers).json() == []
-        assert get_vector_store().count(kb["id"]) == 0
+        assert asyncio.run(get_vector_store().count(kb["id"])) == 0
 
     def test_delete_kb_cascade_includes_trash(self, client, mock_embedding,
                                               admin_headers):
@@ -249,7 +249,7 @@ class TestSoftDelete:
         assert resp.status_code == 200
         assert resp.json()["deleted_docs"] == 1
         assert list(DOCUMENTS_DIR.glob("*.json")) == []
-        assert get_vector_store().count(kb["id"]) == 0
+        assert asyncio.run(get_vector_store().count(kb["id"])) == 0
 
 
 # ==================== 检索过滤机制 ====================
@@ -299,22 +299,22 @@ class TestRetrievalFilter:
         kb = create_kb(client)
         doc = upload_and_ingest(client, kb["id"])
         vec = get_vector_store()
-        all_ids = [cid for cid, _, _ in vec.get_all(kb["id"])]
+        all_ids = [cid for cid, _, _ in asyncio.run(vec.get_all(kb["id"]))]
         assert all_ids
         # 软删前：全部 chunk 活跃
         active = [cid for cid, _, _ in
-                  vec.get_all(kb["id"]) if True]
+                  asyncio.run(vec.get_all(kb["id"])) if True]
         assert len(active) == len(all_ids)
         _delete(client, kb["id"], doc["id"], admin_headers)
         # 软删后：where 过滤只保留活跃 chunk（该文档已全部不活跃）
         query_emb = char_vector("Python 测试查询")
-        hits = vec.search(kb["id"], query_emb, top_k=10,
-                          where={"doc_active": True})
+        hits = asyncio.run(vec.search(kb["id"], query_emb, top_k=10,
+                          where={"doc_active": True}))
         assert hits == []
         # 恢复后：where 过滤重新命中
         _restore(client, kb["id"], doc["id"], admin_headers)
-        hits = vec.search(kb["id"], query_emb, top_k=10,
-                          where={"doc_active": True})
+        hits = asyncio.run(vec.search(kb["id"], query_emb, top_k=10,
+                          where={"doc_active": True}))
         assert hits
 
     def test_update_metadata_preserves_other_keys(self, client,
@@ -324,9 +324,9 @@ class TestRetrievalFilter:
         kb = create_kb(client)
         doc = upload_and_ingest(client, kb["id"])
         vec = get_vector_store()
-        meta_before = vec.get_all(kb["id"])[0][2]
+        meta_before = asyncio.run(vec.get_all(kb["id"]))[0][2]
         _delete(client, kb["id"], doc["id"], admin_headers)
-        meta_after = vec.get_all(kb["id"])[0][2]
+        meta_after = asyncio.run(vec.get_all(kb["id"]))[0][2]
         assert meta_after["doc_active"] is False
         assert meta_after["document_id"] == meta_before["document_id"]
         assert meta_after["chunk_index"] == meta_before["chunk_index"]

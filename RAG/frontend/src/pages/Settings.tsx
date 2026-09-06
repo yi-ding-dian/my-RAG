@@ -27,7 +27,7 @@ interface TestItem {
   msg: string;
 }
 
-type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'mysql' | 'minio';
+type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'mysql' | 'minio' | 'vector_store';
 
 const emptyTest: Record<SectionKey, TestItem> = {
   llm: { status: 'idle', msg: '' },
@@ -36,6 +36,7 @@ const emptyTest: Record<SectionKey, TestItem> = {
   deepdoc: { status: 'idle', msg: '' },
   mysql: { status: 'idle', msg: '' },
   minio: { status: 'idle', msg: '' },
+  vector_store: { status: 'idle', msg: '' },
 };
 
 // 测试结果 -> 展示项
@@ -46,6 +47,7 @@ const toTestItems = (res: ProfileTestResult): Record<SectionKey, TestItem> => ({
   deepdoc: { status: res.deepdoc.ok ? 'success' : 'failed', msg: res.deepdoc.message },
   mysql: { status: res.mysql.ok ? 'success' : 'failed', msg: res.mysql.message },
   minio: { status: res.minio.ok ? 'success' : 'failed', msg: res.minio.message },
+  vector_store: { status: res.vector_store.ok ? 'success' : 'failed', msg: res.vector_store.message },
 });
 
 const sectionLabel: Record<SectionKey, string> = {
@@ -53,8 +55,9 @@ const sectionLabel: Record<SectionKey, string> = {
   embedding: 'Embedding 模型',
   mineru: 'MinerU 文档解析',
   deepdoc: 'DeepDoc 解析（RAGFlow）',
-  mysql: 'MySQL 数据库',
+  mysql: '数据库',
   minio: 'MinIO 对象存储',
+  vector_store: '向量存储',
 };
 
 // 全部段测试中
@@ -65,6 +68,7 @@ const allTesting = (): Record<SectionKey, TestItem> => ({
   deepdoc: { status: 'testing', msg: '' },
   mysql: { status: 'testing', msg: '' },
   minio: { status: 'testing', msg: '' },
+  vector_store: { status: 'testing', msg: '' },
 });
 
 // 全部段同一失败信息（接口整体报错时）
@@ -75,6 +79,7 @@ const allFailed = (msg: string): Record<SectionKey, TestItem> => ({
   deepdoc: { status: 'failed', msg },
   mysql: { status: 'failed', msg },
   minio: { status: 'failed', msg },
+  vector_store: { status: 'failed', msg },
 });
 
 /** 档案编辑表单的扁平字段值（antd Form values；字段名 = 表单项 name，
@@ -114,6 +119,8 @@ interface ProfileFormValues {
   minio_bucket: string;
   minio_secure: boolean;
   minio_region: string;
+  vector_store_backend: string;
+  vector_store_milvus_uri: string;
 }
 
 // 表单扁平字段 <-> 嵌套档案对象互转
@@ -170,6 +177,10 @@ const toProfileInput = (vals: ProfileFormValues, llmSection?: {
     secure: vals.minio_secure,
     region: vals.minio_region || '',
   },
+  vector_store: {
+    backend: vals.vector_store_backend,
+    milvus_uri: vals.vector_store_milvus_uri || '',
+  },
 });
 
 const toFormValues = (p: ServiceProfile) => ({
@@ -208,6 +219,8 @@ const toFormValues = (p: ServiceProfile) => ({
   minio_bucket: p.minio?.bucket,
   minio_secure: p.minio?.secure,
   minio_region: p.minio?.region,
+  vector_store_backend: p.vector_store?.backend ?? 'chroma',
+  vector_store_milvus_uri: p.vector_store?.milvus_uri ?? '',
 });
 
 const SettingsPage: React.FC = () => {
@@ -441,6 +454,7 @@ const SettingsPage: React.FC = () => {
       mysql_database: 'my_rag',
       minio_endpoint: '127.0.0.1:9000', minio_access_key: '',
       minio_bucket: 'my-rag', minio_secure: false, minio_region: '',
+      vector_store_backend: 'chroma', vector_store_milvus_uri: '',
     });
     setModalTest(emptyTest);
     setModalOpen(true);
@@ -679,7 +693,11 @@ const SettingsPage: React.FC = () => {
             <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.mysql}</Text>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <Text style={{ fontSize: 12 }}>
-                {p.mysql ? `${p.mysql.host}:${p.mysql.port}/${p.mysql.database}` : '-'}
+                {p.mysql
+                  ? p.mysql.url
+                    ? String(p.mysql.url).slice(0, 60)
+                    : `${p.mysql.host}:${p.mysql.port}/${p.mysql.database || ''}`
+                  : '-'}
               </Text>
             </div>
           </Col>
@@ -691,6 +709,18 @@ const SettingsPage: React.FC = () => {
               </Text>
             </div>
           </Col>
+          <Col xs={24} md={12}>
+            <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.vector_store}</Text>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <Text style={{ fontSize: 12 }}>
+                {p.vector_store
+                  ? p.vector_store.backend === 'milvus'
+                    ? `Milvus: ${p.vector_store.milvus_uri || '-'}`
+                    : 'Chroma（本地嵌入式）'
+                  : '-'}
+              </Text>
+            </div>
+          </Col>
           <Col xs={24}>
             {renderTestLine(tests.llm, sectionLabel.llm)}
             {renderTestLine(tests.embedding, sectionLabel.embedding)}
@@ -698,6 +728,7 @@ const SettingsPage: React.FC = () => {
             {renderTestLine(tests.deepdoc, sectionLabel.deepdoc)}
             {renderTestLine(tests.mysql, sectionLabel.mysql)}
             {renderTestLine(tests.minio, sectionLabel.minio)}
+            {renderTestLine(tests.vector_store, sectionLabel.vector_store)}
           </Col>
         </Row>
       </Card>
@@ -1146,7 +1177,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'mysql',
-                label: '数据库（MySQL）',
+                label: '数据库（SQLite/MySQL/其他）',
                 children: (
                   <>
                     <Row gutter={12}>
@@ -1247,6 +1278,35 @@ const SettingsPage: React.FC = () => {
                   </>
                 ),
               },
+              {
+                key: 'vector_store',
+                label: '向量存储',
+                children: (
+                  <>
+                    <Row gutter={12}>
+                      <Col span={8}>
+                        <Form.Item name="vector_store_backend" label="后端">
+                          <Select
+                            options={[
+                              { value: 'chroma', label: 'Chroma（本地嵌入式）' },
+                              { value: 'milvus', label: 'Milvus（服务化）' },
+                            ]}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col span={16}>
+                        <Form.Item
+                          name="vector_store_milvus_uri"
+                          label="Milvus 地址"
+                          tooltip="backend=milvus 时生效；仅填主机端口会自动补 http://；切换后检索/入库在下一请求生效"
+                        >
+                          <Input placeholder="192.168.0.74:19530" />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </>
+                ),
+              },
             ]}
           />
 
@@ -1266,6 +1326,7 @@ const SettingsPage: React.FC = () => {
           {renderTestLine(modalTest.deepdoc, sectionLabel.deepdoc)}
           {renderTestLine(modalTest.mysql, sectionLabel.mysql)}
           {renderTestLine(modalTest.minio, sectionLabel.minio)}
+          {renderTestLine(modalTest.vector_store, sectionLabel.vector_store)}
         </Form>
       </AppModal>
 

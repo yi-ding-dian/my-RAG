@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.services.settings_schema import (CHAT_FIELD_NAMES,
+from backend.services.settings_schema import (CHAT_AGENTIC_FIELD_NAMES,
+                                              CHAT_FIELD_NAMES,
                                               CHAT_RETRIEVAL_FIELD_NAMES,
                                               LLM_FIELD_NAMES)
 
@@ -21,6 +22,7 @@ def chat_payload(profile: dict) -> dict:
     """提取活跃档案的聊天设置字段（GET/POST /api/settings/chat 共用响应结构）"""
     chat = profile.get("chat") or {}
     retrieval = profile.get("retrieval") or {}
+    agentic = profile.get("agentic") or {}
     return {
         "retrieval": {
             "top_k": retrieval.get("top_k"),
@@ -37,6 +39,12 @@ def chat_payload(profile: dict) -> dict:
             # 思考模式（聊天问答）：默认 disabled 关闭思考（缺省/旧档案兜底，
             # 简单延迟敏感任务更快更省 token）
             "thinking_mode": chat.get("thinking_mode", "disabled"),
+        },
+        "agentic": {
+            "enabled": agentic.get("enabled", False),
+            "max_retries": agentic.get("max_retries", 1),
+            "recheck_threshold": agentic.get("recheck_threshold", 0.55),
+            "abstain_threshold": agentic.get("abstain_threshold", 0.25),
         },
     }
 
@@ -56,6 +64,7 @@ def merge_chat_config(global_profile: dict, dept_config: dict) -> dict:
     # 段内仅接受 dict（脏数据容错：非 dict 视为未设置）
     dchat = dept.get("chat") if isinstance(dept.get("chat"), dict) else {}
     dretr = dept.get("retrieval") if isinstance(dept.get("retrieval"), dict) else {}
+    dagentic = dept.get("agentic") if isinstance(dept.get("agentic"), dict) else {}
     for k in CHAT_FIELD_NAMES:
         v = dchat.get(k)
         if v is None or v == "":
@@ -66,6 +75,11 @@ def merge_chat_config(global_profile: dict, dept_config: dict) -> dict:
         if v is None:
             continue
         base["retrieval"][k] = v
+    for k in CHAT_AGENTIC_FIELD_NAMES:
+        v = dagentic.get(k)
+        if v is None:
+            continue
+        base["agentic"][k] = v
     return base
 
 

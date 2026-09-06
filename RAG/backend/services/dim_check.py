@@ -127,8 +127,8 @@ async def get_kb_vector_status(kb_id: str) -> dict:
     - dimension 检测失败不抛 500：embedding 调用异常返回 None + 友好 message
     """
     vec = get_vector_store()
-    collection_vectors = vec.count(kb_id)
-    current_dim = vec.get_embedding_dimension(kb_id)
+    collection_vectors = await vec.count(kb_id)
+    current_dim = await vec.get_embedding_dimension(kb_id)
     model_dim = await get_model_dimension()
 
     if collection_vectors == 0 or current_dim is None:
@@ -270,7 +270,7 @@ async def _backfill_missing_vectors(kb_id: str, task: dict, vec, emb_svc,
     # total 含增量文档（快照 ⊂ all_ingested，除非重建期间被彻底删除）
     task["total"] = len(all_ingested)
     existing = {meta.get("document_id")
-                for _, _, meta in vec.get_all(kb_id)}
+                for _, _, meta in await vec.get_all(kb_id)}
     for doc in all_ingested:
         if doc.id in snapshot_ids or doc.id in existing:
             continue
@@ -297,8 +297,8 @@ async def _backfill_missing_vectors(kb_id: str, task: dict, vec, emb_svc,
                 **({"context": c.get("context")} if c.get("context") else {}),
                 "doc_active": not doc.deleted,
             } for i, (_, c) in enumerate(pairs)]
-            vec.add(kb_id, doc.id, doc.original_name, texts, embeddings,
-                    metadatas=metadatas)
+            await vec.add(kb_id, doc.id, doc.original_name, texts, embeddings,
+                          metadatas=metadatas)
             task["done"] += 1
             logger.info("增量补齐向量: kb=%s doc=%s chunks=%d", kb_id,
                         doc.original_name, len(texts))
@@ -346,13 +346,13 @@ async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
         # 0) 清空前先全量拉取条目（文本 + 完整 metadata：parent_text/偏移等保真），
         #    按文档分组；drop 后 collection 为空无法再取
         by_doc: Dict[str, List[tuple]] = {}
-        for cid, text, meta in vec.get_all(kb_id):
+        for cid, text, meta in await vec.get_all(kb_id):
             by_doc.setdefault(meta.get("document_id", ""), []).append(
                 (cid, text, meta))
 
         # 1) 清空旧向量：维度不一致时无法增量替换（Chroma 单 collection 要求维度一致），
         #    直接 drop 整个 collection 后重建
-        vec.drop_collection(kb_id)
+        await vec.drop_collection(kb_id)
         get_retrieval_service().invalidate_bm25(kb_id)
 
         # 2) 逐文档重新 embedding + 写回（串行执行防内存爆炸）
@@ -375,8 +375,8 @@ async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
                 embeddings = await emb_svc.embed(texts)
                 if not embeddings or len(embeddings) != len(texts):
                     raise RuntimeError("重新向量化结果为空或数量不一致")
-                vec.add(kb_id, doc.id, doc.original_name, texts, embeddings,
-                        metadatas=metadatas)
+                await vec.add(kb_id, doc.id, doc.original_name, texts, embeddings,
+                              metadatas=metadatas)
                 task["done"] += 1
                 logger.info("重建向量: kb=%s doc=%s chunks=%d", kb_id,
                             doc.original_name, len(texts))

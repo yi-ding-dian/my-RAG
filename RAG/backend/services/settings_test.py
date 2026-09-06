@@ -36,9 +36,17 @@ class SettingsTester:
         return {"ok": r["ok"], "latency_ms": r["latency_ms"],
                 "message": f"{r['reason']}（耗时 {r['latency_ms']}ms）"}
 
+    @staticmethod
+    def _append(r: dict, detail: str) -> dict:
+        """成功/失败都附加地址/对象细节（IP、端口、桶、数据库等）——
+        失败时也要能看到"连的是哪个配置"，便于排查"""
+        if detail:
+            return {**r, "reason": f"{r['reason']} · {detail}"}
+        return r
+
     async def test_connections(self, profile: dict) -> dict:
-        """逐项测试 LLM / Embedding / MinerU / DeepDoc / MySQL / MinIO，
-        统一 {ok, latency_ms, message}"""
+        """逐项测试 LLM / Embedding / MinerU / DeepDoc / MySQL / MinIO /
+        向量存储，统一 {ok, latency_ms, message}"""
         return {
             "llm": self._test_llm(profile.get("llm") or {}),
             "embedding": self._test_embedding(profile.get("embedding") or {}),
@@ -46,7 +54,34 @@ class SettingsTester:
             "deepdoc": await self._test_deepdoc(profile.get("deepdoc") or {}),
             "mysql": await self._test_mysql(profile.get("mysql") or {}),
             "minio": await self._test_minio(profile.get("minio") or {}),
+            "vector_store": await self._test_vector_store(
+                profile.get("vector_store") or {}),
         }
+
+    async def _test_vector_store(self, vs_cfg: dict) -> dict:
+        """向量存储：chroma=本地目录探活；milvus=连接探活（≤5s）"""
+        import time
+        from pathlib import Path
+        from backend.config import CHROMA_DIR
+        backend = str(vs_cfg.get("backend") or "chroma")
+        if backend == "milvus":
+            uri = str(vs_cfg.get("milvus_uri") or "")
+            t0 = time.time()
+            try:
+                from pymilvus import MilvusClient
+                from backend.services.vector_store import normalize_milvus_uri
+                MilvusClient(uri=normalize_milvus_uri(uri)).list_collections()
+                ok, reason = True, "连接正常"
+            except Exception as e:
+                ok, reason = False, f"连接失败: {str(e)[:120]}"
+            return self._message({
+                "ok": ok, "latency_ms": int((time.time() - t0) * 1000),
+                "reason": reason + (f" · Milvus: {uri}" if ok else "")})
+        ok = Path(CHROMA_DIR).is_dir()
+        return self._message({
+            "ok": ok, "latency_ms": 0,
+            "reason": ("本地目录可用" if ok else f"本地目录不存在: {CHROMA_DIR}")
+                      + (f" · Chroma: {CHROMA_DIR}" if ok else "")})
 
     def _test_llm(self, llm: dict) -> dict:
         """对激活模型条目发最小 chat 请求（max_tokens=1），5s 超时（probes SDK 形态）
@@ -56,22 +91,27 @@ class SettingsTester:
         backend.services.settings_service.OpenAI 可替换实现）
         """
         from backend.services import settings_service as ss
-        return self._message(probe_llm_sdk(
-            active_llm_item(llm), timeout=LLM_TEST_TIMEOUT, client_cls=ss.OpenAI))
+        item = active_llm_item(llm)
+        r = probe_llm_sdk(
+            item, timeout=LLM_TEST_TIMEOUT, client_cls=ss.OpenAI)
+        return self._message(self._append(r, str(item.get("base_url") or "")))
 
     def _test_embedding(self, embedding: dict) -> dict:
         """发 1 条 embed，5s 超时，返回实际维度（probes SDK 形态）"""
         from backend.services import settings_service as ss
-        return self._message(probe_embedding_sdk(
-            embedding, timeout=EMBEDDING_TEST_TIMEOUT, client_cls=ss.OpenAI))
+        r = probe_embedding_sdk(
+            embedding, timeout=EMBEDDING_TEST_TIMEOUT, client_cls=ss.OpenAI)
+        return self._message(self._append(
+            r, str(embedding.get("base_url") or "")))
 
     def _test_mineru(self, mineru: dict) -> dict:
         """健康探测（/health → /api/health → 根路径，≤3s，<400 可用）"""
-        return self._message(probe_mineru_sync(
+        r = probe_mineru_sync(
             mineru, timeout=min(
                 MINERU_TEST_TIMEOUT,
                 float(mineru.get("timeout") or MINERU_TEST_TIMEOUT)),
-            ok_under=400))
+            ok_under=400)
+        return self._message(self._append(r, str(mineru.get("url") or "")))
 
     async def _test_deepdoc(self, deepdoc: dict) -> dict:
         """RAGFlow 登录探测（RSA 加密密码 POST /v1/user/login，≤8s）"""
@@ -81,9 +121,23 @@ class SettingsTester:
                 float(deepdoc.get("timeout") or DEEPDOC_TEST_TIMEOUT))))
 
     async def _test_mysql(self, mysql: dict) -> dict:
-        """aiomysql 异步 connect + ping，5s 超时"""
-        return self._message(await probe_mysql(mysql, timeout=MYSQL_TEST_TIMEOUT))
+        """数据库探测：配置什么数据库就显示什么数据库（URL 覆盖/直连同等对待）
+        ——成功直接显示数据源标识；失败保留错误 + 数据源"""
+        r = await probe_mysql(mysql, timeout=MYSQL_TEST_TIMEOUT)
+        url = str(mysql.get("url") or "").strip()
+        src = (url[:100] if url
+               else f"{mysql.get('host') or '127.0.0.1'}:"
+                    f"{mysql.get('port') or 3306}/{mysql.get('database') or ''}")
+        if url:
+            # URL 覆盖模式（sqlite/其他）：无需直连测试，直接展示数据源（视为可用）
+            return {"ok": True, "latency_ms": r["latency_ms"],
+                    "message": f"{src}（耗时 {r['latency_ms']}ms）"}
+        reason = src if r["ok"] else f"{r['reason']} · {src}"
+        return {"ok": r["ok"], "latency_ms": r["latency_ms"],
+                "message": f"{reason}（耗时 {r['latency_ms']}ms）"}
 
     async def _test_minio(self, minio: dict) -> dict:
         """MinIO 桶探测（bucket_exists），5s 超时"""
-        return self._message(await probe_minio(minio, timeout=MINIO_TEST_TIMEOUT))
+        r = await probe_minio(minio, timeout=MINIO_TEST_TIMEOUT)
+        return self._message(self._append(
+            r, f"{minio.get('endpoint') or ''} (桶 {minio.get('bucket') or ''})"))

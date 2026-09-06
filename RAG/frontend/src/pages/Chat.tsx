@@ -6,6 +6,8 @@ import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
   asApiError,
+  AgenticStatus,
+  AgenticTrace,
   ChatMessage,
   ChatSession,
   KnowledgeBase,
@@ -47,6 +49,8 @@ const ChatPage: React.FC = () => {
 
   const [topK, setTopK] = useState(5);
   const [streaming, setStreaming] = useState(false);
+  // Agentic 决策阶段的进度提示（检索中/改写中/重新检索中；默认空=「正在思考…」）
+  const [statusHint, setStatusHint] = useState('');
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false);
   // 引用溯源：点击 [n] 引用标或引用面板"查看原文"时打开弹窗
   const [traceSource, setTraceSource] = useState<Source | null>(null);
@@ -260,6 +264,30 @@ const ChatPage: React.FC = () => {
     [],
   );
 
+  // agentic 事件：Agentic 检索决策轨迹（改写查询/分档分数/尝试次数）写入
+  // 最后一条 assistant 消息（请求详情展示；默认关闭时无该事件）
+  const handleAgentic = useCallback((info: AgenticTrace) => {
+    setMessages(prev => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (last && last.role === 'assistant') {
+        next[next.length - 1] = { ...last, agentic: info };
+      }
+      return next;
+    });
+  }, []);
+
+  // agentic_status 事件：决策阶段进度（检索中/改写中/重新检索中），
+  // 让用户知道 AI 在干嘛而不是干等"思考中"
+  const handleAgenticStatus = useCallback((info: AgenticStatus) => {
+    const hints: Record<AgenticStatus['stage'], string> = {
+      'retrieving': '正在检索知识库…',
+      'rewriting': '正在改写查询，提高召回…',
+      'rechecking': `已改写为「${info.query ?? ''}」，正在重新检索…`,
+    };
+    setStatusHint(hints[info.stage] ?? '正在检索知识库…');
+  }, []);
+
   const finishStreaming = useCallback(() => {
     flushDelta();
     streamingRef.current = false;
@@ -328,6 +356,7 @@ const ChatPage: React.FC = () => {
 
       streamingRef.current = true;
       setStreaming(true);
+      setStatusHint(''); // 新提问：清除上一条进度提示（收到 agentic_status 再更新）
       // 记录提问时刻（请求详情"总耗时"基准），重置首字计时标记
       askTimeRef.current = performance.now();
       totalMsRef.current = false;
@@ -336,6 +365,8 @@ const ChatPage: React.FC = () => {
         { kb_id: kbId, query: text, session_id: activeSessionId, top_k: topK },
         {
           onMeta: handleMeta,
+          onAgentic: handleAgentic,
+          onAgenticStatus: handleAgenticStatus,
           onPrompt: handlePrompt,
           onDelta: handleDelta,
           onDone: handleDone,
@@ -534,6 +565,7 @@ const ChatPage: React.FC = () => {
               key={activeSessionId}
               messages={messages}
               waiting={streaming}
+              waitingHint={statusHint}
               onCitationClick={(s) => {
                 setTraceSource(s);
                 // 记录该引用所属的回答文本（按 source.id 匹配消息，供溯源弹窗原文回答-对齐高亮）

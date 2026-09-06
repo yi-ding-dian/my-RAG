@@ -273,6 +273,29 @@ class IngestionConfig(BaseModel):
     concurrency: int = 3
 
 
+class AgenticConfig(BaseModel):
+    """Agentic 检索增强（LangGraph 检索决策层，聊天设置可配，默认关闭）
+
+    开启后问答链路在"检索 → 生成"之间插入决策循环：
+    检索结果按最高相似度分数（0~1，cos 相似度）分档：
+    - 分数 >= recheck_threshold → 直接回答（不改写不重试）
+    - abstain_threshold <= 分数 < recheck_threshold 且 重试未超上限
+      → LLM 改写查询 + 重新检索 + 再分档
+    - 分数 < abstain_threshold，或重试用尽仍不达标 → 拒答（沿用
+      "未检索到相关内容"提示），不改写不重试——乱问/知识库无相关内容
+      时零额外成本
+    默认关闭（enabled=False）：问答链路与未接入时完全一致。
+    """
+    # 总开关（默认关；开启后聊天设置可调）
+    enabled: bool = False
+    # 查询改写重试上限（改写后重检索；0 = 仅分档不改写）
+    max_retries: int = 1
+    # 直接回答下限（相似度 >= 该值不进入改写循环）
+    recheck_threshold: float = 0.55
+    # 拒答阈值（相似度 < 该值直接拒答；超管可调）
+    abstain_threshold: float = 0.25
+
+
 class MySQLConfig(BaseModel):
     """MySQL 连接配置（url 非空时优先使用，测试覆盖 sqlite 用）"""
     host: str = "127.0.0.1"
@@ -293,6 +316,16 @@ class MinIOConfig(BaseModel):
     region: str = ""
 
 
+class VectorStorageConfig(BaseModel):
+    """向量存储后端配置（配置档案新增段，替代纯 env 控制）
+
+    - backend: chroma（嵌入式文件，默认）/ milvus（服务化，需 milvus_uri）
+    - milvus_uri: milvus 服务地址（backend=milvus 时使用）
+    """
+    backend: str = "chroma"
+    milvus_uri: str = ""
+
+
 class ServiceConfig(BaseModel):
     """全部服务配置集合（阶段2 配置档案的完整形态）"""
     llm: LLMConfig
@@ -305,8 +338,10 @@ class ServiceConfig(BaseModel):
     contextual_retrieval: ContextualRetrievalConfig = Field(
         default_factory=ContextualRetrievalConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
+    agentic: AgenticConfig = Field(default_factory=AgenticConfig)
     mysql: MySQLConfig
     minio: MinIOConfig
+    vector_store: VectorStorageConfig = Field(default_factory=VectorStorageConfig)
 
 
 settings = Settings()

@@ -5,6 +5,8 @@
 import api from './http';
 import { authHeader, clearAuth } from '../auth/token';
 import type {
+  AgenticStatus,
+  AgenticTrace,
   ChatMessage,
   ChatSession,
   RetrieveChatParams,
@@ -56,6 +58,32 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
           prompt: info.prompt ?? [],
           retrieval_ms: info.retrieval_ms,
           kg_ms: info.kg_ms,
+        });
+        break;
+      }
+      case 'agentic': {
+        const info = (typeof data === 'object' && data !== null ? data : {}) as {
+          original_query?: string;
+          final_query?: string;
+          trace?: AgenticTrace['trace'];
+        };
+        callbacks.onAgentic?.({
+          original_query: info.original_query ?? '',
+          final_query: info.final_query ?? '',
+          trace: info.trace ?? [],
+        });
+        break;
+      }
+      case 'agentic_status': {
+        const info = (typeof data === 'object' && data !== null ? data : {}) as {
+          stage?: AgenticStatus['stage'];
+          attempt?: number;
+          query?: string;
+        };
+        callbacks.onAgenticStatus?.({
+          stage: info.stage ?? 'retrieving',
+          attempt: info.attempt,
+          query: info.query,
         });
         break;
       }

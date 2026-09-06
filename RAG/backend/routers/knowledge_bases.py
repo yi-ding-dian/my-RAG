@@ -206,7 +206,7 @@ async def delete_kb(request: Request, kb_id: str,
     doc_ids = doc_svc.delete_by_kb(kb_id)
     # 3) 删除向量 collection + 失效 BM25 缓存（P2-8：否则重建后的新 kb 可能
     #    复用同 id 的旧索引，或内存中残留已删 kb 的索引）
-    get_vector_store().drop_collection(kb_id)
+    await get_vector_store().drop_collection(kb_id)
     get_retrieval_service().invalidate_bm25(kb_id)
     # 3.5) 删除知识图谱文件 data/storage/graphs/{kb_id}.json（不存在静默；
     #      失败仅 warning 不阻塞删除主流程）

@@ -15,6 +15,8 @@ interface MessageListProps {
   messages: ChatMessage[];
   /** 是否正在等待助手回复（显示思考中动画） */
   waiting?: boolean;
+  /** 等待阶段的进度提示文案（Agentic 决策进度；空=「正在思考…」） */
+  waitingHint?: string;
   /** 点击回答中 [n] 引用标或引用面板"查看原文"时回调（打开溯源弹窗，可选） */
   onCitationClick?: (source: Source) => void;
 }
@@ -303,7 +305,7 @@ const renderContent = (
 };
 
 /** 消息列表：用户右侧 / 助手左侧气泡；助手消息 pre-wrap 渲染，引用来源默认收成一行入口按钮 */
-const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitationClick }) => {
+const MessageList: React.FC<MessageListProps> = ({ messages, waiting, waitingHint, onCitationClick }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { token } = theme.useToken();
   // 当前登录用户：聊天中自己的头像从此读取（无头像 → 默认 SVG 兜底）
@@ -467,7 +469,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
                     {dayjs(m.created_at).format('HH:mm')}
                     {/* 请求详情入口：仅本次流式生成且带详情数据的 assistant
                         消息显示（历史会话加载的消息无这些字段，自动不显示） */}
-                    {!isUser && !!m.prompt && (m.retrieval_ms !== undefined || m.total_ms !== undefined) && (
+                    {!isUser && ((!!m.prompt && (m.retrieval_ms !== undefined || m.total_ms !== undefined)) || !!m.agentic) && (
                       <Button
                         type="link"
                         size="small"
@@ -503,7 +505,9 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
                 <span />
                 <span />
               </span>
-              <span style={{ color: token.colorTextTertiary, fontSize: 13 }}>正在思考…</span>
+              <span style={{ color: token.colorTextTertiary, fontSize: 13 }}>
+                {waitingHint || '正在思考…'}
+              </span>
             </div>
           </div>
         )}
@@ -595,6 +599,24 @@ const MessageList: React.FC<MessageListProps> = ({ messages, waiting, onCitation
             {detailQuestion || '（无）'}
           </div>
         </div>
+        {/* Agentic 检索决策轨迹（改写查询/分档分数/尝试次数；默认关闭时无该区块） */}
+        {detailMsg.agentic && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Agentic 检索决策</div>
+            {detailMsg.agentic.original_query !== detailMsg.agentic.final_query && (
+              <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
+                查询改写：{detailMsg.agentic.original_query} → {detailMsg.agentic.final_query}
+              </div>
+            )}
+            {detailMsg.agentic.trace.map(t => (
+              <div key={t.attempt} style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
+                第 {t.attempt} 轮{t.from_rewrite ? '（改写后）' : '（原始查询）'}：相似度{' '}
+                {t.best_score != null ? t.best_score.toFixed(3) : '—'}，命中 {t.sources_count} 条
+                {t.rewrite_failed ? '（改写失败，原查询重试）' : ''}
+              </div>
+            ))}
+          </div>
+        )}
         {/* 耗时统计（后端统计召回/图谱构建，前端计算提问→首字总耗时） */}
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>耗时</div>

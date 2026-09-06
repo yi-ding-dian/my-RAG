@@ -34,11 +34,15 @@ class TestMergeChatConfig:
     """merge_chat_config：字段级合并（部门只覆盖它设置的字段）"""
 
     def test_empty_dept_is_pure_global(self):
-        """部门未设置（空 dict）→ 纯全局"""
+        """部门未设置（空 dict）→ 纯全局（含 agentic 段默认值）"""
         merged = merge_chat_config(GLOBAL, {})
         assert merged == {
             "chat": dict(GLOBAL["chat"]),
             "retrieval": dict(GLOBAL["retrieval"]),
+            "agentic": {
+                "enabled": False, "max_retries": 1,
+                "recheck_threshold": 0.55, "abstain_threshold": 0.25,
+            },
         }
 
     def test_partial_override(self):

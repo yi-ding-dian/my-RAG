@@ -17,6 +17,7 @@ from backend.services.settings_schema import FieldSpec
 _FIELD_LABELS = {
     "history_rounds": "历史轮数",
     "concurrency": "入库并发数",
+    "max_retries": "改写重试次数",
 }
 
 

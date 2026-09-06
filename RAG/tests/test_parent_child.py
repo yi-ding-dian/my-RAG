@@ -374,7 +374,7 @@ class TestParentChildIngest:
         }, headers=admin_headers)
         assert resp.status_code == 200, resp.text
         wait_for_status(client, kb["id"], doc["id"])
-        metas = get_vector_store()._get_collection(kb["id"]).get(
+        metas = get_vector_store()._backend._get_collection(kb["id"]).get(
             where={"document_id": doc["id"]},
             include=["metadatas"])["metadatas"]
         assert metas, "入库后应有向量"
@@ -401,7 +401,7 @@ class TestParentChildIngest:
         assert final["parser_id"] == "naive"
         # Chroma metadata：无 parent 字段，但 char_start/char_end 保留
         vec = get_vector_store()
-        metas = vec._get_collection(kb["id"]).get(
+        metas = vec._backend._get_collection(kb["id"]).get(
             where={"document_id": doc["id"]},
             include=["metadatas"])["metadatas"]
         assert metas, "naive 入库后应有向量"
