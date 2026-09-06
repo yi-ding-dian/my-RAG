@@ -22,6 +22,57 @@ import PageHeader from '../components/PageHeader';
 const { Text } = Typography;
 const { Password } = Input;
 
+/** 配置域快捷导航定义（方案 A）：标题 + 当前值摘要 + 对应编辑折叠 key */
+const DOMAIN_CARDS: Array<{
+  key: string;
+  title: string;
+  summary: (p: ServiceProfile) => string;
+}> = [
+  { key: 'ar', title: '档案', summary: p => p.name },
+  {
+    key: 'llm',
+    title: '模型服务',
+    summary: p => {
+      const sec = (p.llm as unknown as { models?: LLMModelItem[]; active?: number }) ?? {};
+      const models = Array.isArray(sec.models) ? sec.models : [];
+      const cur = models[sec.active ?? 0];
+      return cur ? `${cur.name}（共 ${models.length} 个模型）` : '未配置模型';
+    },
+  },
+  {
+    key: 'mineru',
+    title: '解析服务',
+    summary: p =>
+      `${p.mineru?.url || '-'}${p.deepdoc?.base_url ? ` / ${p.deepdoc.base_url}` : ''}`,
+  },
+  {
+    key: 'retrieval',
+    title: '检索与切块',
+    summary: p =>
+      `top_k ${p.retrieval?.top_k ?? '-'}｜chunk ${p.chunking?.chunk_size ?? '-'}（重叠 ${p.chunking?.overlap ?? '-'}）`,
+  },
+  {
+    key: 'ingest',
+    title: '入库与配额',
+    summary: p =>
+      `并发 ${p.ingestion?.concurrency ?? 3}｜单库上限 ${p.ingestion?.kb_doc_limit ?? 0}`,
+  },
+  {
+    key: 'mysql',
+    title: '数据存储',
+    summary: p => {
+      const db = p.mysql?.url
+        ? String(p.mysql.url).slice(0, 40)
+        : `${p.mysql?.host ?? ''}:${p.mysql?.port ?? ''}/${p.mysql?.database ?? ''}`;
+      const vs =
+        p.vector_store?.backend === 'milvus'
+          ? `Milvus ${p.vector_store.milvus_uri || ''}`
+          : 'Chroma（本地）';
+      return `${db}｜${p.minio?.endpoint ?? '-'}/${p.minio?.bucket ?? '-'}｜${vs}`;
+    },
+  },
+];
+
 interface TestItem {
   status: 'idle' | 'testing' | 'success' | 'failed';
   msg: string;
@@ -246,6 +297,8 @@ const SettingsPage: React.FC = () => {
 
   // 编辑弹窗
   const [modalOpen, setModalOpen] = useState(false);
+  // 编辑弹窗聚焦的配置域（方案 A：域卡 → 打开弹窗只展开对应折叠面板）
+  const [activePanel, setActivePanel] = useState('ar');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
@@ -466,8 +519,9 @@ const SettingsPage: React.FC = () => {
     setModalOpen(true);
   };
 
-  const openEdit = (p: ServiceProfile) => {
+  const openEdit = (p: ServiceProfile, panel: string = 'ar') => {
     setEditingId(p.id);
+    setActivePanel(panel);
     form.setFieldsValue(toFormValues(p));
     // llm 段回填（后端已迁移为 {models, active} 结构）
     const sec = p.llm as unknown as { models?: LLMModelItem[]; active?: number };
@@ -643,6 +697,34 @@ const SettingsPage: React.FC = () => {
           </Space>
         }
       >
+        {/* 配置域快捷导航（方案 A：概览在下、点域卡片直达对应编辑折叠，不再全量一张表） */}
+        <div
+          style={{
+            display: 'flex', flexWrap: 'wrap', gap: 8,
+            marginBottom: 12,
+          }}
+        >
+          {DOMAIN_CARDS.map(d => (
+            <div
+              key={d.key}
+              onClick={() => !readOnly && openEdit(p, d.key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 12px', borderRadius: 8, cursor: readOnly ? 'default' : 'pointer',
+                background: 'rgba(var(--brand-primary-rgb, 37, 99, 235), 0.05)',
+                border: '1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.18)',
+                transition: 'all 0.2s',
+              }}
+            >
+              <Text strong style={{ fontSize: 12, color: 'var(--brand-primary, #2563eb)' }}>
+                {d.title}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 11, maxWidth: 240 }} ellipsis={{ tooltip: d.summary(p) }}>
+                {d.summary(p)}
+              </Text>
+            </div>
+          ))}
+        </div>
         <Row gutter={[16, 4]}>
           <Col xs={24} md={12}>
             <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.llm}</Text>
@@ -887,20 +969,30 @@ const SettingsPage: React.FC = () => {
         <Form form={form} layout="vertical" size="small" disabled={readOnly}>
           <Collapse
             size="small"
-            defaultActiveKey={['base', 'llm', 'embedding', 'mineru', 'deepdoc', 'mysql', 'minio']}
+            activeKey={activePanel}
+            onChange={k => {
+              const key = Array.isArray(k) ? k[0] : k;
+              if (key) setActivePanel(key);
+            }}
             items={[
               {
-                key: 'base',
-                label: '基础服务',
+                key: 'ar',
+                label: '档案基本设置',
+                children: (
+                  <Form.Item
+                    name="name"
+                    label="档案名称"
+                    rules={[{ required: true, message: '请输入档案名称' }]}
+                  >
+                    <Input placeholder="例如：本地 Qwen 默认、云端 DeepSeek" />
+                  </Form.Item>
+                ),
+              },
+              {
+                key: 'retrieval',
+                label: '检索与切块',
                 children: (
                   <>
-                    <Form.Item
-                      name="name"
-                      label="档案名称"
-                      rules={[{ required: true, message: '请输入档案名称' }]}
-                    >
-                      <Input placeholder="例如：本地 Qwen 默认、云端 DeepSeek" />
-                    </Form.Item>
                     <Row gutter={12}>
                       <Col span={6}>
                         <Form.Item name="retrieval_top_k" label="检索 top_k">
@@ -968,7 +1060,7 @@ const SettingsPage: React.FC = () => {
                           <InputNumber min={0} max={1000} step={50} style={{ width: '100%' }} />
                         </Form.Item>
                       </Col>
-                      <Col span={6}>
+                      <Col span={12}>
                         <Form.Item
                           name="contextual_retrieval_max_full_doc_chars"
                           label="上下文检索完整文档阈值（字）"
@@ -977,26 +1069,34 @@ const SettingsPage: React.FC = () => {
                           <InputNumber min={1000} max={1000000} step={1000} style={{ width: '100%' }} />
                         </Form.Item>
                       </Col>
-                      <Col span={6}>
-                        <Form.Item
-                          name="ingestion_concurrency"
-                          label="入库并发数"
-                          tooltip="同时解析入库的文档数上限，超出排队等待（并发过高可能打爆解析/向量服务）"
-                        >
-                          <InputNumber min={1} max={10} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col span={6}>
-                        <Form.Item
-                          name="ingestion_kb_doc_limit"
-                          label="单库文档上限"
-                          tooltip="单知识库最大文档数，0=不限；上传/URL 导入时校验，超限提示后删除文档或调大配额"
-                        >
-                          <InputNumber min={0} max={50000} step={100} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
                     </Row>
                   </>
+                ),
+              },
+              {
+                key: 'ingest',
+                label: '入库与配额',
+                children: (
+                  <Row gutter={12}>
+                    <Col span={6}>
+                      <Form.Item
+                        name="ingestion_concurrency"
+                        label="入库并发数"
+                        tooltip="同时解析入库的文档数上限，超出排队等待（并发过高可能打爆解析/向量服务）"
+                      >
+                        <InputNumber min={1} max={10} style={{ width: '100%' }} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={6}>
+                      <Form.Item
+                        name="ingestion_kb_doc_limit"
+                        label="单库文档上限"
+                        tooltip="单知识库最大文档数，0=不限；上传/URL 导入时校验，超限提示后删除文档或调大配额"
+                      >
+                        <InputNumber min={0} max={50000} step={100} style={{ width: '100%' }} />
+                      </Form.Item>
+                    </Col>
+                  </Row>
                 ),
               },
               {
