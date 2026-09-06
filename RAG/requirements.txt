@@ -28,3 +28,4 @@ openpyxl>=3.1
 xlrd>=2.0
 # ---- Excel 公式计算(仅公式无缓存时触发,结果 hash 缓存)----
 formulas>=1.3
+pymilvus==3.0.1
