@@ -344,7 +344,20 @@ async def test_profile(request: Request, profile_id: str,
         profile = dict(profile)
         for section in (s for s in SECTION_SCHEMA if s != "chat"):
             if isinstance(body.get(section), dict):
-                profile[section] = body[section]
+                merged = dict(body[section])
+                # 密钥字段（api_key/secret_key/access_key/password）脱敏值或
+                # 留空 = 不修改 → 回查档案原值再探测（与更新语义一致；
+                # 否则掩码串会被当真凭据打出 401/AccessDenied 假失败）
+                from backend.services.settings_schema import is_secret_field
+                for fname in list(merged.keys()):
+                    cur = merged[fname]
+                    if (is_secret_field(fname)
+                            and (cur is None or cur == ""
+                                 or is_masked(str(cur)))):
+                        orig = (profile.get(section) or {}).get(fname)
+                        if orig:
+                            merged[fname] = orig
+                profile[section] = merged
     result = await svc.test_connections(profile)
     ok_map = {k: bool(v.get("ok")) for k, v in result.items()}
     await audit_service.record_action(
