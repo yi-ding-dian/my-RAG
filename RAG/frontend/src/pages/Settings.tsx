@@ -27,11 +27,15 @@ const DOMAIN_CARDS: Array<{
   key: string;
   title: string;
   summary: (p: ServiceProfile) => string;
+  /** 本域可探测的后端段（点击测试连接按这些段 toast 结果；无则无测试按钮） */
+  sections?: SectionKey[];
 }> = [
+  { key: 'ar', title: '档案', summary: p => p.name, },
   { key: 'ar', title: '档案', summary: p => p.name },
   {
     key: 'llm',
     title: '模型服务',
+    sections: ['llm', 'embedding'],
     summary: p => {
       const sec = (p.llm as unknown as { models?: LLMModelItem[]; active?: number }) ?? {};
       const models = Array.isArray(sec.models) ? sec.models : [];
@@ -42,6 +46,7 @@ const DOMAIN_CARDS: Array<{
   {
     key: 'mineru',
     title: '解析服务',
+    sections: ['mineru', 'deepdoc'],
     summary: p =>
       `${p.mineru?.url || '-'}${p.deepdoc?.base_url ? ` / ${p.deepdoc.base_url}` : ''}`,
   },
@@ -60,6 +65,7 @@ const DOMAIN_CARDS: Array<{
   {
     key: 'mysql',
     title: '数据存储',
+    sections: ['mysql', 'minio', 'vector_store'],
     summary: p => {
       const db = p.mysql?.url
         ? String(p.mysql.url).slice(0, 40)
@@ -302,6 +308,8 @@ const SettingsPage: React.FC = () => {
 
   // 编辑弹窗
   const [modalOpen, setModalOpen] = useState(false);
+  // 域卡测试连接 loading 键（"profileId:domainKey"）
+  const [domainTesting, setDomainTesting] = useState('');
   // 编辑弹窗聚焦的配置域（方案 A：域卡 → 打开弹窗默认展开该域；
   // 其余面板可自由折叠/展开——多面板并存，不做手风琴单开）
   const [activePanels, setActivePanels] = useState<string[]>(['ar']);
@@ -322,8 +330,6 @@ const SettingsPage: React.FC = () => {
   // 卡片连接测试状态（按档案 id）
   const [testStates, setTestStates] = useState<Record<string, Record<SectionKey, TestItem>>>({});
   // 弹窗内连接测试状态
-  const [modalTest, setModalTest] = useState<Record<SectionKey, TestItem>>(emptyTest);
-  const [modalTesting, setModalTesting] = useState(false);
   // 当前激活 embedding 模型的实际输出维度（实测，供维度冲突核对）
   const [embeddingDim, setEmbeddingDim] = useState<number | null>(null);
   const [embeddingDimMsg, setEmbeddingDimMsg] = useState('');
@@ -523,7 +529,6 @@ const SettingsPage: React.FC = () => {
       minio_bucket: 'my-rag', minio_secure: false, minio_region: '',
       vector_store_backend: 'chroma', vector_store_milvus_uri: '',
     });
-    setModalTest(emptyTest);
     setModalOpen(true);
   };
 
@@ -537,7 +542,6 @@ const SettingsPage: React.FC = () => {
       ? sec.models : [];
     setLlmModels(models);
     setLlmActive(sec?.active ?? 0);
-    setModalTest(emptyTest);
     setModalOpen(true);
   };
 
@@ -610,26 +614,31 @@ const SettingsPage: React.FC = () => {
     }
   };
 
-  // ---- 连接测试（弹窗：传表单未保存值） ----
-  const handleModalTest = async () => {
-    if (!editingId) {
-      message.warning('请先保存档案后再测试');
-      return;
-    }
-    setModalTesting(true);
-    setModalTest(allTesting());
+  /** 域卡测试连接：按档案配置探测该域各段，结果以 toast 反馈成败 */
+  const handleDomainTest = async (
+    p: ServiceProfile, domainKey: string, sections: SectionKey[],
+  ) => {
+    setDomainTesting(`${p.id}:${domainKey}`);
     try {
-      const vals = await form.validateFields();
-      const llmSection = llmModels.length
-        ? { models: llmModels, active: llmActive } : undefined;
-      const res = await testProfileConnection(
-        editingId, toProfileInput(vals, llmSection));
-      setModalTest(toTestItems(res.data));
+      const res = await testProfileConnection(p.id);
+      const results = sections
+        .map(k => ({ key: k, r: (res.data as unknown as Record<string, { ok: boolean; message: string }>)[k] }))
+        .filter(x => x.r);
+      const fails = results.filter(x => !x.r.ok);
+      if (fails.length === 0) {
+        message.success(`${DOMAIN_CARDS.find(d => d.key === domainKey)?.title ?? '配置'}：连接测试通过`);
+      } else {
+        fails.forEach(x =>
+          message.error(`${sectionLabel[x.key] ?? x.key}：${x.r.message}`));
+        const okCount = results.length - fails.length;
+        if (okCount > 0) {
+          message.success(`其中 ${okCount} 项连接正常`);
+        }
+      }
     } catch (e: unknown) {
-      const msg = asApiError(e).response?.data?.detail || '测试失败';
-      setModalTest(allFailed(msg));
+      message.error(asApiError(e).response?.data?.detail || '测试失败');
     } finally {
-      setModalTesting(false);
+      setDomainTesting('');
     }
   };
 
@@ -730,6 +739,20 @@ const SettingsPage: React.FC = () => {
               <Text type="secondary" style={{ fontSize: 11, maxWidth: 240 }} ellipsis={{ tooltip: d.summary(p) }}>
                 {d.summary(p)}
               </Text>
+              {d.sections && (
+                <Tooltip title="测试连接（使用档案配置）">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<ThunderboltOutlined />}
+                    loading={domainTesting === `${p.id}:${d.key}`}
+                    onClick={e => {
+                      e.stopPropagation();
+                      void handleDomainTest(p, d.key, d.sections!);
+                    }}
+                  />
+                </Tooltip>
+              )}
             </div>
           ))}
         </div>
@@ -1451,23 +1474,7 @@ const SettingsPage: React.FC = () => {
             ]}
           />
 
-          <div style={{ textAlign: 'right', marginTop: 8 }}>
-            <Button
-              icon={<ThunderboltOutlined />}
-              onClick={handleModalTest}
-              loading={modalTesting}
-              disabled={readOnly}
-            >
-              测试连接（使用当前表单值）
-            </Button>
-          </div>
-          {renderTestLine(modalTest.llm, sectionLabel.llm)}
-          {renderTestLine(modalTest.embedding, sectionLabel.embedding)}
-          {renderTestLine(modalTest.mineru, sectionLabel.mineru)}
-          {renderTestLine(modalTest.deepdoc, sectionLabel.deepdoc)}
-          {renderTestLine(modalTest.mysql, sectionLabel.mysql)}
-          {renderTestLine(modalTest.minio, sectionLabel.minio)}
-          {renderTestLine(modalTest.vector_store, sectionLabel.vector_store)}
+          <div style={{ height: 4 }} />
         </Form>
       </AppModal>
 
