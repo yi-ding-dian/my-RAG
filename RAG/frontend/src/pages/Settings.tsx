@@ -30,7 +30,6 @@ const DOMAIN_CARDS: Array<{
   /** 本域可探测的后端段（点击测试连接按这些段 toast 结果；无则无测试按钮） */
   sections?: SectionKey[];
 }> = [
-  { key: 'ar', title: '档案', summary: p => p.name, },
   { key: 'ar', title: '档案', summary: p => p.name },
   {
     key: 'llm',
@@ -106,6 +105,18 @@ const toTestItems = (res: ProfileTestResult): Record<SectionKey, TestItem> => ({
   minio: { status: res.minio.ok ? 'success' : 'failed', msg: res.minio.message },
   vector_store: { status: res.vector_store.ok ? 'success' : 'failed', msg: res.vector_store.message },
 });
+
+/** 编辑弹窗折叠面板 key → 可探测段（点击面板标题右侧"测试"按钮）；
+ *  不含 ar/retrieval/ingest 等无连接探测的纯参数面板 */
+const PANEL_TEST_SECTIONS: Record<string, SectionKey[]> = {
+  llm: ['llm'],
+  embedding: ['embedding'],
+  mineru: ['mineru'],
+  deepdoc: ['deepdoc'],
+  mysql: ['mysql'],
+  minio: ['minio'],
+  vector_store: ['vector_store'],
+};
 
 const sectionLabel: Record<SectionKey, string> = {
   llm: 'LLM 对话模型',
@@ -642,6 +653,60 @@ const SettingsPage: React.FC = () => {
     }
   };
 
+  /** 编辑弹窗内折叠面板标题"测试"：按档案已保存配置探测该段，toast 结果 */
+  const handlePanelTest = async (panelKey: string, sections: SectionKey[]) => {
+    if (!editingId) {
+      message.warning('请先选择档案再测试');
+      return;
+    }
+    setDomainTesting(`panel:${panelKey}`);
+    try {
+      const res = await testProfileConnection(editingId);
+      const fail = sections
+        .map(k => ({ key: k, r: (res.data as unknown as Record<string, { ok: boolean; message: string }>)[k] }))
+        .filter(x => x.r)
+        .find(x => !x.r.ok);
+      if (!fail) {
+        message.success(`${sectionLabel[sections[0]] ?? '配置'}：连接测试通过`);
+      } else {
+        message.error(`${sectionLabel[fail.key] ?? fail.key}：${fail.r.message}`);
+      }
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '测试失败');
+    } finally {
+      setDomainTesting('');
+    }
+  };
+
+  /** 折叠面板标题：右侧可测面板夹带"测试连接"按钮（toast 成败） */
+  const panelLabel = (panelKey: string, title: string) => {
+    const secList = PANEL_TEST_SECTIONS[panelKey];
+    return (
+      <div
+        style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          width: '100%',
+        }}
+      >
+        <span>{title}</span>
+        {secList && (
+          <Tooltip title="测试连接（使用档案配置）">
+            <Button
+              type="text"
+              size="small"
+              icon={<ThunderboltOutlined />}
+              loading={domainTesting === `panel:${panelKey}`}
+              onClick={e => {
+                e.stopPropagation();
+                void handlePanelTest(panelKey, secList);
+              }}
+            />
+          </Tooltip>
+        )}
+      </div>
+    );
+  };
+
   const renderTestLine = (item: TestItem, label: string) => {
     if (item.status === 'idle') return null;
     return (
@@ -1150,7 +1215,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'llm',
-                label: 'LLM 对话模型（多模型管理）',
+                label: panelLabel('llm', 'LLM 对话模型（多模型管理）'),
                 children: (
                   <>
                     <Alert
@@ -1228,7 +1293,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'embedding',
-                label: 'Embedding 模型（OpenAI 兼容）',
+                label: panelLabel('embedding', 'Embedding 模型（OpenAI 兼容）'),
                 children: (
                   <>
                     <Row gutter={12}>
@@ -1272,7 +1337,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'mineru',
-                label: 'MinerU 文档解析',
+                label: panelLabel('mineru', 'MinerU 文档解析'),
                 children: (
                   <Row gutter={12}>
                     <Col span={14}>
@@ -1290,7 +1355,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'deepdoc',
-                label: 'DeepDoc 解析（RAGFlow）',
+                label: panelLabel('deepdoc', 'DeepDoc 解析（RAGFlow）'),
                 children: (
                   <>
                     <Alert
@@ -1341,7 +1406,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'mysql',
-                label: '数据库（SQLite/MySQL/其他）',
+                label: panelLabel('mysql', '数据库（SQLite/MySQL/其他）'),
                 children: (
                   <>
                     <Row gutter={12}>
@@ -1393,7 +1458,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'minio',
-                label: '对象存储（MinIO）',
+                label: panelLabel('minio', '对象存储（MinIO）'),
                 children: (
                   <>
                     <Row gutter={12}>
@@ -1444,7 +1509,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'vector_store',
-                label: '向量存储',
+                label: panelLabel('vector_store', '向量存储'),
                 children: (
                   <>
                     <Row gutter={12}>
