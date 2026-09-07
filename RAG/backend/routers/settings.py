@@ -342,19 +342,17 @@ async def test_profile(request: Request, profile_id: str,
         # 表单未保存值覆盖测试（支持传单 section 或全量；chat 段不入测试
         # ——连接测试只覆盖可探测的服务段，与 schema 段序一致）
         profile = dict(profile)
+        from backend.services.settings_schema import is_secret_field
         for section in (s for s in SECTION_SCHEMA if s != "chat"):
             if isinstance(body.get(section), dict):
                 merged = dict(body[section])
-                # 密钥字段（api_key/secret_key/access_key/password）脱敏值或
-                # 留空 = 不修改 → 回查档案原值再探测（与更新语义一致；
-                # 否则掩码串会被当真凭据打出 401/AccessDenied 假失败）
-                from backend.services.settings_schema import is_secret_field
+                # 与"保存"语义对齐：空值(None/"")与密钥脱敏 = 不修改，
+                # 回查档案原值再探测（避免"未保存空字段"与"掩码串"导致假失败）
                 for fname in list(merged.keys()):
                     cur = merged[fname]
-                    if (is_secret_field(fname)
-                            and (cur is None or cur == ""
-                                 or is_masked(str(cur)))):
-                        orig = (profile.get(section) or {}).get(fname)
+                    orig = (profile.get(section) or {}).get(fname)
+                    if (cur is None or cur == "" or
+                            (is_secret_field(fname) and is_masked(str(cur)))):
                         if orig:
                             merged[fname] = orig
                 profile[section] = merged
