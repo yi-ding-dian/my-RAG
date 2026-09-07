@@ -302,8 +302,9 @@ const SettingsPage: React.FC = () => {
 
   // 编辑弹窗
   const [modalOpen, setModalOpen] = useState(false);
-  // 编辑弹窗聚焦的配置域（方案 A：域卡 → 打开弹窗只展开对应折叠面板）
-  const [activePanel, setActivePanel] = useState('ar');
+  // 编辑弹窗聚焦的配置域（方案 A：域卡 → 打开弹窗默认展开该域；
+  // 其余面板可自由折叠/展开——多面板并存，不做手风琴单开）
+  const [activePanels, setActivePanels] = useState<string[]>(['ar']);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
@@ -528,7 +529,7 @@ const SettingsPage: React.FC = () => {
 
   const openEdit = (p: ServiceProfile, panel: string = 'ar') => {
     setEditingId(p.id);
-    setActivePanel(panel);
+    setActivePanels([panel]);
     form.setFieldsValue(toFormValues(p));
     // llm 段回填（后端已迁移为 {models, active} 结构）
     const sec = p.llm as unknown as { models?: LLMModelItem[]; active?: number };
@@ -976,10 +977,10 @@ const SettingsPage: React.FC = () => {
         <Form form={form} layout="vertical" size="small" disabled={readOnly}>
           <Collapse
             size="small"
-            activeKey={activePanel}
+            activeKey={activePanels}
             onChange={k => {
-              const key = Array.isArray(k) ? k[0] : k;
-              if (key) setActivePanel(key);
+              const keys = Array.isArray(k) ? k : [k];
+              setActivePanels(keys.filter(Boolean));
             }}
             items={[
               {
