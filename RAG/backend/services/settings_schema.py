@@ -317,6 +317,7 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             "concurrency": {"condition": "truthy", "fill_missing": True,
                             "range": (1, 10)},
             "kb_doc_limit": {"fill_missing": True, "range": (0, 50000)},
+            "max_upload_mb": {"fill_missing": True, "range": (1, 2048)},
         },
         fill_section=True),
     "chat": _reflect_section("chat", ChatConfig,
@@ -334,6 +335,7 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                               "whitelist": True, "fill_missing": True},
             "kg_enhance": {"condition": "not_none", "whitelist": True,
                            "fill_missing": True},
+            "max_query_len": {"fill_missing": True, "range": (100, 20000)},
             # 思考模式（聊天问答）：disabled=关闭思考（默认）| enabled_low/
             # enabled_high/enabled_max=开启并指定强度。部门可覆盖（whitelist），
             # 旧档案缺字段 coerce 时补默认（fill_missing）

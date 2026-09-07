@@ -55,6 +55,11 @@ async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
     question = (body.query or body.message or "").strip()
     if not question:
         raise HTTPException(status_code=422, detail="query 与 message 均缺失")
+    max_len = get_active_config().chat.max_query_len
+    if len(question) > max_len:
+        raise HTTPException(
+            status_code=400,
+            detail=f"输入长度超过限制（{max_len} 字，系统配置-入库与限制可调）")
     if body.top_k is not None and not 1 <= body.top_k <= 50:
         raise HTTPException(status_code=400, detail="top_k 需为 1~50")
 
@@ -109,6 +114,11 @@ async def retrieve(body: RetrieveRequest, db: AsyncSession = Depends(get_db),
     """
     if not body.query or not body.query.strip():
         raise HTTPException(status_code=400, detail="检索 query 不能为空")
+    max_len = get_active_config().chat.max_query_len
+    if len(body.query.strip()) > max_len:
+        raise HTTPException(
+            status_code=400,
+            detail=f"输入长度超过限制（{max_len} 字，系统配置-入库与限制可调）")
     kb_ids = body.kb_ids if body.kb_ids else ([body.kb_id] if body.kb_id else [])
     if not kb_ids:
         raise HTTPException(status_code=400, detail="kb_id 与 kb_ids 至少传一个")

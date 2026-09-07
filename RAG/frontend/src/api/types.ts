@@ -797,6 +797,8 @@ export interface ChatConfig {
   system_prompt?: string;
   /** 思考模式（聊天问答）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度（在线 DeepSeek 生效；本地 Qwen 模型开启时保持模型默认思考） */
   thinking_mode?: ThinkingMode;
+  /** 单条输入（问题/检索 query）最大长度（字，默认 2000） */
+  max_query_len?: number;
 }
 
 export interface MySQLConfigProfile {
@@ -830,8 +832,8 @@ export interface ServiceProfile {
   chunking: ChunkingConfig;
   /** 上下文检索增强配置（完整文档视角阈值，字；旧后端可能缺失，前端做可选兼容） */
   contextual_retrieval?: { max_full_doc_chars?: number };
-  /** 入库配置：同时解析入库的并发（1~10）与单库文档上限（0=不限；旧后端可能缺失，前端做可选兼容） */
-  ingestion?: { concurrency?: number; kb_doc_limit?: number };
+  /** 入库配置：同时解析入库的并发（1~10）、单库文档上限（0=不限）与单文件上传上限（MB，默认 100）；旧后端可能缺失，前端做可选兼容 */
+  ingestion?: { concurrency?: number; kb_doc_limit?: number; max_upload_mb?: number };
   /** 节点向量存储段（旧档案可能缺失，前端做可选兼容；backend=chroma|milvus） */
   vector_store?: { backend?: string; milvus_uri?: string };
   /** 会话参数段（旧后端可能缺失，前端做可选兼容） */

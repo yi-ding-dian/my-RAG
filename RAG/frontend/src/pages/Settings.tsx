@@ -53,9 +53,9 @@ const DOMAIN_CARDS: Array<{
   },
   {
     key: 'ingest',
-    title: '入库与配额',
+    title: '入库与限制',
     summary: p =>
-      `并发 ${p.ingestion?.concurrency ?? 3}｜单库上限 ${p.ingestion?.kb_doc_limit ?? 0}`,
+      `并发 ${p.ingestion?.concurrency ?? 3}｜单库上限 ${p.ingestion?.kb_doc_limit ?? 0}｜上传 ${p.ingestion?.max_upload_mb ?? 100}MB｜输入 ${p.chat?.max_query_len ?? 2000}字`,
   },
   {
     key: 'mysql',
@@ -159,6 +159,8 @@ interface ProfileFormValues {
   contextual_retrieval_max_full_doc_chars: number;
   ingestion_concurrency: number;
   ingestion_kb_doc_limit: number;
+  ingestion_max_upload_mb: number;
+  chat_max_query_len: number;
   mysql_host: string;
   mysql_port: number;
   mysql_user: string;
@@ -215,6 +217,7 @@ const toProfileInput = (vals: ProfileFormValues, llmSection?: {
   ingestion: {
     concurrency: vals.ingestion_concurrency,
     kb_doc_limit: vals.ingestion_kb_doc_limit ?? 0,
+    max_upload_mb: vals.ingestion_max_upload_mb ?? 100,
   },
   mysql: {
     host: vals.mysql_host,
@@ -263,6 +266,8 @@ const toFormValues = (p: ServiceProfile) => ({
     p.contextual_retrieval?.max_full_doc_chars ?? 20000,
   ingestion_concurrency: p.ingestion?.concurrency ?? 3,
   ingestion_kb_doc_limit: p.ingestion?.kb_doc_limit ?? 0,
+  ingestion_max_upload_mb: p.ingestion?.max_upload_mb ?? 100,
+  chat_max_query_len: p.chat?.max_query_len ?? 2000,
   mysql_host: p.mysql?.host,
   mysql_port: p.mysql?.port,
   mysql_user: p.mysql?.user,
@@ -508,6 +513,8 @@ const SettingsPage: React.FC = () => {
       contextual_retrieval_max_full_doc_chars: 20000,
       ingestion_concurrency: 3,
       ingestion_kb_doc_limit: 0,
+      ingestion_max_upload_mb: 100,
+      chat_max_query_len: 2000,
       // MySQL / MinIO 预填后端默认值（密码类留空，保存时后端用默认或保持原值）
       mysql_host: '127.0.0.1', mysql_port: 5455, mysql_user: 'ragflow',
       mysql_database: 'my_rag',
@@ -1075,7 +1082,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'ingest',
-                label: '入库与配额',
+                label: '入库与限制',
                 children: (
                   <Row gutter={12}>
                     <Col span={6}>
@@ -1094,6 +1101,24 @@ const SettingsPage: React.FC = () => {
                         tooltip="单知识库最大文档数，0=不限；上传/URL 导入时校验，超限提示后删除文档或调大配额"
                       >
                         <InputNumber min={0} max={50000} step={100} style={{ width: '100%' }} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={6}>
+                      <Form.Item
+                        name="ingestion_max_upload_mb"
+                        label="上传大小限制（MB）"
+                        tooltip="单文件上传上限（默认 100MB）；nginx 反代层上限已放宽到 1024m，精确大小由后端按此配置校验"
+                      >
+                        <InputNumber min={1} max={2048} step={10} style={{ width: '100%' }} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={6}>
+                      <Form.Item
+                        name="chat_max_query_len"
+                        label="单条输入长度（字）"
+                        tooltip="问题/检索 query 最大长度，超出返回友好提示（防超长粘贴耗尽上下文与费用）"
+                      >
+                        <InputNumber min={100} max={20000} step={100} style={{ width: '100%' }} />
                       </Form.Item>
                     </Col>
                   </Row>

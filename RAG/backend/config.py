@@ -240,6 +240,9 @@ class ChatConfig(BaseModel):
     enable_multi_turn: bool = True
     # 自定义系统提示词：空串 = 使用内置默认模板（chat_service._SYSTEM_PROMPT_TEMPLATE）
     system_prompt: str = ""
+    # 单条输入（问题/检索 query）最大长度（字，默认 2000）；超出返回 400
+    # 友好提示——防超长粘贴耗尽上下文/费用
+    max_query_len: int = 2000
     # 知识图谱增强：查询时 LLM 抽实体 → 图谱匹配 → 1-hop 邻接扩展，
     # 图谱上下文作为"知识图谱"来源引用注入回答（默认开；无图谱自动跳过零成本）
     kg_enhance: bool = True
@@ -263,7 +266,7 @@ class ContextualRetrievalConfig(BaseModel):
 
 
 class IngestionConfig(BaseModel):
-    """入库并发/配额配置（后台解析任务并发上限 + 知识库文档数护栏，
+    """入库并发/配额配置（后台解析任务并发上限 + 知识库文档数/上传大小护栏，
     超管在系统配置页可调，即时生效）
 
     - concurrency：同时解析入库的文档数上限（默认 3，范围 1~10）。
@@ -272,9 +275,12 @@ class IngestionConfig(BaseModel):
       （信号量按配置值惰性重建，见 _get_ingest_semaphore）
     - kb_doc_limit：单知识库最大文档数，0=不限；上传/URL 导入时校验，
       超限返回友好 400（防单库无限膨胀/多用户上传耗尽磁盘）
+    - max_upload_mb：单文件上传上限（MB，默认 100）；上传时校验，
+      超过返回 413。nginx 反代层上限需 >= 该配置（deploy 文档已提示）
     """
     concurrency: int = 3
     kb_doc_limit: int = 0
+    max_upload_mb: int = 100
 
 
 class AgenticConfig(BaseModel):

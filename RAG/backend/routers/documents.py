@@ -114,12 +114,15 @@ async def upload_document(request: Request, kb_id: str,
             status_code=409,
             detail=f"知识库中已存在同名文档：{original_name}，如需覆盖请确认后重传")
 
-    # 分块读取，限制大小
+    # 分块读取，限制大小（上限可由配置档案 ingestion.max_upload_mb 调整）
+    upload_max_mb = get_active_config().ingestion.max_upload_mb
     content = b""
     while chunk := await file.read(8 * 1024 * 1024):
         content += chunk
-        if len(content) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="文件超过 100MB 限制")
+        if len(content) > upload_max_mb * 1024 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail=f"文件超过 {upload_max_mb}MB 限制（系统配置-入库与限制可调）")
 
     # 创建元数据（UUID 内部文件名），原文件写对象存储 + 本地副本（ingest 解析 / 存储不可用 fallback）
     doc_svc = get_document_service()
