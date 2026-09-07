@@ -196,10 +196,11 @@ class TestCoerceBehavior:
                        "top_n": 10},
         }
         # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + kg_enhance=True
-        # + thinking_mode="disabled"（历史契约：不补全段）
+        # + thinking_mode="disabled" + max_query_len=2000（历史契约：不补全段）
         assert out["chat"] == {"system_prompt": "",
                                "kg_enhance": build_default_config().chat.kg_enhance,
-                               "thinking_mode": "disabled"}
+                               "thinking_mode": "disabled",
+                               "max_query_len": 2000}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()
         assert out["mysql"] == {
