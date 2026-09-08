@@ -335,10 +335,10 @@ const AppLayout: React.FC = () => {
             padding: 24,
             background: token.colorBgLayout,
             overflow: 'auto',
-            minHeight: '100vh',
+            height: '100vh',
           }}
         >
-          <div key={location.pathname} className="page-fade" style={{ minHeight: '100%' }}>
+          <div key={location.pathname} className="page-fade" style={{ height: '100%' }}>
             <Suspense fallback={<PageLoading />}>
               <Routes>
                 <Route path="/" element={<Navigate to="/chat" replace />} />

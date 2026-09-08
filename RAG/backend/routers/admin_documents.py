@@ -138,3 +138,63 @@ async def list_admin_documents(
         "page_size": size,
         "items": items[start:start + size],
     }
+
+
+@router.get("/summary")
+async def list_admin_documents_summary(
+    db: AsyncSession = Depends(get_db),
+    user: UserPublic = Depends(require_super_or_dept_admin),
+):
+    """部门汇总（一次拉全树：部门 → 知识库 → 文档数/切块数）
+
+    返回 [{department_id, department_name, doc_count, kb_count,
+           kbs: [{kb_id, kb_name, doc_count, chunk_count}]}]
+    - 未分配部门（department_id 为 null 的知识库）用 UNASSIGNED_DEPT_KEY 分组
+    - dept_admin 仅返回本部门（未归属部门 403），super_admin 全量
+    - doc_count = 非回收站文档数（含未入库）；chunk_count = 已入库文档切块总数
+    """
+    dept_id_param: Optional[str] = None
+    if user.role == "dept_admin":
+        if not user.department_id:
+            raise HTTPException(
+                status_code=403,
+                detail="部门管理员未归属部门，无法查看文档")
+        dept_id_param = user.department_id  # 强制本部门
+
+    kbs = await get_kb_service().list(db)
+    depts = {d.id: d for d in await department_service.list_departments(db)}
+    docs = get_document_service().list_all()
+
+    # 部门 → 知识库 → 汇总
+    by_dept: dict = {}
+    for kb in kbs:
+        # 未分配部门 = department_id 为 null；其余按部门 id
+        dept_key = str(kb.department_id) if kb.department_id else UNASSIGNED_DEPT_KEY
+        if dept_id_param and dept_key != dept_id_param:
+            continue
+        dept_entry = by_dept.setdefault(dept_key, {
+            "department_id": dept_key,
+            "department_name": (
+                depts[kb.department_id].name if kb.department_id in depts
+                else "未分配部门"),
+            "doc_count": 0,
+            "kb_count": 0,
+            "kbs": [],
+        })
+        kb_docs = [d for d in docs if d.kb_id == kb.id]
+        dept_entry["kbs"].append({
+            "kb_id": kb.id,
+            "kb_name": kb.name,
+            "doc_count": len(kb_docs),
+            "chunk_count": sum(d.chunk_count for d in kb_docs
+                               if d.status == "ingested"),
+        })
+        dept_entry["doc_count"] += len(kb_docs)
+        dept_entry["kb_count"] += 1
+
+    # 排序：未分配部门最后（与前端分组契约一致）
+    items = sorted(
+        by_dept.values(),
+        key=lambda e: (0 if e["department_id"] == UNASSIGNED_DEPT_KEY else 1,
+                       e["department_name"]))
+    return {"total": len(items), "items": items}

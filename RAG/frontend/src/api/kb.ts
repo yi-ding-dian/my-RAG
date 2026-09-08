@@ -6,6 +6,7 @@ import api from './http';
 import { authHeader, clearAuth } from '../auth/token';
 import type {
   AnalyzeResult,
+  DepartmentSummaryResponse,
   DocumentDetail,
   DocumentItem,
   DocumentPage,
@@ -327,6 +328,10 @@ export const listGlobalDocuments = (params?: {
   page?: number;
   page_size?: number;
 }) => api.get<GlobalDocumentPage>('/admin/documents', { params });
+
+/** 部门汇总（部门 → 知识库 → 文档数/切块数，一次拉全树；用于文档管理(全部部门)三级下钻首页） */
+export const listGlobalDocumentsSummary = () =>
+  api.get<DepartmentSummaryResponse>('/admin/documents/summary');
 
 /** URL 网页导入为文档（仅 http/https；标题做文件名，正文提取为纯文本） */
 export const importDocumentFromUrl = (kbId: string, url: string) =>

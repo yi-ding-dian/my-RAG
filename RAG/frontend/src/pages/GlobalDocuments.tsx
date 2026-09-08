@@ -1,45 +1,51 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   App as AntApp,
+  Breadcrumb,
   Button,
   Card,
-  Collapse,
+  Col,
   Input,
-  Pagination,
   Popconfirm,
+  Row,
   Segmented,
-  Select,
+  Skeleton,
   Space,
   Spin,
   Table,
   Tag,
   Tooltip,
   Typography,
-  theme,
 } from 'antd';
 import {
+  ApartmentOutlined,
   BookOutlined,
   DeleteOutlined,
   EditOutlined,
+  EyeOutlined,
+  LeftOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import {
   asApiError,
-  Department,
+  DepartmentSummaryEntry,
   DocumentStatus,
   GlobalDocumentItem,
   deleteDocument,
-  listDepartments,
   listGlobalDocuments,
-  listKbs,
+  listGlobalDocumentsSummary,
   methodColor,
   methodLabel,
 } from '../api/client';
 import AppEmpty from '../components/AppEmpty';
-import PageHeader from '../components/PageHeader';
+import PageLayout from '../components/layout/PageLayout';
+import TableSectionLayout from '../components/layout/TableSectionLayout';
 import RenameDocumentModal from '../components/RenameDocumentModal';
+import DocumentProfileModal from '../components/documents/DocumentProfileModal';
+import DocumentPreviewModal from '../components/DocumentPreviewModal';
+import { useDetailModal } from '../components/documents/DocumentModals';
 import { useAuth } from '../auth/AuthContext';
 
 const { Text } = Typography;
@@ -53,24 +59,10 @@ const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   parsed: { color: 'warning', text: '已解析' },
   ingested: { color: 'success', text: '已入库' },
   failed: { color: 'error', text: '失败' },
-  // Agentic 分块超限待确认：不算失败，橙色 Tag（与部门内文档页一致）
   pending_confirm: { color: 'orange', text: '待确认' },
 };
 
-/** 状态筛选（与部门内文档管理 M3 语义统一：「未入库」= uploaded+parsed） */
-type StatusFilter = 'all' | 'unparsed' | 'parsing' | 'ingested' | 'failed';
-const statusFilterOptions: { label: string; value: StatusFilter }[] = [
-  { label: '全部', value: 'all' },
-  { label: '未入库', value: 'unparsed' },
-  { label: '解析中', value: 'parsing' },
-  { label: '已入库', value: 'ingested' },
-  { label: '失败', value: 'failed' },
-];
-
-const toBackendStatus = (filter: StatusFilter): string | undefined =>
-  filter === 'all' ? undefined : filter;
-
-const formatSize = (bytes: number) => {
+const formatSize = (bytes: number): string => {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
@@ -90,83 +82,94 @@ const parserConfigSummary = (
   return parts.length > 0 ? parts.join(' / ') : null;
 };
 
-/** 当前页内分组：部门 → 知识库（组名/顺序稳定：部门下拉顺序 + 未分配最后） */
-interface KbGroup {
-  kbId: string;
-  kbName: string;
-  docs: GlobalDocumentItem[];
-}
-interface DeptGroup {
-  deptKey: string;
-  deptName: string;
-  kbs: KbGroup[];
-}
+/** 状态筛选（与部门内文档管理 M3 语义统一：「未入库」= uploaded+parsed） */
+type StatusFilter = 'all' | 'unparsed' | 'parsing' | 'ingested' | 'failed';
+const STATUS_OPTIONS: { label: string; value: StatusFilter }[] = [
+  { label: '全部', value: 'all' },
+  { label: '未入库', value: 'unparsed' },
+  { label: '解析中', value: 'parsing' },
+  { label: '已入库', value: 'ingested' },
+  { label: '失败', value: 'failed' },
+];
+
+const toBackendStatus = (filter: StatusFilter): string | undefined =>
+  filter === 'all' ? undefined : filter;
+
+/** 三级下钻状态：department | kbs | docs（dept_admin 自动从 kbs 起） */
+type ViewLevel = 'departments' | 'dept' | 'docs';
 
 /**
  * 全局文档管理页（super_admin 全量 / dept_admin 限本部门）：
- * 按部门分类查看知识库与文档，支持重命名与软删除。删除为「移入回收站（可恢复）」，
- * 回收站入口保留在各部门知识库内文档管理页（本期不做全局回收站）。
- * dept_admin：数据已由后端强制限定本部门，页面隐藏「部门」筛选下拉（其余筛选
- * 保留，如知识库/状态/关键字）；super_admin 保留全部筛选。
- * 分页方案：一次拉当前页（page/page_size，默认 50），当前页数据内按部门分组。
+ * 三级下钻——部门卡片 → 部门详情(知识库卡片) → 文档列表(卡片网格)。
+ * 顶部面包屑导航返回上一级；第 3 层保留状态筛选/搜索/刷新/分页。
+ * dept_admin 数据已由后端强制限定本部门，页面直接从本部门知识库层开始。
  */
 const GlobalDocumentsPage: React.FC = () => {
   const { message } = AntApp.useApp();
-  const { token } = theme.useToken();
   const { user } = useAuth();
   // dept_admin：本部门视图（后端强制 department_id，前端隐藏部门筛选）
   const isDeptAdmin = user?.role === 'dept_admin';
 
-  // 筛选条件
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [departmentId, setDepartmentId] = useState<string | undefined>();
-  const [kbId, setKbId] = useState<string | undefined>();
+  // ---------- 三级下钻导航 ----------
+  const [level, setLevel] = useState<ViewLevel>('departments');
+  // 当前选中的部门（第 2 层数据源）
+  const [deptKey, setDeptKey] = useState<string | null>(null);
+  // 当前选中的知识库（第 3 层数据源）
+  const [kbId, setKbId] = useState<string | null>(null);
+
+  // ---------- 部⻔汇总树数据（第 1/2 层） ----------
+  const [summary, setSummary] = useState<DepartmentSummaryEntry[]>([]);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+
+  // ---------- 筛选（第 3 层） ----------
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [keywordInput, setKeywordInput] = useState('');
   const [keyword, setKeyword] = useState('');
 
-  // 分页 + 数据
+  // ---------- 文档列表（第 3 层） ----------
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [total, setTotal] = useState(0);
   const [items, setItems] = useState<GlobalDocumentItem[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // 重命名弹窗（复用部门内文档页的组件，kbId 取文档自身所属）
+  // 重命名弹窗 / 档案弹窗
   const [renameDoc, setRenameDoc] = useState<GlobalDocumentItem | null>(null);
-  // 部门折叠面板展开态（受控：数据变化时全部展开，符合「默认展开」）
-  const [openKeys, setOpenKeys] = useState<string[]>([]);
+  const [profileDoc, setProfileDoc] = useState<GlobalDocumentItem | null>(null);
+  // 在线预览弹窗（点击文件名：预览原始文件）
+  const [previewDoc, setPreviewDoc] = useState<GlobalDocumentItem | null>(null);
+  // 切块详情弹窗（操作列"切块预览"；useDetailModal 需文档所属 kb_id）
+  const [detailKbId, setDetailKbId] = useState<string | undefined>();
+  const detailModal = useDetailModal(detailKbId);
 
-  // 知识库下拉选项（随部门联动过滤，见 filteredKbOptions）
-  const [kbOptions, setKbOptions] = useState<
-    { value: string; label: string; department_id: string | null }[]
-  >([]);
-
-  // ---------- 数据加载 ----------
-
-  const loadMeta = useCallback(async () => {
+  // ---------- 加载：部门汇总树 ----------
+  const loadSummary = useCallback(async (silent = false) => {
+    if (!silent) setSummaryLoading(true);
     try {
-      const [deptRes, kbRes] = await Promise.all([
-        listDepartments(),
-        listKbs(),
-      ]);
-      setDepartments(deptRes.data);
-      setKbOptions(kbRes.data.map(k => ({
-        value: k.id,
-        label: k.name,
-        department_id: k.department_id ?? null,
-      })));
+      const res = await listGlobalDocumentsSummary();
+      const list = res.data.items ?? [];
+      setSummary(list);
+      // dept_admin：仅本部门一个，直接从部门详情层开始
+      if (isDeptAdmin && list.length > 0) {
+        setLevel('dept');
+        setDeptKey(list[0].department_id);
+      }
     } catch {
-      message.error('加载部门/知识库列表失败');
+      if (!silent) message.error('加载部门汇总失败');
+    } finally {
+      if (!silent) setSummaryLoading(false);
     }
-  }, [message]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message, isDeptAdmin]);
 
-  const load = useCallback(
+  // ---------- 加载：知识库文档列表（第 3 层） ----------
+  const loadDocs = useCallback(
     async (silent = false, p = page, ps = pageSize) => {
+      if (!kbId) return;
       if (!silent) setLoading(true);
       try {
         const res = await listGlobalDocuments({
-          department_id: departmentId,
+          department_id: deptKey ?? undefined,
           kb_id: kbId,
           status: toBackendStatus(statusFilter),
           keyword: keyword || undefined,
@@ -176,78 +179,199 @@ const GlobalDocumentsPage: React.FC = () => {
         setItems(res.data.items);
         setTotal(res.data.total);
       } catch {
-        if (!silent) message.error('加载全局文档列表失败');
+        if (!silent) message.error('加载文档列表失败');
       } finally {
         if (!silent) setLoading(false);
       }
     },
-    [departmentId, kbId, statusFilter, keyword, message, page, pageSize],
+    [kbId, deptKey, statusFilter, keyword, message, page, pageSize],
   );
 
+  // 初次加载（dept_admin 进入即部门层；super_admin 见部门层）
   useEffect(() => {
-    void loadMeta();
-  }, [loadMeta]);
-
-  // 任一筛选变化 → 回第 1 页重新请求
-  useEffect(() => {
-    setPage(1);
-    void load(false, 1, pageSize);
+    void loadSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [departmentId, kbId, statusFilter, keyword]);
+  }, []);
 
-  // ---------- 分组（当前页数据内按 部门 → 知识库） ----------
-
-  const groups = useMemo<DeptGroup[]>(() => {
-    const deptNameById = new Map(departments.map(d => [d.id, d.name]));
-    // 稳定顺序：部门下拉顺序（创建时间序）+ 未分配最后
-    const order = [...departments.map(d => d.id), UNASSIGNED];
-    const map = new Map<string, DeptGroup>();
-    for (const key of order) {
-      map.set(key, {
-        deptKey: key,
-        deptName: key === UNASSIGNED ? '未分配部门' : deptNameById.get(key) ?? '未知部门',
-        kbs: [],
-      });
-    }
-    for (const item of items) {
-      const deptKey = item.department_id ?? UNASSIGNED;
-      const group = map.get(deptKey) ?? {
-        deptKey,
-        deptName: item.department_name ?? '未分配部门',
-        kbs: [],
-      };
-      if (!map.has(deptKey)) map.set(deptKey, group);
-      let kbGroup = group.kbs.find(k => k.kbId === item.kb_id);
-      if (!kbGroup) {
-        kbGroup = { kbId: item.kb_id, kbName: item.kb_name, docs: [] };
-        group.kbs.push(kbGroup);
-      }
-      kbGroup.docs.push(item);
-    }
-    return order
-      .map(key => map.get(key)!)
-      .filter(g => g.kbs.length > 0);
-  }, [items, departments]);
-
-  // 数据变化（筛选/翻页）后面板全部展开（defaultActiveKey 首次渲染后不再生效）
+  // 进入第 3 层/筛选变化 → 回第 1 页重新请求
   useEffect(() => {
-    setOpenKeys(groups.map(g => g.deptKey));
-  }, [groups]);
+    if (level !== 'docs' || !kbId) return;
+    setPage(1);
+    void loadDocs(false, 1, pageSize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [level, kbId, deptKey, statusFilter, keyword]);
+
+  // ---------- 派生数据 ----------
+  const curDept = useMemo(
+    () => (deptKey ? summary.find(s => s.department_id === deptKey) : null)
+      ?? (deptKey === UNASSIGNED
+        ? summary.find(s => s.department_id === UNASSIGNED)
+        : null),
+    [summary, deptKey],
+  );
+  const curKb = useMemo(
+    () => (curDept?.kbs ?? []).find(k => k.kb_id === kbId) ?? null,
+    [curDept, kbId],
+  );
 
   // ---------- 操作 ----------
-
   const handleDelete = async (doc: GlobalDocumentItem) => {
     try {
       await deleteDocument(doc.kb_id, doc.id);
       message.success('已移入回收站（可恢复）');
-      void load(true);
+      void loadDocs(true);
+      void loadSummary(true);
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '删除失败');
     }
   };
 
+  const goBack = (target: ViewLevel) => {
+    setLevel(target);
+    if (target === 'departments') {
+      setDeptKey(null);
+      setKbId(null);
+    } else if (target === 'dept') {
+      setKbId(null);
+    }
+  };
+
+  // 面包屑：文档管理（全部部门）/ {部门} / {知识库}
+  const breadcrumbItems = [
+    {
+      title: (
+        <span style={{ cursor: 'pointer' }} onClick={() => goBack('departments')}>
+          文档管理（全部部门）
+        </span>
+      ),
+    },
+    ...(level !== 'departments' && deptKey
+      ? [{
+          title: (
+            <span style={{ cursor: 'pointer' }} onClick={() => goBack('dept')}>
+              {curDept?.department_name ?? '部门'}
+            </span>
+          ),
+        }]
+      : []),
+    ...(level === 'docs' && kbId
+      ? [{ title: curKb?.kb_name ?? '知识库' }]
+      : []),
+  ];
+
+  // ---------- 第 1 层：部门卡片网格 ----------
+  const renderDepartments = () => (
+    <div style={{ marginTop: 4 }}>
+      <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+        共 {summary.length} 个部门，按部门查看知识库与文档；点击部门卡片进入详情
+      </Text>
+      <Row gutter={[14, 14]}>
+        {summary.map(dept => (
+          <Col key={dept.department_id} xs={24} sm={12} md={8} lg={6}>
+            <Card className="gen-card" onClick={() => {
+              setDeptKey(dept.department_id);
+              setLevel('dept');
+            }}>
+              <div className="gen-card__head">
+                <div className="gen-card__icon" style={{
+                  background: 'linear-gradient(135deg, var(--brand-primary, #2563eb) 0%, var(--brand-primary-deep, #1d4ed8) 100%)',
+                }}>
+                  <ApartmentOutlined />
+                </div>
+                <Text strong ellipsis className="gen-card__name">
+                  {dept.department_name}
+                </Text>
+              </div>
+              <div className="gen-card__tags">
+                <Tag color="blue">{dept.kb_count} 知识库</Tag>
+                <Tag color="green">{dept.doc_count} 文档</Tag>
+              </div>
+              <div className="gen-card__footer">
+                <Button
+                  type="link"
+                  size="small"
+                  className="gen-card__enter"
+                  onClick={() => {
+                    setDeptKey(dept.department_id);
+                    setLevel('dept');
+                  }}
+                >
+                  查看详情 <LeftOutlined style={{ transform: 'rotate(180deg)', fontSize: 10 }} />
+                </Button>
+              </div>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+    </div>
+  );
+
+  // ---------- 第 2 层：部门详情(知识库卡片) ----------
+  const renderDept = () => (
+    <div style={{ marginTop: 4 }}>
+      <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+        「{curDept?.department_name ?? ''}」下共 {curDept?.kb_count ?? 0} 个知识库，
+        点击知识库卡片查看文档
+      </Text>
+      {curDept?.kbs.length === 0 ? (
+        <AppEmpty title="暂无知识库" description="该部门还没有创建知识库" />
+      ) : (
+        <Row gutter={[14, 14]}>
+          {(curDept?.kbs ?? []).map(kb => (
+            <Col key={kb.kb_id} xs={24} sm={12} md={8} lg={6}>
+              <Card className="gen-card" onClick={() => {
+                setKbId(kb.kb_id);
+                setLevel('docs');
+              }}>
+                <div className="gen-card__head">
+                  <div className="gen-card__icon" style={{
+                    background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)',
+                  }}>
+                    <BookOutlined />
+                  </div>
+                  <Text strong ellipsis className="gen-card__name" title={kb.kb_name}>
+                    {kb.kb_name}
+                  </Text>
+                </div>
+                <div className="gen-card__tags">
+                  <Tag color="blue">{kb.doc_count} 文档</Tag>
+                  <Tag color="cyan">{kb.chunk_count} 切块</Tag>
+                </div>
+                <div className="gen-card__footer">
+                  <Button
+                    type="link"
+                    size="small"
+                    className="gen-card__enter"
+                    onClick={() => {
+                      setKbId(kb.kb_id);
+                      setLevel('docs');
+                    }}
+                  >
+                    查看文档 <LeftOutlined style={{ transform: 'rotate(180deg)', fontSize: 10 }} />
+                  </Button>
+                </div>
+              </Card>
+            </Col>
+          ))}
+        </Row>
+      )}
+    </div>
+  );
+
+  // ---------- 第 3 层：文档列表（表格） ----------
   const columns: ColumnsType<GlobalDocumentItem> = [
-    { title: '文件名', dataIndex: 'original_name', key: 'name', ellipsis: true, width: 240 },
+    {
+      title: '文件名',
+      dataIndex: 'original_name',
+      key: 'name',
+      ellipsis: true,
+      width: 240,
+      render: (v: string, row) => (
+        <Typography.Link onClick={() => setPreviewDoc(row)} title="点击在线预览">
+          {v}
+        </Typography.Link>
+      ),
+    },
     {
       title: '类型',
       dataIndex: 'file_type',
@@ -313,9 +437,19 @@ const GlobalDocumentsPage: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 230,
       render: (_, row) => (
         <Space size="small">
+          <Button
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => {
+              setDetailKbId(row.kb_id);
+              void detailModal.openDetail(row);
+            }}
+          >
+            切块预览
+          </Button>
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -326,7 +460,7 @@ const GlobalDocumentsPage: React.FC = () => {
           <Popconfirm
             title={`移入回收站「${row.original_name}」？`}
             description="文档将不再参与检索，可在该知识库的回收站恢复；彻底删除请在回收站操作"
-            onConfirm={() => handleDelete(row)}
+            onConfirm={() => void handleDelete(row)}
             okText="移入回收站"
             cancelText="取消"
           >
@@ -337,156 +471,124 @@ const GlobalDocumentsPage: React.FC = () => {
     },
   ];
 
-  // 知识库下拉联动：选部门后仅显示该部门（含未分配）的知识库
-  const filteredKbOptions = kbOptions.filter(k =>
-    !departmentId
-      ? true
-      : departmentId === UNASSIGNED
-        ? !k.department_id
-        : k.department_id === departmentId,
-  );
-
-  const collapseItems = groups.map(g => {
-    const count = g.kbs.reduce((s, k) => s + k.docs.length, 0);
-    return {
-      key: g.deptKey,
-      label: (
-        <Space size={8}>
-          <Text strong>{g.deptName}</Text>
-          <Tag color="blue">{count}</Tag>
-        </Space>
-      ),
-      children: (
-        <div>
-          {g.kbs.map(kbGroup => (
-            <div key={kbGroup.kbId} style={{ marginBottom: 16 }}>
-              <div style={{ marginBottom: 8 }}>
-                <Space size={6}>
-                  <BookOutlined style={{ color: token.colorPrimary }} />
-                  <Text strong>{kbGroup.kbName}</Text>
-                  <Tag>{kbGroup.docs.length}</Tag>
-                </Space>
-              </div>
-              <Table
-                size="small"
-                dataSource={kbGroup.docs}
-                columns={columns}
-                rowKey="id"
-                pagination={false}
-                scroll={{ x: 900 }}
-                className="table-zebra"
-              />
-            </div>
-          ))}
-        </div>
-      ),
-    };
-  });
-
-  return (
-    <div>
-      <PageHeader
-        title={isDeptAdmin ? '文档管理（本部门）' : '文档管理（全部部门）'}
-        description={
-          isDeptAdmin
-            ? '本部门视图：查看本部门知识库的文档，可重命名或移入回收站（可在所属知识库回收站恢复）'
-            : '超管跨部门视图：按部门查看所有知识库的文档，可重命名或移入回收站（可在所属知识库回收站恢复）'
-        }
-        extra={
-          <>
-            {!isDeptAdmin && (
-              <Select
-                value={departmentId}
-                onChange={setDepartmentId}
-                style={{ width: 180 }}
-                allowClear
-                placeholder="全部部门"
-                options={[
-                  ...departments.map(d => ({ value: d.id, label: d.name })),
-                  { value: UNASSIGNED, label: '未分配部门' },
-                ]}
-              />
-            )}
-            <Select
-              value={kbId}
-              onChange={setKbId}
-              style={{ width: 200 }}
-              allowClear
-              placeholder="全部知识库"
-              options={filteredKbOptions.map(k => ({ value: k.value, label: k.label }))}
-            />
-            <Segmented
-              size="middle"
-              value={statusFilter}
-              onChange={v => setStatusFilter(v as StatusFilter)}
-              options={statusFilterOptions}
-            />
-            <Input.Search
-              allowClear
-              placeholder="搜索文件名"
-              style={{ width: 200 }}
-              value={keywordInput}
-              onChange={e => setKeywordInput(e.target.value)}
-              onSearch={v => {
-                setKeyword(v.trim());
-              }}
-            />
-            <Button icon={<ReloadOutlined />} onClick={() => void load(false, page, pageSize)}>
-              刷新
-            </Button>
-          </>
-        }
-      />
-
-      <Card>
-        {loading && groups.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '40px 0' }}>
-            <Spin tip="加载中..." />
-          </div>
+  const renderDocs = () => (
+    <TableSectionLayout
+      total={total}
+      page={page}
+      pageSize={pageSize}
+      onPageChange={(p, ps) => {
+        setPage(p);
+        setPageSize(ps);
+        void loadDocs(false, p, ps);
+      }}
+      toolbar={
+        <>
+          <Segmented
+            value={statusFilter}
+            onChange={v => setStatusFilter(v as StatusFilter)}
+            options={STATUS_OPTIONS}
+          />
+          <Input.Search
+            allowClear
+            placeholder="搜索文件名"
+            style={{ width: 200 }}
+            value={keywordInput}
+            onChange={e => setKeywordInput(e.target.value)}
+            onSearch={v => setKeyword(v.trim())}
+          />
+          <Button icon={<ReloadOutlined />} onClick={() => void loadDocs(false, page, pageSize)}>
+            刷新
+          </Button>
+        </>
+      }
+      emptyOrLoading={
+        loading && items.length === 0 ? (
+          <Skeleton active paragraph={{ rows: 6 }} />
         ) : total === 0 ? (
           <AppEmpty
             title="暂无文档"
-            description="当前筛选条件下没有文档，可调整部门/知识库/状态/关键字筛选"
+            description="当前筛选条件下没有文档，可调整状态/关键字筛选"
           />
-        ) : (
-          <>
-            <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-              共 {total} 个文档{keyword ? `（关键字「${keyword}」）` : ''}，按部门分组展示当前页
-            </Text>
-            <Collapse
-              items={collapseItems}
-              activeKey={openKeys}
-              onChange={keys => setOpenKeys(keys as string[])}
-              size="small"
-            />
-            <div style={{ marginTop: 16, textAlign: 'right' }}>
-              <Pagination
-                current={page}
-                pageSize={pageSize}
-                total={total}
-                showSizeChanger
-                pageSizeOptions={[20, 50, 100, 200]}
-                showTotal={t => `共 ${t} 条`}
-                onChange={(p, ps) => {
-                  setPage(p);
-                  setPageSize(ps);
-                  void load(false, p, ps);
-                }}
-              />
-            </div>
-          </>
-        )}
-      </Card>
+        ) : undefined
+      }
+    >
+      <Table
+        size="small"
+        dataSource={items}
+        columns={columns}
+        rowKey="id"
+        pagination={false}
+        scroll={{ x: 900 }}
+        sticky
+        className="table-zebra"
+        onRow={row => ({
+          style: { cursor: 'pointer' },
+          onClick: () => setProfileDoc(row),
+        })}
+      />
+    </TableSectionLayout>
+  );
 
-      {/* 重命名弹窗（复用部门内文档管理组件，kbId 取文档所属知识库；成功提示由弹窗自身展示） */}
+  return (
+    <PageLayout
+      breadcrumb={<Breadcrumb items={breadcrumbItems} />}
+      // dept_admin 保留标题以区分部门视图（super_admin 有多级面包屑+卡片即可）
+      title={isDeptAdmin ? '文档管理（本部门）' : undefined}
+      description={
+        isDeptAdmin
+          ? '本部门视图：查看本部门知识库的文档，可重命名或移入回收站'
+          : undefined
+      }
+    >
+      {summaryLoading && level === 'departments' ? (
+        <Card><Skeleton active paragraph={{ rows: 4 }} /></Card>
+      ) : (
+        level === 'departments'
+          ? renderDepartments()
+          : level === 'dept'
+            ? renderDept()
+            : renderDocs()
+      )}
+
+      {/* 文档档案弹窗：点击卡片打开 */}
+      <DocumentProfileModal
+        open={!!profileDoc}
+        doc={profileDoc}
+        onCancel={() => setProfileDoc(null)}
+        extra={
+          profileDoc && (
+            <>
+              <Button onClick={() => { setRenameDoc(profileDoc); setProfileDoc(null); }}>
+                重命名
+              </Button>
+              <Button danger onClick={() => { void handleDelete(profileDoc as GlobalDocumentItem); setProfileDoc(null); }}>
+                移入回收站
+              </Button>
+            </>
+          )
+        }
+      />
+
+      {/* 在线预览弹窗：点击文件名打开 */}
+      <DocumentPreviewModal
+        open={!!previewDoc}
+        doc={previewDoc}
+        kbId={previewDoc?.kb_id}
+        onCancel={() => setPreviewDoc(null)}
+      />
+
+      {/* 切块详情弹窗：操作列"切块预览"打开 */}
+      {detailModal.node}
+
+      {/* 重命名弹窗（复用部门内文档管理组件，kbId 取文档所属知识库） */}
       <RenameDocumentModal
         open={!!renameDoc}
         doc={renameDoc}
         kbId={renameDoc?.kb_id}
         onCancel={() => setRenameDoc(null)}
-        onSuccess={() => { void load(true); }}
+        onSuccess={() => { void loadDocs(true); void loadSummary(true); }}
       />
-    </div>
+    </PageLayout>
   );
 };
 

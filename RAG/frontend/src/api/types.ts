@@ -481,6 +481,26 @@ export interface GlobalDocumentPage {
   items: GlobalDocumentItem[];
 }
 
+/** 部门汇总条目（/api/admin/documents/summary）：部门 → 知识库 → 文档数 */
+export interface DepartmentSummaryEntry {
+  department_id: string;
+  department_name: string;
+  doc_count: number;
+  kb_count: number;
+  kbs: {
+    kb_id: string;
+    kb_name: string;
+    doc_count: number;
+    chunk_count: number;
+  }[];
+}
+
+/** 部门汇总响应 */
+export interface DepartmentSummaryResponse {
+  total: number;
+  items: DepartmentSummaryEntry[];
+}
+
 /** 实体/关系在文档中的引用位置（chunk_index 为 chunks_meta 下标；偏移相对文档解析全文，与 chunks_meta 契约一致） */
 export interface GraphChunkRef {
   doc_id: string;

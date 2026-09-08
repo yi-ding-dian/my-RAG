@@ -1826,3 +1826,146 @@ mark:not(.citation-highlight) {
 
 
 
+
+/* ============================================================
+   通用卡片库 CardShell（与 kb-card 同构：hover 上浮 + 主色边框）
+   ============================================================ */
+.gen-card.ant-card {
+  border-radius: 12px;
+  border-color: #e5eaf2;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.05);
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+.gen-card .ant-card-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 160px;
+}
+.gen-card.ant-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 10px 26px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.16);
+}
+.gen-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.gen-card__icon {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(16, 24, 40, 0.18);
+}
+.gen-card__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+}
+/* 操作按钮：hover 卡片时显示（保留占位，避免布局跳动） */
+.gen-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+.gen-card.ant-card:hover .gen-card__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.gen-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  min-height: 22px;
+}
+/* 描述：2 行 clamp */
+.gen-card__desc {
+  flex: 1;
+  margin: 8px 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(15, 23, 42, 0.65);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+.gen-card__footer {
+  padding-top: 10px;
+  border-top: 1px solid #f1f4f9;
+}
+/* footer 常显入口：主色小字 + hover 加深（H5 可发现性，不依赖 hover/触屏） */
+.gen-card .ant-btn-link.gen-card__enter {
+  padding: 0;
+  height: 20px;
+  line-height: 20px;
+  font-size: 12px;
+  color: var(--brand-primary, #2563eb);
+  margin: 6px 0 2px;
+}
+.gen-card .ant-btn-link.gen-card__enter:hover {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+/* 触屏设备（无 hover）：卡片顶部操作按钮常显 */
+@media (hover: none) {
+  .gen-card__actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.gen-card__footerTop {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.gen-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 14px;
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.55);
+}
+[data-theme='dark'] .gen-card.ant-card {
+  border-color: #2e3646;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+[data-theme='dark'] .gen-card.ant-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+[data-theme='dark'] .gen-card__desc {
+  color: rgba(229, 231, 235, 0.6);
+}
+[data-theme='dark'] .gen-card__meta {
+  color: rgba(229, 231, 235, 0.55);
+}
+[data-theme='dark'] .gen-card__footer {
+  border-top-color: #2e3646;
+}
+
+/* ============================================================
+   文档卡片网格（Documents 页面）
+   ============================================================ */
+.doc-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}

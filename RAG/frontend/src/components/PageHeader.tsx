@@ -7,8 +7,8 @@ import React from 'react';
 import { Space, Typography } from 'antd';
 
 interface PageHeaderProps {
-  /** 页面大标题 */
-  title: React.ReactNode;
+  /** 页面大标题（可选：纯面包屑/导航场景可不传，如文档管理三级下钻页） */
+  title?: React.ReactNode;
   /** 副标题（灰字小字） */
   description?: React.ReactNode;
   /** 面包屑：渲染在标题上方 */
@@ -37,16 +37,20 @@ const PageHeader: React.FC<PageHeaderProps> = ({
         flexWrap: 'wrap',
       }}
     >
-      <div style={{ minWidth: 0 }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          {title}
-        </Typography.Title>
-        {description && (
-          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-            {description}
-          </Typography.Text>
-        )}
-      </div>
+      {title ? (
+        <div style={{ minWidth: 0 }}>
+          <Typography.Title level={4} style={{ margin: 0 }}>
+            {title}
+          </Typography.Title>
+          {description && (
+            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              {description}
+            </Typography.Text>
+          )}
+        </div>
+      ) : (
+        <span style={{ flex: 1 }} />
+      )}
       {extra && <Space wrap>{extra}</Space>}
     </div>
   </div>
