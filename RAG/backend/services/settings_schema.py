@@ -280,6 +280,7 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                     "enabled": {"condition": "not_none", "fill_missing": True},
                     "base_url": {"strip": True, "fill_missing": True},
                     "model": {"strip": True, "fill_missing": True},
+                    "api_key": {"strip": True, "condition": "secret_truthy"},
                     "top_n": {"condition": "not_none", "fill_missing": True},
                 },
                 fill_section=True),

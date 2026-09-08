@@ -295,7 +295,8 @@ class RetrievalService:
         candidates = sources[:rcfg.top_n]
         scores = await client.rerank(
             query=query, documents=[s.text for s in candidates],
-            model=rcfg.model, base_url=rcfg.base_url, top_n=rcfg.top_n)
+            model=rcfg.model, base_url=rcfg.base_url, api_key=rcfg.api_key,
+            top_n=rcfg.top_n)
         if scores is None:
             logger.warning("rerank 降级: kb 保持原顺序返回 %d 条", top_k)
             return sources[:top_k]

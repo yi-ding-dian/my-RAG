@@ -95,7 +95,8 @@ class _FakeRerankClient:
     def is_enabled(self, cfg):
         return True
 
-    async def rerank(self, query, documents, model="", base_url="", top_n=None):
+    async def rerank(self, query, documents, model="", base_url="",
+                     api_key="", top_n=None):
         self.calls.append((query, list(documents)))
         if self.fail:
             return None
@@ -504,7 +505,8 @@ class TestConfigCompatibility:
         p = svc.get_profile("old01")
         assert p["retrieval"]["enable_hybrid"] is True
         assert p["retrieval"]["rerank"] == {
-            "enabled": False, "base_url": "", "model": "", "top_n": 10}
+            "enabled": False, "base_url": "", "model": "", "api_key": "",
+            "top_n": 10}
         cfg = get_active_config().retrieval
         assert cfg.enable_hybrid is True
         assert cfg.rerank.enabled is False and cfg.rerank.top_n == 10
@@ -520,7 +522,7 @@ class TestConfigCompatibility:
         r = resp.json()["retrieval"]
         assert r["enable_hybrid"] is True
         assert r["rerank"] == {"enabled": False, "base_url": "",
-                               "model": "", "top_n": 10}
+                               "model": "", "api_key": "", "top_n": 10}
         pid = resp.json()["id"]
         assert client.post(f"/api/settings/profiles/{pid}/activate",
                            headers=admin_headers).status_code == 200

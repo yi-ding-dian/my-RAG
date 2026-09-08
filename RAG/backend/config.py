@@ -205,11 +205,14 @@ class RerankConfig(BaseModel):
     """Rerank 重排序配置（OpenAI 兼容 /rerank 协议：POST {base_url}/rerank）
 
     - enabled 为 False 或 base_url/model 任一为空时跳过重排（严格降级，不报错）
+    - api_key: 云端服务（如 SiliconFlow）需要 Bearer 鉴权；本机 vLLM 无鉴权
+      时留空即可
     - top_n: 参与重排的候选条数（大于等于最终 top_k 才有意义）
     """
     enabled: bool = False
     base_url: str = ""
     model: str = ""
+    api_key: str = ""
     top_n: int = 10
 
 

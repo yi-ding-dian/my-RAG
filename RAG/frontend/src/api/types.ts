@@ -772,6 +772,7 @@ export interface RetrievalConfig {
     enabled?: boolean;
     base_url?: string;
     model?: string;
+    api_key?: string;
     top_n?: number;
   };
 }
@@ -856,6 +857,7 @@ export interface ProfileTestResult {
   embedding: ConnectionTestResult;
   mineru: ConnectionTestResult;
   deepdoc: ConnectionTestResult;
+  rerank: ConnectionTestResult;
   mysql: ConnectionTestResult;
   minio: ConnectionTestResult;
   vector_store: ConnectionTestResult;

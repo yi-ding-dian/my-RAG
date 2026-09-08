@@ -40,6 +40,7 @@ DEFAULT_LLM_TIMEOUT = 5.0
 DEFAULT_EMBEDDING_TIMEOUT = 5.0
 DEFAULT_MYSQL_TIMEOUT = 5.0
 DEFAULT_MINIO_TIMEOUT = 5.0
+DEFAULT_RERANK_TIMEOUT = 5.0
 
 
 def _cfg_get(cfg, *keys, default=None):
@@ -473,3 +474,54 @@ async def probe_minio(cfg=None, *, timeout: Optional[float] = None) -> dict:
         return {"ok": False,
                 "latency_ms": int((time.monotonic() - t0) * 1000),
                 "reason": f"连接失败: {str(e)[:200]}"}
+
+
+# ==================== Rerank ====================
+
+
+def probe_rerank_sync(cfg=None, *, timeout: Optional[float] = None) -> dict:
+    """Rerank 探测（POST {base_url}/rerank 最小请求）
+
+    - 同步形态，httpx.post；settings_service 连接测试用（async 上下文直接调用）
+    - 带 Authorization: Bearer（api_key 非空时，云端服务如 SiliconFlow）
+    - 判定：HTTP < 400 且响应含 results（index+relevance_score）视为成功
+    """
+    base_url = _cfg_str(cfg, "base_url").strip().rstrip("/")
+    # 防呆：完整端点（.../v1/rerank）误填进 base_url 时去掉尾部再拼
+    if base_url.endswith("/rerank"):
+        base_url = base_url[:-len("/rerank")]
+    model = _cfg_str(cfg, "model").strip()
+    api_key = _cfg_str(cfg, "api_key").strip()
+    timeout = (float(timeout) if timeout is not None
+               else _cfg_timeout(cfg, DEFAULT_RERANK_TIMEOUT))
+    t0 = time.monotonic()
+    if not base_url:
+        return {"ok": False, "latency_ms": 0, "reason": "Rerank 服务地址未配置"}
+    if not model:
+        return {"ok": False, "latency_ms": 0, "reason": "Rerank 模型未配置"}
+    payload = {"model": model, "query": "test", "documents": ["a", "b"], "top_n": 2}
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+    try:
+        resp = httpx.post(f"{base_url}/rerank", json=payload,
+                          headers=headers, timeout=timeout)
+        if resp.status_code >= 400:
+            return {"ok": False,
+                    "latency_ms": int((time.monotonic() - t0) * 1000),
+                    "reason": f"HTTP {resp.status_code}: {resp.text[:120]}"}
+        data = resp.json()
+        results = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(results, list):
+            return {"ok": False,
+                    "latency_ms": int((time.monotonic() - t0) * 1000),
+                    "reason": "响应格式异常（缺 results 列表）"}
+        return {"ok": True,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "reason": f"连接成功（HTTP {resp.status_code}，返回 {len(results)} 条分数）"}
+    except httpx.TimeoutException:
+        return {"ok": False,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "reason": f"连接超时（{int(timeout)}s）"}
+    except Exception as e:
+        return {"ok": False,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "reason": f"连接失败: {str(e)[:150]}"}

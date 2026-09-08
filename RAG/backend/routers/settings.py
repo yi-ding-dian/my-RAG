@@ -343,14 +343,34 @@ async def test_profile(request: Request, profile_id: str,
         # ——连接测试只覆盖可探测的服务段，与 schema 段序一致）
         profile = dict(profile)
         from backend.services.settings_schema import is_secret_field
+
+        def _merge_subsection(sub_cur: dict, sub_orig: dict) -> dict:
+            """子段（如 retrieval.rerank）与"保存"语义对齐：空值(None/"")
+            与密钥脱敏 = 不修改，回查档案原值再探测（避免掩码串导致假失败）"""
+            out = dict(sub_cur)
+            for fname in list(out.keys()):
+                cur = out[fname]
+                orig = sub_orig.get(fname)
+                if (cur is None or cur == "" or
+                        (is_secret_field(fname) and is_masked(str(cur)))):
+                    if orig:
+                        out[fname] = orig
+            return out
+
         for section in (s for s in SECTION_SCHEMA if s != "chat"):
             if isinstance(body.get(section), dict):
                 merged = dict(body[section])
+                orig_section = profile.get(section) or {}
                 # 与"保存"语义对齐：空值(None/"")与密钥脱敏 = 不修改，
                 # 回查档案原值再探测（避免"未保存空字段"与"掩码串"导致假失败）
                 for fname in list(merged.keys()):
                     cur = merged[fname]
-                    orig = (profile.get(section) or {}).get(fname)
+                    orig = orig_section.get(fname)
+                    if isinstance(cur, dict):
+                        # 子段（retrieval.rerank）：按字段逐项回查
+                        merged[fname] = _merge_subsection(
+                            cur, orig if isinstance(orig, dict) else {})
+                        continue
                     if (cur is None or cur == "" or
                             (is_secret_field(fname) and is_masked(str(cur)))):
                         if orig:

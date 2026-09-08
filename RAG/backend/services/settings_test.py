@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from backend.services.probes import (probe_deepdoc_sync, probe_embedding_sdk,
                                      probe_llm_sdk, probe_mineru_sync,
-                                     probe_minio, probe_mysql)
+                                     probe_minio, probe_mysql,
+                                     probe_rerank_sync)
 from backend.services.settings_merge import active_llm_item
 
 # 连接测试超时（秒）
@@ -25,6 +26,7 @@ MINERU_TEST_TIMEOUT = 3.0
 DEEPDOC_TEST_TIMEOUT = 8.0
 MYSQL_TEST_TIMEOUT = 5.0
 MINIO_TEST_TIMEOUT = 5.0
+RERANK_TEST_TIMEOUT = 5.0
 
 
 class SettingsTester:
@@ -46,7 +48,7 @@ class SettingsTester:
 
     async def test_connections(self, profile: dict) -> dict:
         """逐项测试 LLM / Embedding / MinerU / DeepDoc / MySQL / MinIO /
-        向量存储，统一 {ok, latency_ms, message}"""
+        Rerank / 向量存储，统一 {ok, latency_ms, message}"""
         return {
             "llm": self._test_llm(profile.get("llm") or {}),
             "embedding": self._test_embedding(profile.get("embedding") or {}),
@@ -56,6 +58,8 @@ class SettingsTester:
             "minio": await self._test_minio(profile.get("minio") or {}),
             "vector_store": await self._test_vector_store(
                 profile.get("vector_store") or {}),
+            "rerank": self._test_rerank(
+                (profile.get("retrieval") or {}).get("rerank") or {}),
         }
 
     async def _test_vector_store(self, vs_cfg: dict) -> dict:
@@ -112,6 +116,22 @@ class SettingsTester:
                 float(mineru.get("timeout") or MINERU_TEST_TIMEOUT)),
             ok_under=400)
         return self._message(self._append(r, str(mineru.get("url") or "")))
+
+    def _test_rerank(self, rerank: dict) -> dict:
+        """Rerank 探测（POST {base_url}/rerank 最小请求，≤5s；
+
+        未启用（enabled=false）或地址/模型未配置时返回 ok=False 提示——
+        前端测试按钮按结果 toast，与"未配置"语义一致
+        """
+        if not bool(rerank.get("enabled")):
+            return self._message({
+                "ok": False, "latency_ms": 0,
+                "reason": "尚未启用（Rerank 重排序开关为关）"})
+        r = probe_rerank_sync(
+            rerank, timeout=min(
+                RERANK_TEST_TIMEOUT,
+                float(rerank.get("timeout") or RERANK_TEST_TIMEOUT)))
+        return self._message(self._append(r, str(rerank.get("base_url") or "")))
 
     async def _test_deepdoc(self, deepdoc: dict) -> dict:
         """RAGFlow 登录探测（RSA 加密密码 POST /v1/user/login，≤8s）"""

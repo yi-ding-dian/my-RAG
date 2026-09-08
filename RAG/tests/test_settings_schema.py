@@ -193,7 +193,7 @@ class TestCoerceBehavior:
         assert out["retrieval"] == {
             "enable_hybrid": build_default_config().retrieval.enable_hybrid,
             "rerank": {"enabled": False, "base_url": "", "model": "",
-                       "top_n": 10},
+                       "api_key": "", "top_n": 10},
         }
         # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + kg_enhance=True
         # + thinking_mode="disabled" + max_query_len=2000（历史契约：不补全段）

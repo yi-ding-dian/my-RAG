@@ -32,6 +32,7 @@ class RerankClient:
 
     async def rerank(self, query: str, documents: List[str],
                      model: str = "", base_url: str = "",
+                     api_key: str = "",
                      top_n: Optional[int] = None) -> Optional[List[float]]:
         """调用 rerank 服务，返回按 documents 顺序的 relevance_score 列表
 
@@ -39,16 +40,29 @@ class RerankClient:
           有效分数最小值补齐，保持原顺序排在有效项之后）
         - 失败/响应异常：None（调用方保留原顺序降级），包括：
           有效条目（index+relevance_score 均合法）不足半数、分数全 0
+        - api_key 非空时带 Authorization: Bearer（云端服务如 SiliconFlow）；
+          本机 vLLM 无鉴权留空
         """
         if not documents:
             return []
-        url = f"{str(base_url).rstrip('/')}/rerank"
+        # 防呆：用户可能把完整端点（如 .../v1/rerank）误填进 base_url，
+        # 统一去掉尾部 /rerank 再拼（拼成 /rerank/rerank 会 404）
+        base = str(base_url).rstrip('/')
+        if base.endswith('/rerank'):
+            base = base[:-len('/rerank')]
+        url = f"{base}/rerank"
         payload: dict = {"model": model, "query": query, "documents": documents}
         if top_n:
             payload["top_n"] = int(top_n)
+        headers: dict = {}
+        if (api_key or "").strip():
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
         try:
             async with httpx.AsyncClient(timeout=RERANK_TIMEOUT) as client:
-                resp = await client.post(url, json=payload)
+                if headers:
+                    resp = await client.post(url, json=payload, headers=headers)
+                else:
+                    resp = await client.post(url, json=payload)
             if resp.status_code >= 400:
                 logger.warning("rerank 调用失败（HTTP %s）: %s",
                                resp.status_code, resp.text[:200])

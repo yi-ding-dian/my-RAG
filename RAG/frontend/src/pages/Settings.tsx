@@ -52,6 +52,7 @@ const DOMAIN_CARDS: Array<{
   {
     key: 'retrieval',
     title: '检索与切块',
+    sections: ['rerank'],
     summary: p =>
       `top_k ${p.retrieval?.top_k ?? '-'}｜chunk ${p.chunking?.chunk_size ?? '-'}（重叠 ${p.chunking?.overlap ?? '-'}）`,
   },
@@ -83,13 +84,14 @@ interface TestItem {
   msg: string;
 }
 
-type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'mysql' | 'minio' | 'vector_store';
+type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'mysql' | 'minio' | 'vector_store' | 'rerank';
 
 const emptyTest: Record<SectionKey, TestItem> = {
   llm: { status: 'idle', msg: '' },
   embedding: { status: 'idle', msg: '' },
   mineru: { status: 'idle', msg: '' },
   deepdoc: { status: 'idle', msg: '' },
+  rerank: { status: 'idle', msg: '' },
   mysql: { status: 'idle', msg: '' },
   minio: { status: 'idle', msg: '' },
   vector_store: { status: 'idle', msg: '' },
@@ -101,18 +103,20 @@ const toTestItems = (res: ProfileTestResult): Record<SectionKey, TestItem> => ({
   embedding: { status: res.embedding.ok ? 'success' : 'failed', msg: res.embedding.message },
   mineru: { status: res.mineru.ok ? 'success' : 'failed', msg: res.mineru.message },
   deepdoc: { status: res.deepdoc.ok ? 'success' : 'failed', msg: res.deepdoc.message },
+  rerank: { status: res.rerank.ok ? 'success' : 'failed', msg: res.rerank.message },
   mysql: { status: res.mysql.ok ? 'success' : 'failed', msg: res.mysql.message },
   minio: { status: res.minio.ok ? 'success' : 'failed', msg: res.minio.message },
   vector_store: { status: res.vector_store.ok ? 'success' : 'failed', msg: res.vector_store.message },
 });
 
 /** 编辑弹窗折叠面板 key → 可探测段（点击面板标题右侧"测试"按钮）；
- *  不含 ar/retrieval/ingest 等无连接探测的纯参数面板 */
+ *  不含 ar/ingest 等无连接探测的纯参数面板（retrieval 含 rerank 连接探测） */
 const PANEL_TEST_SECTIONS: Record<string, SectionKey[]> = {
   llm: ['llm'],
   embedding: ['embedding'],
   mineru: ['mineru'],
   deepdoc: ['deepdoc'],
+  retrieval: ['rerank'],
   mysql: ['mysql'],
   minio: ['minio'],
   vector_store: ['vector_store'],
@@ -123,6 +127,7 @@ const sectionLabel: Record<SectionKey, string> = {
   embedding: 'Embedding 模型',
   mineru: 'MinerU 文档解析',
   deepdoc: 'DeepDoc 解析（RAGFlow）',
+  rerank: 'Rerank 重排序',
   mysql: '数据库',
   minio: 'MinIO 对象存储',
   vector_store: '向量存储',
@@ -134,6 +139,7 @@ const allTesting = (): Record<SectionKey, TestItem> => ({
   embedding: { status: 'testing', msg: '' },
   mineru: { status: 'testing', msg: '' },
   deepdoc: { status: 'testing', msg: '' },
+  rerank: { status: 'testing', msg: '' },
   mysql: { status: 'testing', msg: '' },
   minio: { status: 'testing', msg: '' },
   vector_store: { status: 'testing', msg: '' },
@@ -145,6 +151,7 @@ const allFailed = (msg: string): Record<SectionKey, TestItem> => ({
   embedding: { status: 'failed', msg },
   mineru: { status: 'failed', msg },
   deepdoc: { status: 'failed', msg },
+  rerank: { status: 'failed', msg },
   mysql: { status: 'failed', msg },
   minio: { status: 'failed', msg },
   vector_store: { status: 'failed', msg },
@@ -170,6 +177,7 @@ interface ProfileFormValues {
   rerank_enabled: boolean;
   rerank_base_url: string;
   rerank_model: string;
+  rerank_api_key: string;
   rerank_top_n: number;
   chunk_size: number;
   chunk_overlap: number;
@@ -224,6 +232,7 @@ const toProfileInput = (vals: ProfileFormValues, llmSection?: {
       enabled: vals.rerank_enabled,
       base_url: vals.rerank_base_url,
       model: vals.rerank_model,
+      api_key: vals.rerank_api_key,
       top_n: vals.rerank_top_n,
     },
   },
@@ -276,6 +285,7 @@ const toFormValues = (p: ServiceProfile) => ({
   rerank_enabled: p.retrieval?.rerank?.enabled ?? false,
   rerank_base_url: p.retrieval?.rerank?.base_url ?? '',
   rerank_model: p.retrieval?.rerank?.model ?? '',
+  rerank_api_key: p.retrieval?.rerank?.api_key ?? '',
   rerank_top_n: p.retrieval?.rerank?.top_n ?? 10,
   chunk_size: p.chunking?.chunk_size,
   chunk_overlap: p.chunking?.overlap,
@@ -1086,7 +1096,7 @@ const SettingsPage: React.FC = () => {
               },
               {
                 key: 'retrieval',
-                label: '检索与切块',
+                label: panelLabel('retrieval', '检索与切块'),
                 children: (
                   <>
                     <Row gutter={12}>
@@ -1130,18 +1140,27 @@ const SettingsPage: React.FC = () => {
                       </Col>
                     </Row>
                     <Row gutter={12}>
-                      <Col span={14}>
+                      <Col span={12}>
                         <Form.Item
                           name="rerank_base_url"
                           label="Rerank 服务地址（OpenAI 兼容）"
-                          tooltip="如 http://127.0.0.1:8300/v1，POST {base_url}/rerank"
+                          tooltip="如本地 http://127.0.0.1:8400/v1 或云端 https://api.siliconflow.cn/v1，POST {base_url}/rerank"
                         >
-                          <Input placeholder="http://127.0.0.1:8300/v1" />
+                          <Input placeholder="http://127.0.0.1:8400/v1" />
                         </Form.Item>
                       </Col>
                       <Col span={6}>
                         <Form.Item name="rerank_model" label="Rerank 模型">
                           <Input placeholder="bge-reranker-v2-m3" />
+                        </Form.Item>
+                      </Col>
+                      <Col span={6}>
+                        <Form.Item
+                          name="rerank_api_key"
+                          label="API Key"
+                          tooltip="云端服务（如 SiliconFlow）需要，本机 vLLM 无鉴权可留空；保存后仅显示脱敏值，不修改请留空"
+                        >
+                          <Password placeholder="***" />
                         </Form.Item>
                       </Col>
                     </Row>
