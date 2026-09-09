@@ -45,8 +45,10 @@ import TableSectionLayout from '../components/layout/TableSectionLayout';
 import RenameDocumentModal from '../components/RenameDocumentModal';
 import DocumentProfileModal from '../components/documents/DocumentProfileModal';
 import DocumentPreviewModal from '../components/DocumentPreviewModal';
+import ResizableTitle from '../components/ResizableTitle';
 import { useDetailModal } from '../components/documents/DocumentModals';
 import { useAuth } from '../auth/AuthContext';
+import { useResizableColumns } from '../hooks/useResizableColumns';
 
 const { Text } = Typography;
 
@@ -109,6 +111,9 @@ const GlobalDocumentsPage: React.FC = () => {
   const { user } = useAuth();
   // dept_admin：本部门视图（后端强制 department_id，前端隐藏部门筛选）
   const isDeptAdmin = user?.role === 'dept_admin';
+
+  // 列宽拖拽（第 3 层文档表）：拖拽后的列宽存 colWidths，scroll.x 动态对齐列宽和
+  const { colWidths, handleResize, tableWidth } = useResizableColumns<GlobalDocumentItem>();
 
   // ---------- 三级下钻导航 ----------
   const [level, setLevel] = useState<ViewLevel>('departments');
@@ -365,7 +370,8 @@ const GlobalDocumentsPage: React.FC = () => {
       dataIndex: 'original_name',
       key: 'name',
       ellipsis: true,
-      width: 240,
+      width: colWidths.name ?? 240,
+      onHeaderCell: () => ({ width: colWidths.name ?? 240, onResize: handleResize('name'), title: '文件名' }),
       render: (v: string, row) => (
         <Typography.Link onClick={() => setPreviewDoc(row)} title="点击在线预览">
           {v}
@@ -376,21 +382,24 @@ const GlobalDocumentsPage: React.FC = () => {
       title: '类型',
       dataIndex: 'file_type',
       key: 'file_type',
-      width: 70,
+      width: colWidths.file_type ?? 80,
+      onHeaderCell: () => ({ width: colWidths.file_type ?? 80, onResize: handleResize('file_type'), title: '类型' }),
       render: (v: string) => <Tag>{v === 'url' ? '网页' : v || '-'}</Tag>,
     },
     {
       title: '大小',
       dataIndex: 'size',
       key: 'size',
-      width: 90,
+      width: colWidths.size ?? 90,
+      onHeaderCell: () => ({ width: colWidths.size ?? 90, onResize: handleResize('size'), title: '大小' }),
       render: (v?: number) => (v == null ? '-' : formatSize(v)),
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
+      width: colWidths.status ?? 100,
+      onHeaderCell: () => ({ width: colWidths.status ?? 100, onResize: handleResize('status'), title: '状态' }),
       render: (status: DocumentStatus, row) => {
         const meta = statusMeta[status] ?? { color: 'default', text: status };
         const tag =
@@ -412,14 +421,16 @@ const GlobalDocumentsPage: React.FC = () => {
       title: '切块数',
       dataIndex: 'chunk_count',
       key: 'chunk_count',
-      width: 80,
+      width: colWidths.chunk_count ?? 80,
+      onHeaderCell: () => ({ width: colWidths.chunk_count ?? 80, onResize: handleResize('chunk_count'), title: '切块数' }),
       render: (v: number, row) => (row.status === 'ingested' ? v : '-'),
     },
     {
       title: '解析方式',
       dataIndex: 'parser_id',
       key: 'parser_id',
-      width: 120,
+      width: colWidths.parser_id ?? 120,
+      onHeaderCell: () => ({ width: colWidths.parser_id ?? 120, onResize: handleResize('parser_id'), title: '解析方式' }),
       render: (v: string | undefined, row) => {
         if (!v) return <Text type="secondary">-</Text>;
         const tag = <Tag color={methodColor(v)}>{methodLabel(v)}</Tag>;
@@ -431,7 +442,8 @@ const GlobalDocumentsPage: React.FC = () => {
       title: '上传时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 160,
+      width: colWidths.created_at ?? 160,
+      onHeaderCell: () => ({ width: colWidths.created_at ?? 160, onResize: handleResize('created_at'), title: '上传时间' }),
       render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '-'),
     },
     {
@@ -518,7 +530,8 @@ const GlobalDocumentsPage: React.FC = () => {
         columns={columns}
         rowKey="id"
         pagination={false}
-        scroll={{ x: 900 }}
+        components={{ header: { cell: ResizableTitle } }}
+        scroll={{ x: tableWidth(columns) }}
         sticky
         className="table-zebra"
         onRow={row => ({

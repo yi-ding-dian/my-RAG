@@ -41,6 +41,9 @@ import {
   restoreDocument,
 } from '../../api/client';
 import AppEmpty from '../AppEmpty';
+import LeftPagination from '../layout/LeftPagination';
+import ResizableTitle from '../ResizableTitle';
+import { useResizableColumns } from '../../hooks/useResizableColumns';
 
 const { Text } = Typography;
 
@@ -217,6 +220,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
   onDelete,
   onMoreAction,
 }) => {
+  const { colWidths, handleResize } = useResizableColumns();
+
   /** 更多下拉菜单项（按文档状态/权限动态组装）：
    *  - 图谱补建/重建：仅已入库（ingested）显示；building 时禁用灰显（Spin），
    *    并提供「中断构建」（danger）入口（原操作列中断按钮移入）
@@ -276,13 +281,15 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
     [canManage],
   );
 
-  const columns: ColumnsType<DocumentItem> = [
+  const columns: ColumnsType<DocumentItem> = (() => {
+  return [
     {
       title: '文件名',
       dataIndex: 'original_name',
       key: 'name',
       ellipsis: true,
-      width: 260,
+      width: colWidths.name ?? 260,
+      onHeaderCell: () => ({ width: colWidths.name ?? 260, onResize: handleResize('name'), title: '文件名' }),
       // 点击文件名即可打开预览弹窗（替代原「文档预览」按钮）
       render: (v: string, row) => (
         <Typography.Link onClick={() => onPreview(row)} title={v}>
@@ -294,7 +301,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       title: '类型',
       dataIndex: 'file_type',
       key: 'file_type',
-      width: 80,
+      width: colWidths.file_type ?? 80,
+      onHeaderCell: () => ({ width: colWidths.file_type ?? 80, onResize: handleResize('file_type'), title: '类型' }),
       // URL 网页导入的文档 file_type 为 "url"，展示为"网页"
       render: (v: string) => <Tag>{v === 'url' ? '网页' : v || '-'}</Tag>,
     },
@@ -302,7 +310,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       title: '大小',
       dataIndex: 'size',
       key: 'size',
-      width: 100,
+      width: colWidths.size ?? 100,
+      onHeaderCell: () => ({ width: colWidths.size ?? 100, onResize: handleResize('size'), title: '大小' }),
       // 真实后端列表接口暂未返回 size 字段时显示 '-'
       render: (v?: number) => (v == null ? '-' : formatSize(v)),
     },
@@ -310,7 +319,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 110,
+      width: colWidths.status ?? 110,
+      onHeaderCell: () => ({ width: colWidths.status ?? 110, onResize: handleResize('status'), title: '状态' }),
       render: (status: DocumentStatus, row) => {
         const meta = statusMeta[status] ?? { color: 'default', text: status };
         const tag =
@@ -332,14 +342,16 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       title: '切块数',
       dataIndex: 'chunk_count',
       key: 'chunk_count',
-      width: 90,
+      width: colWidths.chunk_count ?? 90,
+      onHeaderCell: () => ({ width: colWidths.chunk_count ?? 90, onResize: handleResize('chunk_count'), title: '切块数' }),
       render: (v: number, row) => (row.status === 'ingested' ? v : '-'),
     },
     {
       title: '解析方式',
       dataIndex: 'parser_id',
       key: 'parser_id',
-      width: 200,
+      width: colWidths.parser_id ?? 200,
+      onHeaderCell: () => ({ width: colWidths.parser_id ?? 200, onResize: handleResize('parser_id'), title: '解析方式' }),
       render: (v: string | undefined, row) => {
         if (!v) return <Text type="secondary">-</Text>;
         const tag = <Tag color={methodColor(v)}>{methodLabel(v)}</Tag>;
@@ -369,7 +381,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       title: '上传时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: colWidths.created_at ?? 170,
+      onHeaderCell: () => ({ width: colWidths.created_at ?? 170, onResize: handleResize('created_at'), title: '上传时间' }),
       render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '-'),
     },
     {
@@ -475,34 +488,23 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       ),
     },
   ];
+  })();
+
+  const tableWidth = columns.reduce((sum, c) => sum + ((c.width as number) || 0), 0);
 
   return (
+    <>
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
     <Table
       dataSource={docs}
       columns={columns}
       rowKey="id"
       loading={loading}
-      pagination={
-        keyword
-          ? {
-              // keyword 模式：dataSource 为全量过滤结果，
-              // total 与 dataSource 等长 → antd 自动前端分页，
-              // 翻页仅改本地页码不发请求
-              current: page,
-              pageSize,
-              total: docs.length,
-              showTotal: (t: number) => `共 ${t} 条`,
-              onChange: (p: number, ps: number) => onPageChange(p, ps),
-            }
-          : {
-              // P2-10 服务端分页：翻页重新请求；total 来自后端
-              current: page,
-              pageSize,
-              total,
-              showTotal: (t: number) => `共 ${t} 条`,
-              onChange: (p: number, ps: number) => onPageChange(p, ps),
-            }
-      }
+      sticky
+      size="middle"
+      pagination={false}
+      components={{ header: { cell: ResizableTitle } }}
+      scroll={{ x: tableWidth }}
       locale={{
         emptyText:
           totalIsEmpty ? (
@@ -522,7 +524,7 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
             />
           ),
       }}
-      scroll={{ x: 1100 }}
+
       className="table-zebra"
       rowSelection={
         canManage
@@ -537,6 +539,15 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
           : undefined
       }
     />
+    </div>
+    {/* 分页条：固定左下、不随表格滚动（统一 LeftPagination 规范） */}
+    <LeftPagination
+      page={page}
+      pageSize={pageSize}
+      total={keyword ? docs.length : total}
+      onChange={(p, ps) => onPageChange(p, ps)}
+    />
+    </>
   );
 };
 

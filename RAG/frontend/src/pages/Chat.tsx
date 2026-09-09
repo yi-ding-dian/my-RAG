@@ -410,7 +410,16 @@ const ChatPage: React.FC = () => {
               const shortName = name.length > 8 ? `${name.slice(0, 8)}...` : name;
               return (
                 <List.Item
-                  onClick={() => handleOpenSession(item.id)}
+                  onClick={e => {
+                    // 操作按钮区/浮层点击不触发展开会话：
+                    // Popconfirm「确定」按钮渲染在 portal 浮层（React 事件沿组件
+                    // 树冒泡到本项），不拦截会在删除同时 getSession → 竞态：
+                    // 删除当前会话时 GET 404「加载会话失败」，删除非当前会话时
+                    // GET 200 把已删会话误加载进消息区。
+                    const t = e.target as HTMLElement;
+                    if (t.closest('.ant-popover, .ant-tooltip, .session-item-actions')) return;
+                    handleOpenSession(item.id);
+                  }}
                   className={`session-item${item.id === activeSessionId ? ' session-item--active' : ''}`}
                   style={{ cursor: 'pointer' }}
                 >
@@ -435,6 +444,7 @@ const ChatPage: React.FC = () => {
                         </span>
                         {/* 操作按钮组：重命名 → 导出 → 删除（顺序按用户要求）；与条数标签留 3 个汉字间距 */}
                         <span
+                          className="session-item-actions"
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',

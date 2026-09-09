@@ -6,7 +6,6 @@ import {
   DatePicker,
   Input,
   List,
-  Pagination,
   Select,
   Space,
   Spin,
@@ -43,6 +42,7 @@ import {
 } from '../api/client';
 import AppEmpty from '../components/AppEmpty';
 import PageHeader from '../components/PageHeader';
+import LeftPagination from '../components/layout/LeftPagination';
 import ResizableTitle from '../components/ResizableTitle';
 import { useAuth } from '../auth/AuthContext';
 import type { ResizeCallbackData } from 'react-resizable';
@@ -161,7 +161,7 @@ const LogsPage: React.FC = () => {
         styles={{ body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
       >
         <Tabs
-          className="logs-page-tabs"
+          className="page-tabs"
           activeKey={tab}
           onChange={setTab}
           style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
@@ -318,6 +318,7 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       onHeaderCell: () => ({
         width: colWidths.created_at ?? 170,
         onResize: handleResize('created_at'),
+        title: '时间',
       }),
       render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
     },
@@ -329,6 +330,7 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       onHeaderCell: () => ({
         width: colWidths.username ?? 130,
         onResize: handleResize('username'),
+        title: '用户',
       }),
       render: (v: string) => (v ? <Text strong>{v}</Text> : <Text type="secondary">未认证</Text>),
     },
@@ -340,6 +342,7 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       onHeaderCell: () => ({
         width: colWidths.role ?? 110,
         onResize: handleResize('role'),
+        title: '角色',
       }),
       render: (role: string) => {
         const meta = roleMeta[role];
@@ -354,6 +357,7 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       onHeaderCell: () => ({
         width: colWidths.action ?? 150,
         onResize: handleResize('action'),
+        title: '操作',
       }),
       render: (a: string) => <Tag color="blue">{actionLabelMap[a] ?? a}</Tag>,
     },
@@ -364,6 +368,7 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       onHeaderCell: () => ({
         width: colWidths.target ?? 200,
         onResize: handleResize('target'),
+        title: '目标',
       }),
       ellipsis: true,
       render: (_, row) => {
@@ -380,6 +385,7 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       onHeaderCell: () => ({
         width: colWidths.detail ?? 420,
         onResize: handleResize('detail'),
+        title: '详情',
       }),
       ellipsis: true,
       render: (_, row) => (row.detail ? row.detail.slice(0, 80) : '-'),
@@ -392,6 +398,7 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
       onHeaderCell: () => ({
         width: colWidths.ip ?? 140,
         onResize: handleResize('ip'),
+        title: 'IP',
       }),
       render: (v: string) => v || '-',
     },
@@ -463,40 +470,38 @@ const AuditTab: React.FC<{ app: AppInstance }> = ({ app }) => {
           </>
         )}
       </Space>
-      <Table
-        size="middle"
-        rowKey="id"
-        columns={columns}
-        dataSource={items}
-        loading={loading}
-        pagination={false}
-        // 表头单元格替换为 ResizableTitle：列头右侧出现拖拽手柄，可自由调整列宽
-        components={{ header: { cell: ResizableTitle } }}
-        // x = 当前列宽总和（动态，见上方 tableWidth 注释）：保证拖拽精确且
-        // 总宽超出容器宽度时出现横向滚动
-        // y 用 calc 相对视口计算：扣除 Content padding(48) + 页头(72) + Card body
-        // padding(48) + Tab 头(56) + 筛选栏(48) + 表头(39) + 分页(48) 后，剩余高度
-        // 给表格 body 内部滚动（分页器与筛选栏固定）
-        scroll={{ x: tableWidth, y: 'calc(100vh - 365px)' }}
-        locale={{
-          emptyText: <AppEmpty title="暂无审计记录" description="尚无符合条件的关键操作记录" />,
-        }}
-        className="table-zebra"
-      />
-      <div style={{ marginTop: 16, textAlign: 'right', flexShrink: 0 }}>
-        <Pagination
-          current={page}
-          pageSize={pageSize}
-          total={total}
-          showSizeChanger
-          pageSizeOptions={[10, 20, 50]}
-          showTotal={t => `共 ${t} 条`}
-          onChange={(p, ps) => {
-            setPage(p);
-            setPageSize(ps);
+      {/* Table 区撑满剩余（表头 sticky + body 自身滚动），删除 scroll.y 魔数 */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <Table
+          size="middle"
+          rowKey="id"
+          columns={columns}
+          dataSource={items}
+          loading={loading}
+          pagination={false}
+          // 表头单元格替换为 ResizableTitle：列头右侧出现拖拽手柄，可自由调整列宽
+          components={{ header: { cell: ResizableTitle } }}
+          // x = 当前列宽总和（动态，见上方 tableWidth 注释）：保证拖拽精确且
+          // 总宽超出容器宽度时出现横向滚动。纵向滚动交由外层 flex:1
+          // 容器 + 表头 sticky 处理（跟随窗口高度，无魔数误差）
+          scroll={{ x: tableWidth }}
+          sticky
+          locale={{
+            emptyText: <AppEmpty title="暂无审计记录" description="尚无符合条件的关键操作记录" />,
           }}
+          className="table-zebra"
         />
       </div>
+      {/* 分页条：统一 LeftPagination（固定左下） */}
+      <LeftPagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onChange={(p, ps) => {
+          setPage(p);
+          setPageSize(ps);
+        }}
+      />
     </div>
   );
 };

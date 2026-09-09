@@ -43,6 +43,9 @@ const DocumentsPage = lazy(() => import('./pages/Documents'));
 const GlobalDocumentsPage = lazy(() => import('./pages/GlobalDocuments'));
 const KnowledgeBasesPage = lazy(() => import('./pages/KnowledgeBases'));
 const AnalyticsPage = lazy(() => import('./pages/Analytics'));
+const AnalyticsQualityDetailPage = lazy(() => import('./pages/AnalyticsQualityDetail'));
+const AnalyticsRagasDetailPage = lazy(() => import('./pages/AnalyticsRagasDetail'));
+const AnalyticsFeedbackDetailPage = lazy(() => import('./pages/AnalyticsFeedbackDetail'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
 const UsersPage = lazy(() => import('./pages/Users'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
@@ -116,6 +119,17 @@ const filterMenu = (user: User | null) => {
         ? { ...item, label: '文档管理' }
         : item,
     );
+};
+
+/** 侧栏菜单高亮匹配：子路由（如 /analytics/quality）按最长路径前缀命中父级菜单 key */
+const menuKeyOf = (pathname: string): string | null => {
+  let best: string | null = null;
+  for (const item of menuItems) {
+    if (pathname === item.key || pathname.startsWith(item.key + '/')) {
+      if (!best || item.key.length > best.length) best = item.key;
+    }
+  }
+  return best;
 };
 
 /** 侧栏底部主题预设选择器：10 个圆形色块 5×2 网格居中（前 5 浅后 5 深），hover 显示主题名，点击即时切换 */
@@ -237,7 +251,7 @@ const AppLayout: React.FC = () => {
 
         <Menu
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={menuKeyOf(location.pathname) ? [menuKeyOf(location.pathname) as string] : []}
           items={filterMenu(user)}
           onClick={({ key }) => navigate(key)}
           style={{ borderRight: 0, marginTop: 8, flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 8px' }}
@@ -379,6 +393,31 @@ const AppLayout: React.FC = () => {
                   element={
                     <ProtectedRoute>
                       <AnalyticsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                {/* 统计分析下钻详情页：概览摘要卡点击进入（无独立菜单，侧栏高亮父级） */}
+                <Route
+                  path="/analytics/quality"
+                  element={
+                    <ProtectedRoute>
+                      <AnalyticsQualityDetailPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/analytics/ragas"
+                  element={
+                    <ProtectedRoute>
+                      <AnalyticsRagasDetailPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/analytics/feedback"
+                  element={
+                    <ProtectedRoute>
+                      <AnalyticsFeedbackDetailPage />
                     </ProtectedRoute>
                   }
                 />

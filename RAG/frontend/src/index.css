@@ -740,6 +740,31 @@ body {
   box-shadow: 0 4px 10px rgba(16, 24, 40, 0.16);
 }
 
+/* ---------- 统计分析概览：摘要卡（点击整卡下钻详情页） ---------- */
+.analytics-nav-card.ant-card {
+  cursor: pointer;
+  transition: border-color 0.22s ease, box-shadow 0.22s ease;
+}
+.analytics-nav-card.ant-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 8px 22px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+}
+/* 卡标题旁 hover 提示「查看详情」淡入（占位保留避免布局跳动） */
+.analytics-nav-hint {
+  color: var(--brand-primary, #2563eb) !important;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.analytics-nav-card.ant-card:hover .analytics-nav-hint {
+  opacity: 1;
+}
+/* 触屏设备（无 hover）：提示常显 */
+@media (hover: none) {
+  .analytics-nav-hint {
+    opacity: 1;
+  }
+}
+
 /* ---------- 侧栏主体布局：antd 的 .ant-layout-sider-children 默认是 block（高度虽 100%
    但内部无 flex 约束），Menu 的 flex:1 不生效、留白出不来。
    改为 flex column 后：Logo/菜单/底部三块垂直排布，Menu(flex:1 + min-height:0) 撑开
@@ -776,25 +801,25 @@ body {
    注意：只对 .ant-tabs-tabpane-active 生效——非激活 tabpane 的
    display:none（antd 隐藏逻辑）不能被覆盖，否则两个 Tab 同时渲染
    ============================================================ */
-.logs-page-tabs.ant-tabs {
+.page-tabs.ant-tabs {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.logs-page-tabs .ant-tabs-content-holder {
+.page-tabs .ant-tabs-content-holder {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.logs-page-tabs .ant-tabs-content {
+.page-tabs .ant-tabs-content {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.logs-page-tabs .ant-tabs-tabpane-active {
+.page-tabs .ant-tabs-tabpane-active {
   flex: 1;
   min-height: 0;
   display: flex;

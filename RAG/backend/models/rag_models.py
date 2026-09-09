@@ -177,6 +177,14 @@ class ChatMessage(BaseModel):
     # Agentic 决策轨迹（改写查询/分档分数/尝试次数；默认关闭=空 dict）
     agentic: dict = Field(default_factory=dict,
                           description="Agentic 检索决策轨迹（关闭时为空）")
+    # 请求详情（流式 prompt 事件携带，落盘供历史会话回看"详情"）：
+    # 完整提示词 + 检索/图谱耗时；旧数据缺字段=无详情（前端详情按钮隐藏）
+    prompt: list = Field(default_factory=list,
+                         description="发给 LLM 的完整提示词 messages（请求详情用；空=未保存）")
+    retrieval_ms: Optional[int] = Field(None, description="检索耗时（ms，请求详情用）")
+    kg_ms: Optional[int] = Field(None, description="知识图谱增强耗时（ms，请求详情用）")
+    total_ms: Optional[int] = Field(None, description="问答总耗时（ms，前端流式结束补写；后端落盘为 None）")
+    created_at: Optional[str] = Field(None, description="消息时间（落盘写入；旧数据缺失=历史会话时间戳/详情入口隐藏）")
 
 
 class ChatSession(BaseModel):

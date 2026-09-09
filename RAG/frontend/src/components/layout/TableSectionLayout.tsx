@@ -1,5 +1,6 @@
 import React from 'react';
-import { Card, Pagination, Typography } from 'antd';
+import { Card, Typography } from 'antd';
+import LeftPagination from './LeftPagination';
 
 const { Text } = Typography;
 
@@ -100,19 +101,16 @@ const TableSectionLayout: React.FC<TableSectionLayoutProps> = ({
         {emptyOrLoading ?? children}
       </div>
 
-      {/* 分页条：贴本容器底部（页面层负责贴屏幕最下方） */}
+      {/* 分页条：固定左下、不随表格滚动（统一 LeftPagination 规范，
+          与 Users/Logs 一致——所有表格页同一分页样式） */}
       {showPagination && (
-        <div style={{ marginTop: 16, textAlign: 'right', flexShrink: 0 }}>
-          <Pagination
-            current={page}
-            pageSize={pageSize}
-            total={total}
-            showSizeChanger
-            pageSizeOptions={pageSizeOptions}
-            showTotal={t => `共 ${t} 条`}
-            onChange={(p, ps) => onPageChange?.(p, ps)}
-          />
-        </div>
+        <LeftPagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          pageSizeOptions={pageSizeOptions}
+          onChange={(p, ps) => onPageChange?.(p, ps)}
+        />
       )}
     </Card>
   );

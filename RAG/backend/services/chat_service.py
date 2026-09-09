@@ -461,11 +461,15 @@ class ChatService:
 
             # 4.5) prompt 事件：LLM 调用前下发完整提示词与检索/图谱耗时
             # （前端"请求详情"展示；此事件在 delta 之前，生成失败也已送达）
-            yield sse_event("prompt", {
+            prompt_detail = {
                 "prompt": messages,
                 "retrieval_ms": retrieval_ms,
                 "kg_ms": kg_ms,
-            })
+            }
+            yield sse_event("prompt", prompt_detail)
+            # 落盘详情缓存：_finalize 写入 ChatMessage（历史会话"详情"按钮
+            # 依赖 prompt/耗时字段；服务单实例即可，无需锁）
+            self._pending_prompt_detail = prompt_detail
 
             # 5) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
             #    部门 llm 段字段级覆盖全局 LLM——地址/密钥/模型/生成参数，
@@ -667,12 +671,21 @@ class ChatService:
                   answer_parts: List[str], sources: List[Source],
                   agentic: Optional[dict] = None):
         """落盘会话（追加 user 消息 + assistant 消息，含 sources 快照）"""
-        session.messages.append(ChatMessage(role="user", content=message))
+        # 请求详情（prompt 事件缓存）：写入 assistant 消息供历史会话"详情"回看
+        detail = getattr(self, "_pending_prompt_detail", None)
+        self._pending_prompt_detail = None  # 写后清空，防下一条串扰
+        chat_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        session.messages.append(ChatMessage(role="user", content=message,
+                                            created_at=chat_time))
         session.messages.append(ChatMessage(
             role="assistant",
             content="".join(answer_parts),
             sources=sources,
             agentic=agentic or {},
+            prompt=detail.get("prompt", []) if detail else [],
+            retrieval_ms=detail.get("retrieval_ms") if detail else None,
+            kg_ms=detail.get("kg_ms") if detail else None,
+            created_at=chat_time,
         ))
         self._save_session(session)
 

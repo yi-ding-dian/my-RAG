@@ -100,6 +100,8 @@ const BatchActionsBar: React.FC<BatchActionsBarProps> = ({
     )}
 
     <Card
+      style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+      styles={{ body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } }}
       title={
         <Space size={12}>
           <span>文档列表</span>

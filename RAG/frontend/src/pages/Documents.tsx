@@ -562,7 +562,7 @@ const DocumentsPage: React.FC = () => {
   };
 
   return (
-    <div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <PageHeader
         breadcrumb={<Breadcrumb items={breadcrumbItems} />}
         title="文档管理"

@@ -38,6 +38,8 @@ import {
   updateExtQuery,
 } from '../api/client';
 import PageHeader from '../components/PageHeader';
+import ResizableTitle from '../components/ResizableTitle';
+import { useResizableColumns } from '../hooks/useResizableColumns';
 
 const { TextArea } = Input;
 
@@ -89,6 +91,9 @@ const defaultConfigForm = (config: ExtQueryConfig = {}): ConfigFormValues => ({
  */
 const ExtQueriesPage: React.FC = () => {
   const { message } = AntApp.useApp();
+
+  // 列宽拖拽：拖拽后的列宽存 colWidths（按列 key），scroll.x 动态对齐列宽和
+  const { colWidths, handleResize, tableWidth } = useResizableColumns<ExtQuery>();
 
   const [items, setItems] = useState<ExtQuery[]>([]);
   const [loading, setLoading] = useState(false);
@@ -253,6 +258,8 @@ const ExtQueriesPage: React.FC = () => {
     {
       title: '名称',
       dataIndex: 'name',
+      width: colWidths.name ?? 220,
+      onHeaderCell: () => ({ width: colWidths.name ?? 220, onResize: handleResize('name'), title: '名称' }),
       render: (name: string) => (
         <Typography.Text strong>{name}</Typography.Text>
       ),
@@ -260,6 +267,8 @@ const ExtQueriesPage: React.FC = () => {
     {
       title: '暴露的知识库',
       dataIndex: 'kb_ids',
+      width: colWidths.kb_ids ?? 260,
+      onHeaderCell: () => ({ width: colWidths.kb_ids ?? 260, onResize: handleResize('kb_ids'), title: '暴露的知识库' }),
       render: (_: unknown, item: ExtQuery) => (
         <Space size={[4, 4]} wrap>
           {kbNameOf(item).map(n => (
@@ -271,14 +280,16 @@ const ExtQueriesPage: React.FC = () => {
     {
       title: '状态',
       dataIndex: 'enabled',
-      width: 90,
+      width: colWidths.enabled ?? 90,
+      onHeaderCell: () => ({ width: colWidths.enabled ?? 90, onResize: handleResize('enabled'), title: '状态' }),
       render: (enabled: boolean) =>
         enabled ? <Tag color="green">启用</Tag> : <Tag color="default">已停用</Tag>,
     },
     {
       title: '链接',
       dataIndex: 'token',
-      width: 130,
+      width: colWidths.token ?? 130,
+      onHeaderCell: () => ({ width: colWidths.token ?? 130, onResize: handleResize('token'), title: '链接' }),
       render: (_: unknown, item: ExtQuery) => (
         <Space size={4}>
           <Typography.Text code ellipsis style={{ maxWidth: 90, fontSize: 12 }}>
@@ -307,7 +318,8 @@ const ExtQueriesPage: React.FC = () => {
     {
       title: '更新时间',
       dataIndex: 'updated_at',
-      width: 170,
+      width: colWidths.updated_at ?? 170,
+      onHeaderCell: () => ({ width: colWidths.updated_at ?? 170, onResize: handleResize('updated_at'), title: '更新时间' }),
       render: (t: string) => <Typography.Text type="secondary">{t}</Typography.Text>,
     },
     {
@@ -377,6 +389,8 @@ const ExtQueriesPage: React.FC = () => {
         dataSource={items}
         columns={columns}
         pagination={false}
+        components={{ header: { cell: ResizableTitle } }}
+        scroll={{ x: tableWidth(columns) }}
         locale={{ emptyText: '暂无外部查询配置，点击右上角「新建外部查询」创建' }}
       />
 

@@ -12,11 +12,11 @@ import {
   Popconfirm, 
   Select, 
   Space, 
-  Switch, 
-  Table, 
-  Tabs, 
-  Tag, 
-  Tooltip, 
+  Switch,
+  Table,
+  Tabs,
+  Tag,
+  Tooltip,
   Typography} from 'antd';
 import {
   DeleteOutlined,
@@ -56,6 +56,9 @@ import { useAuth } from '../auth/AuthContext';
 import BatchCreateUsersModal from '../components/BatchCreateUsersModal';
 import { UserAvatar } from '../components/MessageList';
 import PageHeader from '../components/PageHeader';
+import LeftPagination from '../components/layout/LeftPagination';
+import ResizableTitle from '../components/ResizableTitle';
+import { useResizableColumns } from '../hooks/useResizableColumns';
 
 const { Text } = Typography;
 
@@ -145,8 +148,18 @@ const UsersPage: React.FC = () => {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
   const [deptsLoading, setDeptsLoading] = useState(false);
+  // 前端分页（用户/部门列表一次拉全量，本地分页；分页条固定左下角不随表格滚动）
+  const [userPage, setUserPage] = useState(1);
+  const [userPageSize, setUserPageSize] = useState(10);
+  const [deptPage, setDeptPage] = useState(1);
+  const [deptPageSize, setDeptPageSize] = useState(10);
   // 行内更新中的用户（禁行内控件防连点）
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  // 列宽拖拽：用户/部门/审计 3 张表各自独立状态（列 key 不串扰），scroll.x 动态对齐列宽和
+  const { colWidths: uColW, handleResize: uResize, tableWidth: uTableW } = useResizableColumns<User>();
+  const { colWidths: dColW, handleResize: dResize, tableWidth: dTableW } = useResizableColumns<Department>();
+  const { colWidths: aColW, handleResize: aResize, tableWidth: aTableW } = useResizableColumns<AuditLog>();
 
   const loadUsers = useCallback(async () => {
     setUsersLoading(true);
@@ -436,21 +449,24 @@ const UsersPage: React.FC = () => {
       title: '时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: aColW.created_at ?? 170,
+      onHeaderCell: () => ({ width: aColW.created_at ?? 170, onResize: aResize('created_at'), title: '时间' }),
       render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm:ss'),
     },
     {
       title: '用户',
       dataIndex: 'username',
       key: 'username',
-      width: 130,
+      width: aColW.username ?? 130,
+      onHeaderCell: () => ({ width: aColW.username ?? 130, onResize: aResize('username'), title: '用户' }),
       render: (v: string) => (v ? <Text strong>{v}</Text> : <Text type="secondary">未认证</Text>),
     },
     {
       title: '角色',
       dataIndex: 'role',
       key: 'role',
-      width: 110,
+      width: aColW.role ?? 110,
+      onHeaderCell: () => ({ width: aColW.role ?? 110, onResize: aResize('role'), title: '角色' }),
       render: (role: string) => {
         const meta = roleMeta[role as User['role']];
         return meta ? <Tag color={meta.color}>{meta.text}</Tag> : <Tag>{role || '-'}</Tag>;
@@ -460,13 +476,15 @@ const UsersPage: React.FC = () => {
       title: '操作',
       dataIndex: 'action',
       key: 'action',
-      width: 150,
+      width: aColW.action ?? 150,
+      onHeaderCell: () => ({ width: aColW.action ?? 150, onResize: aResize('action'), title: '操作' }),
       render: (a: string) => <Tag color="blue">{actionLabelMap[a] ?? a}</Tag>,
     },
     {
       title: '目标',
       key: 'target',
-      width: 200,
+      width: aColW.target ?? 200,
+      onHeaderCell: () => ({ width: aColW.target ?? 200, onResize: aResize('target'), title: '目标' }),
       ellipsis: true,
       render: (_, row) => {
         const type = targetTypeLabelMap[row.target_type ?? ''] ?? row.target_type ?? '';
@@ -478,14 +496,22 @@ const UsersPage: React.FC = () => {
     {
       title: '详情',
       key: 'detail',
+      width: aColW.detail ?? 420,
+      onHeaderCell: () => ({ width: aColW.detail ?? 420, onResize: aResize('detail'), title: '详情' }),
       ellipsis: true,
       render: (_, row) => (row.detail ? row.detail.slice(0, 80) : '-'),
     },
-    { title: 'IP', dataIndex: 'ip', key: 'ip', width: 140, render: (v: string) => v || '-' },
+    {
+      title: 'IP', dataIndex: 'ip', key: 'ip',
+      width: aColW.ip ?? 140,
+      onHeaderCell: () => ({ width: aColW.ip ?? 140, onResize: aResize('ip'), title: 'IP' }),
+      render: (v: string) => v || '-',
+    },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
+      // 最后一列不提供拖拽手柄（避免拖出表格边界），与 Logs.tsx 审计表一致
       width: 90,
       render: (s: string) =>
         s === 'success' ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>,
@@ -502,19 +528,25 @@ const UsersPage: React.FC = () => {
       align: 'center' as const,
       render: (_, row) => <UserAvatar userId={row.id} avatarKey={row.avatar} />,
     },
-    { title: '用户名', dataIndex: 'username', key: 'username', width: 150 },
+    {
+      title: '用户名', dataIndex: 'username', key: 'username',
+      width: uColW.username ?? 150,
+      onHeaderCell: () => ({ width: uColW.username ?? 150, onResize: uResize('username'), title: '用户名' }),
+    },
     {
       title: '显示名',
       dataIndex: 'display_name',
       key: 'display_name',
-      width: 150,
+      width: uColW.display_name ?? 150,
+      onHeaderCell: () => ({ width: uColW.display_name ?? 150, onResize: uResize('display_name'), title: '显示名' }),
       render: (v: string) => <Text strong>{v}</Text>,
     },
     {
       title: '角色',
       dataIndex: 'role',
       key: 'role',
-      width: 120,
+      width: uColW.role ?? 120,
+      onHeaderCell: () => ({ width: uColW.role ?? 120, onResize: uResize('role'), title: '角色' }),
       render: (role: User['role']) => <Tag color={roleMeta[role].color}>{roleMeta[role].text}</Tag>,
     },
     {
@@ -577,7 +609,8 @@ const UsersPage: React.FC = () => {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: uColW.created_at ?? 170,
+      onHeaderCell: () => ({ width: uColW.created_at ?? 170, onResize: uResize('created_at'), title: '创建时间' }),
       render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '-'),
     },
     {
@@ -622,15 +655,21 @@ const UsersPage: React.FC = () => {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      width: 200,
+      width: dColW.name ?? 200,
+      onHeaderCell: () => ({ width: dColW.name ?? 200, onResize: dResize('name'), title: '名称' }),
       render: (v: string) => <Text strong>{v}</Text>,
     },
-    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+    {
+      title: '描述', dataIndex: 'description', key: 'description', ellipsis: true,
+      width: dColW.description ?? 300,
+      onHeaderCell: () => ({ width: dColW.description ?? 300, onResize: dResize('description'), title: '描述' }),
+    },
     {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: dColW.created_at ?? 170,
+      onHeaderCell: () => ({ width: dColW.created_at ?? 170, onResize: dResize('created_at'), title: '创建时间' }),
       render: (v: string) => (v ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '-'),
     },
     {
@@ -658,15 +697,19 @@ const UsersPage: React.FC = () => {
   ];
 
   return (
-    <div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <PageHeader
         title={isDeptAdmin ? '部门成员管理' : '用户管理'}
         description={isDeptAdmin
           ? '管理本部门成员账号与部门信息（数据与其他部门隔离）'
           : '管理用户账号、部门归属与操作审计日志（超级管理员全量）'}
+        style={{ flexShrink: 0 }}
       />
+      <div style={{ flex: 1, minHeight: 0 }}>
       <Tabs
         defaultActiveKey="users"
+        className="page-tabs"
+        style={{ height: '100%' }}
         items={[
           {
             key: 'users',
@@ -691,15 +734,31 @@ const UsersPage: React.FC = () => {
                     </Button>
                   </Space>
                 }
+                style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                styles={{ body: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } }}
               >
+                {/* Table 区：flex:1 撑满剩余，内部滚动，分页条固定左下不动 */}
+                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
                 <Table
-                  dataSource={users}
+                  dataSource={users.slice((userPage - 1) * userPageSize, userPage * userPageSize)}
                   columns={userColumns}
                   rowKey="id"
                   loading={usersLoading}
-                  pagination={{ pageSize: 10 }}
-                  scroll={{ x: 980 }}
+                  pagination={false}
+                  components={{ header: { cell: ResizableTitle } }}
+                  scroll={{ x: uTableW(userColumns) }}
+                  sticky
+                  size="middle"
                   className="table-zebra"
+                  style={{ flex: 1, minHeight: 0 }}
+                />
+                </div>
+                {/* 分页条：统一 LeftPagination（固定左下） */}
+                <LeftPagination
+                  page={userPage}
+                  pageSize={userPageSize}
+                  total={users.length}
+                  onChange={(p, ps) => { setUserPage(p); setUserPageSize(ps); }}
                 />
               </Card>
             ),
@@ -715,21 +774,37 @@ const UsersPage: React.FC = () => {
                     <Button icon={<ReloadOutlined />} onClick={loadDepartments}>
                       刷新
                     </Button>
-                    {!isDeptAdmin && (
-                      <Button type="primary" icon={<PlusOutlined />} onClick={openCreateDept}>
+                    {!isDeptAdmin && (                      <Button type="primary" icon={<PlusOutlined />} onClick={openCreateDept}>
                         新建部门
                       </Button>
                     )}
                   </Space>
                 }
+                style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, margin: 0 }}
+                styles={{ body: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } }}
               >
+                {/* Table 区：flex:1 撑满剩余，内部滚动，分页条固定左下不动 */}
+                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
                 <Table
-                  dataSource={departments}
+                  dataSource={departments.slice((deptPage - 1) * deptPageSize, deptPage * deptPageSize)}
                   columns={deptColumns}
                   rowKey="id"
                   loading={deptsLoading}
-                  pagination={{ pageSize: 10 }}
+                  pagination={false}
+                  components={{ header: { cell: ResizableTitle } }}
+                  scroll={{ x: dTableW(deptColumns) }}
+                  sticky
+                  size="middle"
                   className="table-zebra"
+                  style={{ flex: 1, minHeight: 0 }}
+                />
+                </div>
+                {/* 分页条：统一 LeftPagination（固定左下） */}
+                <LeftPagination
+                  page={deptPage}
+                  pageSize={deptPageSize}
+                  total={departments.length}
+                  onChange={(p, ps) => { setDeptPage(p); setDeptPageSize(ps); }}
                 />
               </Card>
             ),
@@ -751,8 +826,10 @@ const UsersPage: React.FC = () => {
                     刷新
                   </Button>
                 }
+                style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, margin: 0 }}
+                styles={{ body: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } }}
               >
-                <Space wrap style={{ marginBottom: 16 }}>
+                <Space wrap style={{ marginBottom: 16, flexShrink: 0 }}>
                   <Select
                     placeholder="操作类型"
                     allowClear
@@ -787,12 +864,16 @@ const UsersPage: React.FC = () => {
                   </Button>
                   <Button onClick={handleAuditReset}>重置</Button>
                 </Space>
+                <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
                 <Table
                   dataSource={auditLogs}
                   columns={auditColumns}
                   rowKey="id"
                   loading={auditLoading}
-                  scroll={{ x: 1100 }}
+                  components={{ header: { cell: ResizableTitle } }}
+                  scroll={{ x: aTableW(auditColumns) }}
+                  sticky
+                  size="middle"
                   className="table-zebra"
                   expandable={{
                     expandedRowRender: row => (
@@ -802,16 +883,17 @@ const UsersPage: React.FC = () => {
                     ),
                     rowExpandable: row => !!row.detail,
                   }}
-                  pagination={{
-                    current: auditPage,
-                    pageSize: auditPageSize,
-                    total: auditTotal,
-                    showSizeChanger: true,
-                    showTotal: t => `共 ${t} 条`,
-                    onChange: (p, ps) => {
-                      setAuditPage(p);
-                      setAuditPageSize(ps);
-                    },
+                  pagination={false}
+                />
+                </div>
+                {/* 分页条：统一 LeftPagination（固定左下） */}
+                <LeftPagination
+                  page={auditPage}
+                  pageSize={auditPageSize}
+                  total={auditTotal}
+                  onChange={(p, ps) => {
+                    setAuditPage(p);
+                    setAuditPageSize(ps);
                   }}
                 />
               </Card>
@@ -1012,6 +1094,7 @@ const UsersPage: React.FC = () => {
           </div>
         ) : null}
       </AppModal>
+      </div>
     </div>
   );
 };

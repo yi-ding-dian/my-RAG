@@ -16,6 +16,8 @@
 - GET /api/stats/ragas/tasks/{task_id}  RAGAS 任务报告
 - POST /api/stats/ragas/evaluations/{task_id}/cancel  取消 RAGAS 评估任务
   （发起人本人/super_admin/dept_admin 本部门可取消，无权 404 伪装）
+- GET /api/stats/chat-feedback/logs  聊天反馈分页查询（仅超管；rating 过滤 +
+                                      倒序分页；用户/知识库名回填，缺失回退）
 """
 from __future__ import annotations
 
@@ -25,14 +27,16 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404, require_super_admin
-from backend.models.user_models import UserORM, UserPublic
+from backend.models.user_models import (FeedbackORM, KBORM, UserORM,
+                                        UserPublic)
 from backend.services import audit_service, ragas_sampling
 from backend.services.chat_service import get_chat_service
 from backend.services.document_service import get_document_service
@@ -513,3 +517,74 @@ async def chat_feedback_stats(
     """用户回答反馈汇总（仅超管）：总数/好评/差评 + 最近反馈"""
     from backend.services.feedback_service import feedback_stats
     return await feedback_stats()
+
+
+@router.get("/chat-feedback/logs")
+async def chat_feedback_logs(
+        page: int = Query(1, ge=1, description="页码（从 1 开始）"),
+        page_size: int = Query(20, ge=1, le=200, description="每页条数（1~200）"),
+        rating: Optional[str] = Query(None, description="评价过滤（up/down），缺省全部"),
+        db: AsyncSession = Depends(get_db),
+        user: UserPublic = Depends(require_super_admin)):
+    """聊天反馈分页查询（仅超管；鉴权口径与上方 chat-feedback 汇总接口一致）
+
+    - rating 可选过滤（up/down，非法值 400 显式提示）；page>=1、
+      page_size 1~200（默认 20）；按 created_at 倒序（同秒时按 id 倒序
+      稳定排序，避免同秒提交顺序抖动）
+    - username/display_name 查用户表回填（用户已删除 → 空字符串）；
+      kb_name 查知识库表（kb 已删除/从未入库 → 回退 kb_id）
+    响应契约: {total, page, page_size, items: [...]}。
+    """
+    # rating 过滤条件（与反馈提交口径一致仅 up/down；非法值 400 而非静默
+    # 空页，便于前端拼写/大小写错误显性暴露）
+    conditions = []
+    if rating is not None:
+        if rating not in ("up", "down"):
+            raise HTTPException(status_code=400,
+                                detail="rating 仅支持 up（好评）/down（差评）")
+        conditions.append(FeedbackORM.rating == rating)
+
+    total = (await db.execute(
+        select(func.count()).select_from(FeedbackORM).where(*conditions)
+    )).scalar() or 0
+
+    rows = (await db.execute(
+        select(FeedbackORM).where(*conditions)
+        .order_by(FeedbackORM.created_at.desc(), FeedbackORM.id.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
+
+    # 用户名映射（users 表；用户已删除 → 空字符串回退）
+    user_ids = {r.user_id for r in rows}
+    users = {}
+    if user_ids:
+        users = {u.id: u for u in (
+            await db.execute(select(UserORM).where(UserORM.id.in_(user_ids)))
+        ).scalars()}
+    # 知识库名映射（kbs 表；批量一次查询防 N+1，缺失回退 kb_id）
+    kb_ids = {r.kb_id for r in rows if r.kb_id}
+    kb_names: Dict[str, str] = {}
+    if kb_ids:
+        kb_names = {kb.id: kb.name for kb in (
+            await db.execute(select(KBORM).where(KBORM.id.in_(kb_ids)))
+        ).scalars()}
+
+    items = [
+        {
+            "id": r.id,
+            "user_id": r.user_id,
+            "username": users[r.user_id].username if r.user_id in users else "",
+            "display_name": (users[r.user_id].display_name
+                             if r.user_id in users else ""),
+            "kb_id": r.kb_id,
+            # kb 不存在回退 kb_id（kb_id 为 None 时同样回退 None，原样返回）
+            "kb_name": kb_names.get(r.kb_id, r.kb_id),
+            "session_id": r.session_id,
+            "msg_idx": r.msg_idx,
+            "rating": r.rating,
+            "reason": r.reason or "",
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
