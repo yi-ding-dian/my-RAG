@@ -78,7 +78,14 @@ const DocumentPortrait: React.FC<DocumentPortraitProps> = ({
   onRetry,
 }) => (
   <Spin spinning={!!loading}>
-    {error ? (
+    {loading ? (
+      // 加载中：居中占满容器（Spin nest 模式下指示器居中显示；
+      // 空 children 时 antd 将 spinner 渲染在左上角且容器坍缩，圈圈被弹窗
+      // 头部/底部挡或显示不全——给撑高容器保证居中可见）
+      <div style={{ minHeight: 320, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <Spin size="large" />
+      </div>
+    ) : error ? (
       <Alert
         type="error"
         message="画像分析失败"

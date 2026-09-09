@@ -301,8 +301,11 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
     setDetail(doc);
     setDetailData(null);
     setDetailLoading(true);
+    // 知识库 ID 兜底：hook 参数 kbId（页面级）不可靠（全局文档页点击时
+    // setKbId 尚未生效），优先用文档所属 kb_id（doc.kb_id 必然准确）
+    const docKbId = doc.kb_id || kbId;
     try {
-      const res = await getDocument(kbId!, doc.id);
+      const res = await getDocument(docKbId!, doc.id);
       setDetailData(res.data);
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '加载详情失败');
@@ -313,7 +316,7 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
     setGraphData(null);
     setGraphLoading(true);
     try {
-      const res = await getKnowledgeGraph(kbId!, doc.id);
+      const res = await getKnowledgeGraph(docKbId!, doc.id);
       setGraphData(res.data);
     } catch {
       setGraphData(null); // 404（该知识库暂无知识图谱）/ 网络错误 → 空状态

@@ -74,6 +74,44 @@ const formatSize = (bytes: number) => {
   return `${bytes} B`;
 };
 
+/** 入库流程轨迹渲染（已入库/失败状态 Tooltip 展示；无 trace 兜底"—"）*/
+const formatTraceMs = (ms?: number): string => {
+  if (ms == null || ms < 0) return '—';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${Math.round(ms)} ms`;
+};
+
+const renderIngestTrace = (
+  trace: { stage: string; ms: number; status?: string }[],
+  totalMs?: number | null,
+  isFailed?: boolean,
+  startedAt?: string | null,
+  finishedAt?: string | null,
+): React.ReactNode => (
+  <div style={{ fontSize: 12, lineHeight: 1.8 }}>
+    <div style={{ fontWeight: 600, marginBottom: 2 }}>
+      {isFailed ? '入库执行（失败）' : '入库执行流程'}
+    </div>
+    {startedAt && (
+      <div>开始：{startedAt}</div>
+    )}
+    {trace.map((t, i) => (
+      <div key={i}>
+        {t.stage}：{formatTraceMs(t.ms)}
+        {t.status === 'failed' && <span style={{ color: '#ff4d4f' }}>（失败）</span>}
+      </div>
+    ))}
+    {finishedAt && (
+      <div>结束：{finishedAt}</div>
+    )}
+    {totalMs != null && (
+      <div style={{ marginTop: 2, fontWeight: 600 }}>
+        总耗时：{formatTraceMs(totalMs)}
+      </div>
+    )}
+  </div>
+);
+
 /** 解析方式语义说明（与后端 splitter.py / ingestion_service.py 实际行为对齐） */
 const METHOD_DESC: Record<string, string> = {
   naive: '按分隔符递归字符切块，块大小与重叠可配',
@@ -193,6 +231,9 @@ interface DocumentTableProps extends DocumentRowCallbacks {
   onPageChange: (p: number, ps: number) => void;
   /** total === 0（空库空状态文案） */
   totalIsEmpty: boolean;
+  /** 入库任务阶段进度（doc_id → {stage, since}；解析中 Tooltip 展示用，
+   *  页面主组件轮询列表时同步拉取，见 Documents.tsx） */
+  ingestProgress?: Record<string, { stage: string; since: string }>;
 }
 
 /**
@@ -211,6 +252,7 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
   onSelectionChange,
   onPageChange,
   totalIsEmpty,
+  ingestProgress,
   onPreview,
   onStartParse,
   onSmartParse,
@@ -331,6 +373,44 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
           ) : (
             <Tag color={meta.color}>{meta.text}</Tag>
           );
+        // 解析中：悬停展示实时阶段进度（页面主组件轮询拉取；后端任务结束后
+        // 清空 running，进度随之消失——进度未取到显示"解析中"兜底）
+        if (status === 'parsing') {
+          const prog = ingestProgress?.[row.id];
+          return (
+            <Tooltip
+              title={
+                `正在解析：${prog?.stage ?? '进行中'}` +
+                (prog?.since ? `（${prog.since} 开始）` : '')
+              }
+            >
+              {tag}
+            </Tooltip>
+          );
+        }
+        // 已入库/失败：悬停展示入库全流程（各阶段耗时 + 总耗时；无 trace 的
+        // 历史文档/未重入 → 显示"入库"或错误提示兜底，不报错）
+        const trace = Array.isArray(row.ingest_trace) ? row.ingest_trace : null;
+        if (status === 'ingested' && trace) {
+          return (
+            <Tooltip
+              title={renderIngestTrace(trace, row.ingest_total_ms, false,
+                row.ingest_started_at, row.ingest_finished_at)}
+            >
+              {tag}
+            </Tooltip>
+          );
+        }
+        if (status === 'failed' && trace) {
+          return (
+            <Tooltip
+              title={renderIngestTrace(trace, row.ingest_total_ms, true,
+                row.ingest_started_at, row.ingest_finished_at)}
+            >
+              {tag}
+            </Tooltip>
+          );
+        }
         return (status === 'failed' || status === 'pending_confirm') && row.error ? (
           <Tooltip title={row.error}>{tag}</Tooltip>
         ) : (

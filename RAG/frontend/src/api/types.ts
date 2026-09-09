@@ -159,6 +159,14 @@ export interface DocumentItem {
   graph_status?: 'none' | 'building' | 'ready' | 'failed';
   /** 图谱构建失败原因（graph_status=failed 时返回） */
   graph_error?: string;
+  /** 入库流程轨迹（[{stage, ms, status?}]；可追溯展示；旧文档无=空） */
+  ingest_trace?: { stage: string; ms: number; status?: string }[];
+  /** 入库总耗时（ms；可追溯展示；旧文档无） */
+  ingest_total_ms?: number | null;
+  /** 入库开始时间（HH:mm:ss；可追溯展示；旧文档无） */
+  ingest_started_at?: string | null;
+  /** 入库结束时间（HH:mm:ss；完成/失败/取消时刻） */
+  ingest_finished_at?: string | null;
 }
 
 /** 解析方式友好名（契约：naive→通用切块 / title→按标题切块 / regex→正则切块 / parent_child→父子分块 / qa→QA 问答 / agentic→Agentic 智能分块） */

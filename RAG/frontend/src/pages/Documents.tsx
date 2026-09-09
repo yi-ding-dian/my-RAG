@@ -18,6 +18,7 @@ import {
   deleteDocument,
   downloadDocument,
   getDocumentsStatusCounts,
+  getIngestProgress,
   ingestDocument,
   listDocuments,
   listKbs,
@@ -94,6 +95,11 @@ const DocumentsPage: React.FC = () => {
   // 状态徽标计数（Segmented 标签数据源；null=未加载完成按 0 占位。
   // 与列表加载并行：每次 load 成功顺带刷新一次，文档状态变化后自动跟上）
   const [statusCounts, setStatusCounts] = useState<DocumentStatusCounts | null>(null);
+  // 入库任务阶段进度（doc_id → {stage, since}；解析中状态列 Tooltip 展示，
+  // 与列表轮询同节奏拉取，任务结束后端清空）
+  const [ingestProgress, setIngestProgress] = useState<
+    Record<string, { stage: string; since: string }> | {}
+  >({});
 
   const kbName = kbs.find(k => k.id === kbId)?.name;
 
@@ -156,6 +162,17 @@ const DocumentsPage: React.FC = () => {
     }
   }, [kbId]);
 
+  /** 入库阶段进度刷新：解析中 Tooltip 用（失败静默；任务结束后端清空 → 进度消失） */
+  const refreshIngestProgress = useCallback(async () => {
+    if (!kbId) return;
+    try {
+      const res = await getIngestProgress(kbId);
+      setIngestProgress(res.data);
+    } catch {
+      // 进度非关键路径：失败保持旧值
+    }
+  }, [kbId]);
+
   const load = useCallback(
     async (silent = false, p = 1, ps = 10) => {
       if (!kbId) {
@@ -189,13 +206,14 @@ const DocumentsPage: React.FC = () => {
         }
         // 列表（含轮询/变更后 reload）刷新完成顺带刷一次徽标计数
         void refreshStatusCounts();
+        void refreshIngestProgress();
       } catch {
         if (!silent) message.error('加载文档列表失败');
       } finally {
         if (!silent) setLoading(false);
       }
     },
-    [kbId, message, statusFilter, keyword, refreshStatusCounts],
+    [kbId, message, statusFilter, keyword, refreshStatusCounts, refreshIngestProgress],
   );
 
   /** B2: 删除/解析/上传等变更操作后刷新：回第 1 页重拉（避免页码显示旧值错位） */
@@ -657,6 +675,7 @@ const DocumentsPage: React.FC = () => {
               total={total}
               keyword={keyword}
               canManage={canManage}
+              ingestProgress={ingestProgress}
               selectedRowKeys={selectedRowKeys}
               onSelectionChange={setSelectedRowKeys}
               onPageChange={handlePageChange}

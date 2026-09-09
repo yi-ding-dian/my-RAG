@@ -67,6 +67,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -431,9 +433,95 @@ class IngestionService:
     def __init__(self):
         self._running: Set[str] = set()  # 正在入库的 doc_id，防并发重复触发
         self._cancel: Set[str] = set()   # 用户取消标记（cancel 接口置位，任务检查点消费）
+        # 任务当前阶段（doc_id → 阶段名）：解析中状态悬停进度展示用
+        # （阶段名在 _ingest 各 stage 前后更新，任务结束清理）
+        self._stage: Dict[str, str] = {}
+        self._stage_since: Dict[str, str] = {}  # 阶段开始时间（HH:mm:ss，展示用）
+        # 入库流程耗时轨迹（doc_id → [{stage, ms}] + 当前阶段起点时间戳）：
+        # 阶段切换累计耗时，任务结束写入文档 ingest_trace（可追溯）
+        self._stage_ms: Dict[str, int] = {}     # 当前阶段起点时间（perf_counter）
+        self._trace: Dict[str, List[dict]] = {}  # 已完成阶段耗时 [{stage, ms}]
+        self._task_started_at: Dict[str, str] = {}  # 任务开始时间（展示用）
 
     def is_running(self, doc_id: str) -> bool:
         return doc_id in self._running
+
+    def get_progress(self, doc_id: str) -> Optional[dict]:
+        """解析中任务段状态（悬停进度展示）：非运行中返回 None
+
+        返回 {stage: 中文阶段名, since: 阶段开始时间 HH:mm:ss}
+        """
+        if doc_id not in self._running:
+            return None
+        stage = self._stage.get(doc_id)
+        if not stage:
+            return {"stage": "准备中", "since": ""}
+        return {"stage": stage, "since": self._stage_since.get(doc_id, "")}
+
+    def running_doc_ids(self) -> List[str]:
+        """当前正在入库的 doc_id 列表（进度接口聚合用）"""
+        return list(self._running)
+
+    def _set_stage(self, doc_id: str, stage: str) -> None:
+        """更新任务阶段（记录开始时间；切换时累计上一阶段耗时）
+        - 任务结束由 _clear_stage 清理；trace 由 _finalize_trace 落文档
+        """
+        # trace 初始化（首次调用）：后续切换直接 append
+        if doc_id not in self._trace:
+            self._trace[doc_id] = []
+            # 任务开始时间（仅首次阶段记录；展示用）——start 时刻即首次进入阶段
+            if doc_id not in self._task_started_at:
+                self._task_started_at[doc_id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 阶段切换：先结掉上一阶段耗时（perf_counter 差 → ms；无上一段起点
+        # （首次）跳过——首个阶段"准备中"由任务启动处 _set_stage 开启）
+        prev_start = self._stage_ms.pop(doc_id, None)
+        if prev_start is not None:
+            self._trace[doc_id].append({
+                "stage": self._stage.get(doc_id, "准备中"),
+                "ms": int(round((time.perf_counter() - prev_start) * 1000)),
+            })
+        self._stage[doc_id] = stage
+        self._stage_since[doc_id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._stage_ms[doc_id] = time.perf_counter()
+
+    def _finalize_trace(self, doc_id: str) -> tuple[list, int, Optional[dict], str, str]:
+        """任务结束生成入库轨迹（成功=当前阶段结掉；失败=当前阶段标记 failed）
+
+        返回 (trace, total_ms, last_stage_err, started_at, finished_at)：
+        - trace: [{stage, ms, status?}]，status 仅失败阶段的当前阶段有
+        - total_ms: 总耗时（所有阶段求和）
+        - last_stage_err: 用户取消/失败标记（异常路径填）
+        - started_at: 任务开始时间（HH:mm:ss）
+        - finished_at: 任务结束时间（HH:mm:ss）
+        """
+        prev_start = self._stage_ms.pop(doc_id, None)
+        if prev_start is not None and doc_id in self._trace:
+            self._trace[doc_id].append({
+                "stage": self._stage.get(doc_id, "准备中"),
+                "ms": int(round((time.perf_counter() - prev_start) * 1000)),
+            })
+        trace = self._trace.pop(doc_id, [])
+        total = int(sum(s.get("ms", 0) for s in trace))
+        started_at = self._task_started_at.pop(doc_id, "")
+        finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return trace, total, None, started_at, finished_at
+
+    def _mark_trace_failed(self, doc_id: str) -> None:
+        """失败路径：当前阶段标记 failed（状态列可追溯：失败在哪个阶段）"""
+        trace = self._trace.get(doc_id)
+        if not trace:
+            return
+        for s in reversed(trace):
+            s["status"] = "failed"
+            break
+
+    def _clear_stage(self, doc_id: str) -> None:
+        """任务结束（完成/失败/取消/待确认）清理阶段状态（避免悬停残留）"""
+        self._stage.pop(doc_id, None)
+        self._stage_since.pop(doc_id, None)
+        self._stage_ms.pop(doc_id, None)
+        self._trace.pop(doc_id, None)
+        self._task_started_at.pop(doc_id, None)
 
     def is_cancelled(self, doc_id: str) -> bool:
         return doc_id in self._cancel
@@ -506,8 +594,19 @@ class IngestionService:
         try:
             await self._ingest(doc_id, method=method, **params)
         finally:
+            # 失败路径 trace：成功路径已在 _ingest 内 _finalize_trace 消费并落
+            # 文档（trace pop）；若仍存在（异常路径文档已 failed）→ 标 failed
+            # 再落（失败发生在哪个阶段可追溯）
+            if doc_id in self._trace:
+                self._mark_trace_failed(doc_id)
+                trace, total_ms, _, started_at, finished_at = self._finalize_trace(doc_id)
+                if trace:
+                    get_document_service().update_doc(
+                        doc_id, ingest_trace=trace, ingest_total_ms=total_ms,
+                        ingest_started_at=started_at, ingest_finished_at=finished_at)
             self._running.discard(doc_id)
             self._cancel.discard(doc_id)  # 取消标记随任务结束清除（含正常完成）
+            self._clear_stage(doc_id)     # 任务结束清理阶段状态（悬停进度不再返回）
 
     async def _ingest(self, doc_id: str, method: str | None = None, **params):
         doc_svc = get_document_service()
@@ -534,26 +633,40 @@ class IngestionService:
 
         # 1) uploaded -> parsing
         doc_svc.transition(doc_id, "parsing")
+        # 0.5) 轨迹起点（准备中：含参数解析/探测/切换，任务初始化耗时）
+        self._set_stage(doc_id, "准备中")
         try:
             # 2) 解析阶段（下载 → 探测降级 → 解析 → 取消检查点1 →
             #    图片上传 → 落盘）
+            self._set_stage(doc_id, "解析文档")
             text, parse_method = await self._stage_parse(
                 doc, doc_id, parser_config, probe)
             # 3) 切块阶段（QA 规范性检测 → 切块 → 父标题前缀）
+            self._set_stage(doc_id, "切块")
             stage = await self._stage_chunk(
                 doc, doc_id, parser_id, parser_config,
                 qa_force_continue, text)
             # 4) 增强阶段（上下文检索摘要 → 知识图谱，两者失败不阻塞入库）
+            self._set_stage(doc_id, "增强（摘要/图谱）")
             contexts, kg_status, kg_error = await self._stage_enhance(
                 doc, doc_id, parser_config, stage, text)
             # 5) 向量化阶段（空块校验 → 取消检查点2a → embedding →
             #    取消检查点2b → 维度校验 → 清旧向量 → 写入 + BM25 失效）
+            self._set_stage(doc_id, "向量化入库")
             await self._stage_vectorize(
                 doc, doc_id, parser_id, parser_config, contexts, stage)
             # 6) 完成阶段（解析配置/chunks_meta/图谱状态落库 + 统计日志）
+            self._set_stage(doc_id, "完成落库")
             await self._stage_finalize(
                 doc, doc_id, parser_id, parser_config, parse_method,
                 contexts, stage, kg_status, kg_error)
+            # 7) 成功：入库轨迹落文档（5 阶段耗时 + 总耗时 + 启止时间）
+            trace, total_ms, _, started_at, finished_at = self._finalize_trace(doc_id)
+            if trace:
+                doc_svc.update_doc(doc_id, ingest_trace=trace,
+                                   ingest_total_ms=total_ms,
+                                   ingest_started_at=started_at,
+                                   ingest_finished_at=finished_at)
         except _AgenticConfirmRequired as e:
             # Agentic 分块 1 万~5 万字超限未确认：不算失败 → 文档进入
             # pending_confirm 待确认状态（状态列橙色"待确认" + error 提示，

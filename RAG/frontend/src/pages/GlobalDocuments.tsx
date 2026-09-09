@@ -36,6 +36,7 @@ import {
   GlobalDocumentItem,
   deleteDocument,
   getGlobalDocumentsStatusCounts,
+  getIngestProgress,
   listGlobalDocuments,
   listGlobalDocumentsSummary,
   methodColor,
@@ -66,6 +67,45 @@ const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   failed: { color: 'error', text: '失败' },
   pending_confirm: { color: 'orange', text: '待确认' },
 };
+
+/** 入库流程轨迹渲染（同 DocumentTable.renderIngestTrace —— 两处保持同步：
+ * 已入库/失败状态 Tooltip 展示各阶段耗时 + 总耗时；无 trace 兜底"—"）*/
+const formatTraceMs = (ms?: number): string => {
+  if (ms == null || ms < 0) return '—';
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${Math.round(ms)} ms`;
+};
+
+const renderIngestTrace = (
+  trace: { stage: string; ms: number; status?: string }[],
+  totalMs?: number | null,
+  isFailed?: boolean,
+  startedAt?: string | null,
+  finishedAt?: string | null,
+): React.ReactNode => (
+  <div style={{ fontSize: 12, lineHeight: 1.8 }}>
+    <div style={{ fontWeight: 600, marginBottom: 2 }}>
+      {isFailed ? '入库执行（失败）' : '入库执行流程'}
+    </div>
+    {startedAt && (
+      <div>开始：{startedAt}</div>
+    )}
+    {trace.map((t, i) => (
+      <div key={i}>
+        {t.stage}：{formatTraceMs(t.ms)}
+        {t.status === 'failed' && <span style={{ color: '#ff4d4f' }}>（失败）</span>}
+      </div>
+    ))}
+    {finishedAt && (
+      <div>结束：{finishedAt}</div>
+    )}
+    {totalMs != null && (
+      <div style={{ marginTop: 2, fontWeight: 600 }}>
+        总耗时：{formatTraceMs(totalMs)}
+      </div>
+    )}
+  </div>
+);
 
 const formatSize = (bytes: number): string => {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
@@ -130,6 +170,11 @@ const GlobalDocumentsPage: React.FC = () => {
   // 状态徽标计数（Segmented 标签数据源；null=未加载完成按 0 占位。
   // 仅在进入第 3 层/列表刷新时顺带拉取，与列表并行不串行）
   const [statusCounts, setStatusCounts] = useState<DocumentStatusCounts | null>(null);
+  // 入库任务阶段进度（doc_id → {stage, since}；解析中/已入库/失败 Tooltip 展示；
+  // 与列表刷新同节奏拉取，任务结束后端清空）
+  const [ingestProgress, setIngestProgress] = useState<
+    Record<string, { stage: string; since: string }>
+  >({});
 
   // ---------- 文档列表（第 3 层） ----------
   const [page, setPage] = useState(1);
@@ -182,6 +227,17 @@ const GlobalDocumentsPage: React.FC = () => {
     }
   }, [kbId, deptKey]);
 
+  /** 入库阶段进度刷新（解析中/已入库/失败 Tooltip 用；失败静默） */
+  const refreshIngestProgress = useCallback(async () => {
+    if (!kbId) return;
+    try {
+      const res = await getIngestProgress(kbId);
+      setIngestProgress(res.data);
+    } catch {
+      // 进度非关键路径：失败保持旧值
+    }
+  }, [kbId]);
+
   // ---------- 加载：知识库文档列表（第 3 层） ----------
   const loadDocs = useCallback(
     async (silent = false, p = page, ps = pageSize) => {
@@ -200,13 +256,14 @@ const GlobalDocumentsPage: React.FC = () => {
         setTotal(res.data.total);
         // 列表刷新完成顺带刷一次徽标计数（文档增删/状态变化后自动跟上）
         void refreshStatusCounts();
+        void refreshIngestProgress();
       } catch {
         if (!silent) message.error('加载文档列表失败');
       } finally {
         if (!silent) setLoading(false);
       }
     },
-    [kbId, deptKey, statusFilter, keyword, message, page, pageSize, refreshStatusCounts],
+    [kbId, deptKey, statusFilter, keyword, message, page, pageSize, refreshStatusCounts, refreshIngestProgress],
   );
 
   // 初次加载（dept_admin 进入即部门层；super_admin 见部门层）
@@ -427,6 +484,33 @@ const GlobalDocumentsPage: React.FC = () => {
           ) : (
             <Tag color={meta.color}>{meta.text}</Tag>
           );
+        // 解析中：悬浮展示实时阶段进度（与部门文档页同节奏拉取）
+        if (status === 'parsing') {
+          const prog = ingestProgress?.[row.id];
+          return (
+            <Tooltip
+              title={
+                `正在解析：${prog?.stage ?? '进行中'}` +
+                (prog?.since ? `（${prog.since} 开始）` : '')
+              }
+            >
+              {tag}
+            </Tooltip>
+          );
+        }
+        // 已入库/失败：悬浮展示入库全流程（各阶段耗时 + 总耗时；同 DocumentTable）
+        const trace = Array.isArray(row.ingest_trace) ? row.ingest_trace : null;
+        if ((status === 'ingested' || status === 'failed') && trace) {
+          return (
+            <Tooltip
+              title={renderIngestTrace(trace, row.ingest_total_ms, status === 'failed',
+                row.ingest_started_at, row.ingest_finished_at)}
+            >
+              {tag}
+            </Tooltip>
+          );
+        }
+        // 失败无 trace：走原错误 Tooltip
         return (status === 'failed' || status === 'pending_confirm') && row.error ? (
           <Tooltip title={row.error}>{tag}</Tooltip>
         ) : (

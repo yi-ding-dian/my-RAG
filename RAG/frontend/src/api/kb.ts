@@ -133,6 +133,13 @@ export interface DocumentStatusCounts {
 export const getDocumentsStatusCounts = (kbId: string) =>
   api.get<DocumentStatusCounts>(`/kbs/${kbId}/documents/status-counts`);
 
+/** 入库任务阶段进度（GET /kbs/{kb_id}/documents/ingest-progress，can_access_kb）
+ * 解析中状态悬停展示：返回 {doc_id: {stage, since}}，仅运行中任务，结束自动清空 */
+export interface IngestProgressEntry { stage: string; since: string }
+export const getIngestProgress = (kbId: string) =>
+  api.get<Record<string, IngestProgressEntry>>(
+    `/kbs/${kbId}/documents/ingest-progress`);
+
 export const deleteDocument = (kbId: string, docId: string) =>
   api.delete(`/kbs/${kbId}/documents/${docId}`);
 

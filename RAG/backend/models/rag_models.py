@@ -78,6 +78,14 @@ class DocumentItem(BaseModel):
     deleted_at: Optional[str] = Field(None, description="移入回收站时间（恢复后清空）")
     graph_status: str = Field("none", description="知识图谱状态: none=未构建/building=构建中/ready=已构建/failed=构建失败")
     graph_error: Optional[str] = Field(None, description="知识图谱构建失败原因（graph_status=failed 时）")
+    ingest_trace: List[dict] = Field(
+        default_factory=list,
+        description="入库流程轨迹（可追溯展示）：[{stage, ms, status?}, ...] 每阶段耗时ms；"
+                    "status=failed 时含失败阶段；total_ms 总耗时（见 ingest_total_ms；"
+                    "旧文档/未重入无该数据=空列表）")
+    ingest_total_ms: Optional[int] = Field(None, description="入库总耗时（ms，成功=完成fallback一次；失败=失败时刻）")
+    ingest_started_at: Optional[str] = Field(None, description="入库开始时间（YYYY-MM-DD HH:mm:ss；任务启动时刻）")
+    ingest_finished_at: Optional[str] = Field(None, description="入库结束时间（完成/失败/取消时刻；进度展示用）")
 
 
 class RenameDocumentRequest(BaseModel):

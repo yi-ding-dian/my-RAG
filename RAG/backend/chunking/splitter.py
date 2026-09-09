@@ -277,6 +277,47 @@ def _find_image_ranges(text: str) -> List[Tuple[int, int]]:
     return spans
 
 
+# 图片占整段阈值：超过即视为"纯图片段"（仅可带前置标题行），切分时归入
+# 前一段（正文），不再独立成块（用户需求：图片当正文，以文字标题为准）
+_IMAGE_SEG_MIN_RATIO = 0.6
+
+
+def _is_image_only_seg(seg_text: str) -> bool:
+    """保护段是否"以图片为主体"（图片标记长度占比 > 阈值）
+
+    - True：图片段（如 '1.1.1 Linx80 系统\\n![](...jpg)'，标题行因
+      _extend_to_preceding_heading 并入图片保护区间）→ 归入前一段正文；
+    - False：普通保护段（表格/代码块自身占主导）→ 保持整体成块。
+    """
+    if not seg_text or not seg_text.strip():
+        return False
+    img_len = sum(len(m) for m in _IMAGE_MD_RE.findall(seg_text))
+    img_len += sum(len(m) for m in _IMAGE_HTML_RE.findall(seg_text))
+    return img_len / len(seg_text) > _IMAGE_SEG_MIN_RATIO
+
+
+def _chunks_attach_image(chunks: List[Chunk], seg_text: str,
+                         seg_start: int) -> None:
+    """图片保护段归入前一段末尾（用户需求"图片当正文，归前"）
+
+    - 优先：附加到 chunks 最后一个 chunk 的尾部（原 char_start/end 已对齐，
+      只移动 char_end 保持 text 与区间切片一致）；
+    - 若当前无前置 chunk（图片在段首）：图片段自身作为独立 chunk 兜底
+      （保护其不被窗口切碎，仍保底）。
+    图片标记整体附加后不再由窗口规则重切（保护性完整）。
+    """
+    stripped = seg_text.strip()
+    if not stripped:
+        return
+    if chunks:
+        last = chunks[-1]
+        last.text += "\n\n" + stripped
+        last.char_end = last.char_start + len(last.text)
+    else:
+        s = seg_start + (len(seg_text) - len(seg_text.lstrip()))
+        chunks.append(Chunk(stripped, s, s + len(stripped)))
+
+
 def _extend_to_preceding_heading(text: str,
                                  ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
     """保护区间前扩展：紧邻表格（中间至多 1 空行）的标题行并入区间。
@@ -517,6 +558,11 @@ class RecursiveChunker:
             final_chunks: List[Chunk] = []
             for seg_text, seg_start, is_protected in segs:
                 if is_protected:
+                    # 图片段（主体为图片）：归入前一段正文末尾，不独立成块
+                    # （以文字标题为准，图片当正文；见 _chunks_attach_image）
+                    if _is_image_only_seg(seg_text):
+                        _chunks_attach_image(final_chunks, seg_text, seg_start)
+                        continue
                     stripped = seg_text.strip()
                     if not stripped:
                         continue
@@ -615,6 +661,11 @@ class RecursiveChunker:
             final_chunks: List[Chunk] = []
             for seg_text, seg_start, is_protected in segs:
                 if is_protected:
+                    # 图片段（主体为图片）：归入前一段正文末尾，不独立成块
+                    # （用户需求：以文字标题为准，图片当正文；见 _chunks_attach_image）
+                    if _is_image_only_seg(seg_text):
+                        _chunks_attach_image(final_chunks, seg_text, seg_start)
+                        continue
                     # 表格/代码块整体成块（strip 后重算偏移，保持切片一致性）
                     stripped = seg_text.strip()
                     if not stripped:

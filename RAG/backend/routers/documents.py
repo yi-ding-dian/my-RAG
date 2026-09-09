@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -241,6 +241,27 @@ async def cancel_document_ingestion(request: Request, kb_id: str, doc_id: str,
         target_id=doc_id, target_name=doc.original_name, request=request)
     logger.info("取消解析请求: %s (%s)", doc.original_name, doc_id)
     return {"message": "取消解析请求已发送", "doc_id": doc_id}
+
+
+@router.get("/ingest-progress")
+async def get_ingest_progress(kb_id: str,
+                              db: AsyncSession = Depends(get_db),
+                              user: UserPublic = Depends(get_current_user)):
+    """正在入库文档的阶段进度（can_access_kb）
+
+    返回 {doc_id: {stage, since}}——"解析中"状态悬停展示用：
+    前端每 2s（轮询列表时）调用，仅查询运行中任务（IngestionService._running
+    内的值，stage 由入库各阶段更新，任务结束自动清理）。
+    非运行 → 空 dict（前端按无进度处理）。
+    """
+    await kb_or_404(db, kb_id, user)
+    ing_svc = get_ingestion_service()
+    progress: Dict[str, dict] = {}
+    for doc_id in ing_svc.running_doc_ids():
+        info = ing_svc.get_progress(doc_id)
+        if info:
+            progress[doc_id] = info
+    return progress
 
 
 @router.post("/from-url", response_model=DocumentItem)

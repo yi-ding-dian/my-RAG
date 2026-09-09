@@ -187,6 +187,19 @@ class DocumentService:
     def mark_failed(self, doc_id: str, error: str) -> Optional[DocumentItem]:
         return self.transition(doc_id, "failed", error=str(error)[:1000])
 
+    def update_doc(self, doc_id: str, **fields) -> Optional[DocumentItem]:
+        """非状态迁移的字段更新（如入库轨迹 ingest_trace/ingest_total_ms）：
+        transition 不允许"同状态+改字段"，此方法跳过状态校验仅写字段。"""
+        with self._lock:
+            doc = self._docs.get(doc_id)
+            if not doc or doc.deleted:
+                return None
+            for k, v in fields.items():
+                setattr(doc, k, v)
+            doc.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._save_meta(doc)
+        return doc
+
     # ---------- 知识图谱状态 ----------
 
     def update_graph_status(self, doc_id: str, status: str,
