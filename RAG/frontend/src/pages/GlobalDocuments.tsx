@@ -32,13 +32,16 @@ import {
   asApiError,
   DepartmentSummaryEntry,
   DocumentStatus,
+  DocumentStatusCounts,
   GlobalDocumentItem,
   deleteDocument,
+  getGlobalDocumentsStatusCounts,
   listGlobalDocuments,
   listGlobalDocumentsSummary,
   methodColor,
   methodLabel,
 } from '../api/client';
+import { buildStatusOptions } from '../components/documents/BatchActionsBar';
 import AppEmpty from '../components/AppEmpty';
 import PageLayout from '../components/layout/PageLayout';
 import TableSectionLayout from '../components/layout/TableSectionLayout';
@@ -84,15 +87,9 @@ const parserConfigSummary = (
   return parts.length > 0 ? parts.join(' / ') : null;
 };
 
-/** 状态筛选（与部门内文档管理 M3 语义统一：「未入库」= uploaded+parsed） */
+/** 状态筛选（与部门内文档管理 M3 语义统一：「未入库」= uploaded+parsed；
+ * 带徽标选项由 buildStatusOptions(statusCounts) 生成） */
 type StatusFilter = 'all' | 'unparsed' | 'parsing' | 'ingested' | 'failed';
-const STATUS_OPTIONS: { label: string; value: StatusFilter }[] = [
-  { label: '全部', value: 'all' },
-  { label: '未入库', value: 'unparsed' },
-  { label: '解析中', value: 'parsing' },
-  { label: '已入库', value: 'ingested' },
-  { label: '失败', value: 'failed' },
-];
 
 const toBackendStatus = (filter: StatusFilter): string | undefined =>
   filter === 'all' ? undefined : filter;
@@ -130,6 +127,9 @@ const GlobalDocumentsPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [keywordInput, setKeywordInput] = useState('');
   const [keyword, setKeyword] = useState('');
+  // 状态徽标计数（Segmented 标签数据源；null=未加载完成按 0 占位。
+  // 仅在进入第 3 层/列表刷新时顺带拉取，与列表并行不串行）
+  const [statusCounts, setStatusCounts] = useState<DocumentStatusCounts | null>(null);
 
   // ---------- 文档列表（第 3 层） ----------
   const [page, setPage] = useState(1);
@@ -167,6 +167,21 @@ const GlobalDocumentsPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message, isDeptAdmin]);
 
+  /** 状态徽标计数刷新（过滤粒度同列表的 department_id/kb_id 子集；
+   *  失败静默保留上次计数） */
+  const refreshStatusCounts = useCallback(async () => {
+    if (!kbId) return;
+    try {
+      const res = await getGlobalDocumentsStatusCounts({
+        department_id: deptKey ?? undefined,
+        kb_id: kbId,
+      });
+      setStatusCounts(res.data);
+    } catch {
+      // 徽标非关键路径：拉取失败不打扰，保持旧值等下次刷新
+    }
+  }, [kbId, deptKey]);
+
   // ---------- 加载：知识库文档列表（第 3 层） ----------
   const loadDocs = useCallback(
     async (silent = false, p = page, ps = pageSize) => {
@@ -183,13 +198,15 @@ const GlobalDocumentsPage: React.FC = () => {
         });
         setItems(res.data.items);
         setTotal(res.data.total);
+        // 列表刷新完成顺带刷一次徽标计数（文档增删/状态变化后自动跟上）
+        void refreshStatusCounts();
       } catch {
         if (!silent) message.error('加载文档列表失败');
       } finally {
         if (!silent) setLoading(false);
       }
     },
-    [kbId, deptKey, statusFilter, keyword, message, page, pageSize],
+    [kbId, deptKey, statusFilter, keyword, message, page, pageSize, refreshStatusCounts],
   );
 
   // 初次加载（dept_admin 进入即部门层；super_admin 见部门层）
@@ -498,7 +515,7 @@ const GlobalDocumentsPage: React.FC = () => {
           <Segmented
             value={statusFilter}
             onChange={v => setStatusFilter(v as StatusFilter)}
-            options={STATUS_OPTIONS}
+            options={buildStatusOptions(statusCounts)}
           />
           <Input.Search
             allowClear

@@ -89,23 +89,11 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
       onCancel={onClose}
       footer={null}
       width={1150}
-      // 固定弹窗高度：头部固定不动，滚动只发生在内容区内部（滚动条在弹窗内）。
-      // 滚动结构修复同 Documents 切块详情弹窗（见 index.css .chunk-detail-modal）：
-      // rc-dialog 的 sentinel 中间层让 content 的 height:100% 失效，需由 className 打通 flex 链。
-      // 高度用 min(80vh, 视口高-120px) 兜底，小视口下全屏 wrap 也不会滚动
-      style={{ top: '8vh', height: 'min(80vh, calc(100vh - 120px))' }}
-      styles={{
-        content: { display: 'flex', flexDirection: 'column', height: '100%' },
-        header: { flexShrink: 0 },
-        body: {
-          padding: '16px 20px',
-          flex: 1,
-          minHeight: 0,
-          overflow: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-        },
-      }}
+      // 高度/位置交给 AppModal 统一管理（defaultSize 作为手动尺寸起始值，
+      // AppModal 内部按视口钳制 bodyH 且顶部分布自适应居中，避免硬编码
+      // top:8vh + height 超出视口导致标题被截/底部被挡）。
+      // 滚动结构同 Documents 切块详情弹窗：头部固定，仅内容区内部滚动。
+      destroyOnHidden
     >
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60 }}>

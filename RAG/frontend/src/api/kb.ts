@@ -117,6 +117,22 @@ export const listDocuments = (
 export const getDocument = (kbId: string, docId: string) =>
   api.get<DocumentDetail>(`/kbs/${kbId}/documents/${docId}`);
 
+/** 文档状态计数（Segmented 筛选标签的圆形数字徽标数据源；语义与状态筛选
+ *  开关一致：unparsed=uploaded+parsed（待解析/已解析均未入库），
+ *  failed=failed+pending_confirm（Agentic 超限待确认归失败组），
+ *  parsing/ingested 单值，total=全部；数量 0 也返回 0） */
+export interface DocumentStatusCounts {
+  total: number;
+  unparsed: number;
+  parsing: number;
+  ingested: number;
+  failed: number;
+}
+
+/** 部门内文档状态计数（GET /kbs/{kb_id}/documents/status-counts，can_access_kb） */
+export const getDocumentsStatusCounts = (kbId: string) =>
+  api.get<DocumentStatusCounts>(`/kbs/${kbId}/documents/status-counts`);
+
 export const deleteDocument = (kbId: string, docId: string) =>
   api.delete(`/kbs/${kbId}/documents/${docId}`);
 
@@ -328,6 +344,14 @@ export const listGlobalDocuments = (params?: {
   page?: number;
   page_size?: number;
 }) => api.get<GlobalDocumentPage>('/admin/documents', { params });
+
+/** 全局文档状态计数（GET /admin/documents/status-counts，仅管理员）：
+ * 参数取 listGlobalDocuments 的 department_id/kb_id 子集（第 3 层文档表
+ * 徽标与筛选语义一致，与当前 status/keyword 筛选无关） */
+export const getGlobalDocumentsStatusCounts = (params?: {
+  department_id?: string;
+  kb_id?: string;
+}) => api.get<DocumentStatusCounts>('/admin/documents/status-counts', { params });
 
 /** 部门汇总（部门 → 知识库 → 文档数/切块数，一次拉全树；用于文档管理(全部部门)三级下钻首页） */
 export const listGlobalDocumentsSummary = () =>

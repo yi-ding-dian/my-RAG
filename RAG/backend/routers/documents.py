@@ -376,6 +376,40 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
     }
 
 
+def _aggregate_status_counts(docs: List) -> dict:
+    """按状态筛选语义聚合计数（Segmented 徽标数据源，与 _VALID_LIST_STATUS
+    分组完全一致）：unparsed=uploaded+parsed（待解析/已解析均未入库）；
+    failed=failed+pending_confirm（Agentic 超限待确认归失败组）；
+    parsing/ingested 单值；total=全部。纯静态统计，无 DB/向量开销。"""
+    per_status = {s: 0 for s in
+                  ("uploaded", "parsing", "parsed", "ingested",
+                   "failed", "pending_confirm")}
+    for d in docs:
+        per_status[d.status] = per_status.get(d.status, 0) + 1
+    return {
+        "total": len(docs),
+        "unparsed": per_status["uploaded"] + per_status["parsed"],
+        "parsing": per_status["parsing"],
+        "ingested": per_status["ingested"],
+        "failed": per_status["failed"] + per_status["pending_confirm"],
+    }
+
+
+@router.get("/status-counts")
+async def get_documents_status_counts(kb_id: str,
+                                      db: AsyncSession = Depends(get_db),
+                                      user: UserPublic = Depends(
+                                          get_current_user)):
+    """文档状态计数（Segmented 筛选标签徽标数据源，can_access_kb）
+
+    返回 {total, unparsed, parsing, ingested, failed}，语义与列表状态筛选
+    完全一致（unparsed=uploaded+parsed；failed=failed+pending_confirm），
+    基于 list_by_kb 静态统计。声明在 /{doc_id} 动态段之前，避免被遮蔽。
+    """
+    await kb_or_404(db, kb_id, user)
+    return _aggregate_status_counts(get_document_service().list_by_kb(kb_id))
+
+
 def _purge_graph_refs(kb_id: str, doc_id: str) -> None:
     """彻底删除文档时清理知识图谱中该文档的实体/关系引用（失败仅 warning 不阻塞）
 

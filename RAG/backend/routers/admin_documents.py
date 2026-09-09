@@ -140,6 +140,53 @@ async def list_admin_documents(
     }
 
 
+@router.get("/status-counts")
+async def get_admin_documents_status_counts(
+    department_id: Optional[str] = Query(None, description="部门 ID 过滤"),
+    kb_id: Optional[str] = Query(None, description="知识库 ID 过滤"),
+    db: AsyncSession = Depends(get_db),
+    user: UserPublic = Depends(require_super_or_dept_admin),
+):
+    """跨部门文档状态计数（Segmented 徽标数据源，权限与 list_admin_documents 一致）
+
+    过滤粒度同列表接口的 department_id/kb_id 子集（super_admin 全量可带
+    任意过滤；dept_admin 强制本部门，未归属部门 403；未分配部门传
+    __unassigned__）。计数语义与部门内一致：unparsed=uploaded+parsed
+    （待解析/已解析均未入库）；failed=failed+pending_confirm（Agentic
+    超限待确认归失败组）；parsing/ingested 单值；total=全部。
+    """
+    if user.role == "dept_admin":
+        if not user.department_id:
+            raise HTTPException(
+                status_code=403,
+                detail="部门管理员未归属部门，无法查看文档")
+        department_id = user.department_id  # 强制覆盖，忽略请求参数
+
+    docs = get_document_service().list_all()
+    if kb_id:
+        docs = [d for d in docs if d.kb_id == kb_id]
+    kbs = {k.id: k for k in await get_kb_service().list(db)}
+    if department_id:
+        target = department_id if department_id != UNASSIGNED_DEPT_KEY else None
+        docs = [d for d in docs
+                if (kbs.get(d.kb_id).department_id if d.kb_id in kbs
+                    else None) == target]
+
+    # 静态聚合（与部门内 documents.py 的 _aggregate_status_counts 同语义）
+    per_status = {s: 0 for s in
+                  ("uploaded", "parsing", "parsed", "ingested",
+                   "failed", "pending_confirm")}
+    for d in docs:
+        per_status[d.status] = per_status.get(d.status, 0) + 1
+    return {
+        "total": len(docs),
+        "unparsed": per_status["uploaded"] + per_status["parsed"],
+        "parsing": per_status["parsing"],
+        "ingested": per_status["ingested"],
+        "failed": per_status["failed"] + per_status["pending_confirm"],
+    }
+
+
 @router.get("/summary")
 async def list_admin_documents_summary(
     db: AsyncSession = Depends(get_db),

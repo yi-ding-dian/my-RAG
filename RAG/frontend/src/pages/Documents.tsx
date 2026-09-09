@@ -11,11 +11,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   asApiError,
   DocumentItem,
+  DocumentStatusCounts,
   KnowledgeBase,
   cancelDocumentGraphBuild,
   cancelDocumentIngestion,
   deleteDocument,
   downloadDocument,
+  getDocumentsStatusCounts,
   ingestDocument,
   listDocuments,
   listKbs,
@@ -89,6 +91,9 @@ const DocumentsPage: React.FC = () => {
   // （生效后触发重拉；列表接口无 keyword 参数，见 load 内注释）
   const [keywordInput, setKeywordInput] = useState('');
   const [keyword, setKeyword] = useState('');
+  // 状态徽标计数（Segmented 标签数据源；null=未加载完成按 0 占位。
+  // 与列表加载并行：每次 load 成功顺带刷新一次，文档状态变化后自动跟上）
+  const [statusCounts, setStatusCounts] = useState<DocumentStatusCounts | null>(null);
 
   const kbName = kbs.find(k => k.id === kbId)?.name;
 
@@ -121,13 +126,6 @@ const DocumentsPage: React.FC = () => {
     return list;
   }, [docs, statusFilter, keyword]);
 
-  // 待解析文档数（仅"全部"筛选下有意义，用于列表上方引导提示；
-  // 基于可见列表统计，keyword 过滤后与实际展示一致）
-  const unparsedCount =
-    statusFilter === 'all'
-      ? visibleDocs.filter(d => d.status === 'uploaded' || d.status === 'parsed').length
-      : 0;
-
   // ---------- 数据加载 ----------
   const loadKbs = useCallback(async () => {
     try {
@@ -147,11 +145,23 @@ const DocumentsPage: React.FC = () => {
     }
   }, [message, urlKbId]);
 
+  /** 状态徽标计数刷新：与列表加载并行不串行（失败静默保留上次计数） */
+  const refreshStatusCounts = useCallback(async () => {
+    if (!kbId) return;
+    try {
+      const res = await getDocumentsStatusCounts(kbId);
+      setStatusCounts(res.data);
+    } catch {
+      // 徽标非关键路径：拉取失败不打扰，保持旧值等下次刷新
+    }
+  }, [kbId]);
+
   const load = useCallback(
     async (silent = false, p = 1, ps = 10) => {
       if (!kbId) {
         setDocs([]);
         setTotal(0);
+        setStatusCounts(null);
         return;
       }
       if (!silent) setLoading(true);
@@ -177,13 +187,15 @@ const DocumentsPage: React.FC = () => {
           setDocs(data.items);
           setTotal(data.total);
         }
+        // 列表（含轮询/变更后 reload）刷新完成顺带刷一次徽标计数
+        void refreshStatusCounts();
       } catch {
         if (!silent) message.error('加载文档列表失败');
       } finally {
         if (!silent) setLoading(false);
       }
     },
-    [kbId, message, statusFilter, keyword],
+    [kbId, message, statusFilter, keyword, refreshStatusCounts],
   );
 
   /** B2: 删除/解析/上传等变更操作后刷新：回第 1 页重拉（避免页码显示旧值错位） */
@@ -295,9 +307,14 @@ const DocumentsPage: React.FC = () => {
         );
         continue;
       }
-      // 1 万~5 万字：弹确认框（字数从错误信息"文档约 X.X 万字"解析）
+      // 1 万~5 万字：弹确认框（字数从错误信息"文档约 X.X 万字"解析）。
+      // 结构化兜底：仅 Agentic 切块方式（parser_id='agentic'）才属于本确认框
+      // ——上下文检索超阈值失败（E文件导出实例全部.txt 等，parser_id 为
+      // title 等）虽然 error 也含"文档约 X.X 万字"，但非 Agentic 分块成本
+      // 问题，不应弹；不依赖错误文案匹配，文案改动不影响
       const m = doc.error.match(/文档约\s*([\d.]+)\s*万字/);
       if (!m || agenticPromptedRef.current.has(doc.id)) continue;
+      if (doc.parser_id !== 'agentic') continue;
       // 先标记再弹窗，避免 docs 重复变化导致连弹
       agenticPromptedRef.current.add(doc.id);
       modal.confirm({
@@ -329,9 +346,12 @@ const DocumentsPage: React.FC = () => {
   // 上下文检索完整文档阈值超限提示：开启上下文检索增强入库时，解析文本
   // 超过系统配置阈值（默认 2 万字，超管在系统配置可改）→ 后端任务失败，
   // error 带"超过上下文检索完整文档阈值"提示（doc.error 已在状态列 tooltip
-  // 展示，此处弹 message 强化，引导换用其他切块方式或关闭增强）
+  // 展示，此处弹 message 强化，引导换用其他切块方式或关闭增强）。
+  // 仅「失败」筛选视图下弹（首次点进时）：首次进页（全部视图）不打扰，
+  // 用户主动看失败列表时提示一次（ctxPromptedRef 防重复；切回全部不弹）
   useEffect(() => {
     if (!kbId) return;
+    if (statusFilter !== 'failed') return;
     for (const doc of docs) {
       if (doc.status !== 'failed' || !doc.error) continue;
       if (!doc.error.includes('上下文检索') || !doc.error.includes('超过')) continue;
@@ -339,7 +359,7 @@ const DocumentsPage: React.FC = () => {
       ctxPromptedRef.current.add(doc.id);
       message.error(`「${doc.original_name}」${doc.error}`);
     }
-  }, [docs, kbId, message]);
+  }, [docs, kbId, message, statusFilter]);
 
   // ---------- 操作 ----------
 
@@ -548,14 +568,12 @@ const DocumentsPage: React.FC = () => {
   );
 
   // 状态筛选变化：重置回第 1 页重新请求（P2-10 筛选下沉后端）
-  const handleStatusFilterChange = useCallback(
-    (v: StatusFilter) => {
-      setStatusFilter(v);
-      setPage(1);
-      void load(false, 1, pageSize);
-    },
-    [load, pageSize],
-  );
+  // 状态筛选变化：只更新筛选值，重拉交给下方 useEffect（statusFilter →
+  // load 引用变化 → effect 回第 1 页请求）。若在此直接用当前闭包 load 再发
+  // 一次，会与 effect 双发造成竞态：旧筛选值响应后到会覆盖新值结果
+  const handleStatusFilterChange = useCallback((v: StatusFilter) => {
+    setStatusFilter(v);
+  }, []);
 
   const openTrash = () => {
     setTrashView(true);
@@ -565,8 +583,17 @@ const DocumentsPage: React.FC = () => {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <PageHeader
         breadcrumb={<Breadcrumb items={breadcrumbItems} />}
-        title="文档管理"
-        description="上传、解析与入库管理，文档「已入库」后即可参与检索问答"
+        title={
+          <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 10 }}>
+            <span>文档管理</span>
+            <Typography.Text
+              type="secondary"
+              style={{ fontSize: 12, fontWeight: 400 }}
+            >
+              上传、解析与入库管理，文档「已入库」后即可参与检索问答
+            </Typography.Text>
+          </span>
+        }
         extra={
           <>
             <Text strong>知识库</Text>
@@ -606,9 +633,12 @@ const DocumentsPage: React.FC = () => {
             parseProgress={parseProgress}
             onBatchParse={handleBatchParse}
             onBatchDelete={handleBatchDelete}
-            unparsedCount={unparsedCount}
+            statusCounts={statusCounts}
             showParsingHint={statusFilter === 'parsing'}
-            showGuide={!!kbId && total === 0 && !loading}
+            // 引导仅全库无文档时显示（statusCounts.total=全量）；且仅「全部」
+            // 筛选下——点「解析中/失败」等筛选空结果时不提示构建（截图像场景）
+            showGuide={!!kbId && statusFilter === 'all' && !loading
+              && (statusCounts != null && statusCounts.total === 0)}
           >
             {/* 上传条：点击/拖拽上传 + 批量导入并解析 + 从 URL 导入（自包含上传聚合逻辑） */}
             <UploadArea

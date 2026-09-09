@@ -78,9 +78,32 @@ const AiAvatar: React.FC = () => {
 };
 
 /**
+ * 引用摘要表格噪声清洗（仅展示层，不改动 source 原始数据，后端契约不变）：
+ * Excel(xlsx/mineru) 解析后的 chunk 是 markdown 表格形态，摘要开头常是
+ * 表头/分隔行（| 桂林 | 桂林 |…、|---|）等噪声。规则：
+ * - 先保留换行逐行处理再拼回单行（识别表格结构的前提；行间单空格相连，
+ *   与原先整段压缩空白的展示等价）
+ * - 丢弃表格结构行：整行仅剩 - : 空格（如 |---|、|:---| 压成 ---）或为空
+ * - 内容行把连续的 | 与空白压缩为单个空格（| 桂林 | 桂林 | → 桂林 桂林），
+ *   逐行 trim，不丢弃任何内容（信息只是换紧凑形式）
+ * - 清洗后仍 ~400 字截断：Excel 块前部常是表头/重复列名噪声，放宽截断
+ *   长度让块后部的真实命中单元格（如具体景点/金额）能浮现出来
+ * - 非表格形态文本逐行压缩后与原先行为一致，图谱引用内容不受影响
+ */
+const cleanSourceSummary = (text: string): string => {
+  const rows: string[] = [];
+  for (const line of text.split('\n')) {
+    const row = line.replace(/[|\s]+/g, ' ').trim();
+    if (!row || /^[-:\s]*$/.test(row)) continue;
+    rows.push(row);
+  }
+  return rows.join(' ');
+};
+
+/**
  * 行内引用标记 [n]：悬浮显示引用摘要（Tooltip），点击打开引用详情弹窗。
  * - 样式：小型上标（品牌色），区别于正文
- * - 摘要：父块全文优先（与后端 _build_refs 一致），压缩空白后 ~200 字截断
+ * - 摘要：父块全文优先（与后端 _build_refs 一致），清洗表格噪声后压缩空白 ~400 字截断
  * - 图谱引用（document_name="知识图谱"）：同样显示图谱内容摘要，点击进图谱内容视图
  * - 摘要内"与回答重叠的部分"高亮（.citation-highlight，同引用面板），图谱引用跳过
  */
@@ -90,8 +113,8 @@ const CitationMark: React.FC<{
   answerText: string;
   onClick: (source: Source) => void;
 }> = ({ n, source, answerText, onClick }) => {
-  const raw = (source.parent_text || source.text || '').replace(/\s+/g, ' ').trim();
-  const snippet = raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+  const raw = cleanSourceSummary(source.parent_text || source.text || '');
+  const snippet = raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
   const isGraph = source.document_name === '知识图谱';
   // 摘要内相关部分高亮区间（坐标相对 snippet；图谱引用/无命中 → 原样显示）
   const snippetHighlights = !isGraph && answerText
@@ -716,6 +739,7 @@ const MessageList: React.FC<MessageListProps> = ({
           </div>
         </div>
         {/* Agentic 检索决策轨迹（改写查询/分档分数/尝试次数；默认关闭时无该区块） */}
+        {/* 旧数据 agentic={}（无 trace）：只展示对象本身，不渲染 trace（防 agentic.trace 为 undefined 报错） */}
         {detailMsg.agentic && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>Agentic 检索决策</div>
@@ -724,7 +748,7 @@ const MessageList: React.FC<MessageListProps> = ({
                 查询改写：{detailMsg.agentic.original_query} → {detailMsg.agentic.final_query}
               </div>
             )}
-            {detailMsg.agentic.trace.map(t => (
+            {(detailMsg.agentic.trace ?? []).map(t => (
               <div key={t.attempt} style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
                 第 {t.attempt} 轮{t.from_rewrite ? '（改写后）' : '（原始查询）'}：相似度{' '}
                 {t.best_score != null ? t.best_score.toFixed(3) : '—'}，命中 {t.sources_count} 条
