@@ -12,6 +12,8 @@ import type {
   ExtQueryCreateInput,
   ExtQueryUpdateInput,
   LogFileInfo,
+  LogRangeResult,
+  LogSegmentsResult,
   LogTailResult,
   RagasEvaluationPreview,
   RagasEvaluationRequest,
@@ -93,6 +95,26 @@ export const tailSystemLogs = (date?: string, offset = 0, limit = 200) =>
   api.get<LogTailResult>('/logs/tail', { params: { date, offset, limit } });
 
 export const listLogFiles = () => api.get<{ files: LogFileInfo[] }>('/logs/files');
+
+/**
+ * 日志时间段切分（时间段导航）：相邻两行间隔超 gapSeconds 视为新输出段，
+ * 返回每段起止时间/条数/级别小计。后端只扫描文件尾部（大文件保护），
+ * truncated=true 表示更早内容未统计。
+ */
+export const listLogSegments = (date?: string, gapSeconds = 60, maxSegments = 200) =>
+  api.get<LogSegmentsResult>('/logs/segments', {
+    params: { date, gap_seconds: gapSeconds, max_segments: maxSegments },
+  });
+
+/**
+ * 按时间段查询日志行（时间戳秒级前缀比较，含起止边界）；超 limit 取区间最后
+ * limit 行，total 为区间命中总数、truncated 表示被 limit 截断（供前端提示）。
+ */
+export const queryLogRange = (
+  date: string | undefined, start: string, end: string, limit = 500,
+) => api.get<LogRangeResult>('/logs/range', {
+  params: { date, start, end, limit },
+});
 
 /** 删除指定天日志文件（不存在静默成功） */
 export const deleteLogFile = (date: string) =>

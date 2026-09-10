@@ -41,7 +41,7 @@ from backend.services import audit_service, ragas_sampling
 from backend.services.chat_service import get_chat_service
 from backend.services.document_service import get_document_service
 from backend.services.kb_service import get_kb_service
-from backend.services.probes import probe_embedding, probe_llm
+from backend.services.parsers.probes import probe_embedding, probe_llm
 from backend.services.ragas_client import RagasApiError, get_ragas_client
 from backend.services.retrieval_log import get_retrieval_log_service
 from backend.services.user_service import list_users
@@ -467,24 +467,24 @@ async def cancel_ragas_evaluation(task_id: str,
     return {"message": "评估任务已取消"}
 
 
-# ---- 发起前可用性探测（LLM / Embedding；探测逻辑统一在 services/probes.py） ----
+# ---- 发起前可用性探测（LLM / Embedding；探测逻辑统一在 services/parsers/probes.py） ----
 
 # 探测超时（与设置页连接测试一致；发起时 llm/embedding 并行探测，总耗时 ≤ 5s）
 PRECHECK_TIMEOUT = 5.0
 
 
 def _probe_to_available(r: dict) -> dict:
-    """probes 结果 {ok, latency_ms, reason} → 对外 {available, reason}"""
+    """parsers.probes 结果 {ok, latency_ms, reason} → 对外 {available, reason}"""
     return {"available": r["ok"], "reason": "" if r["ok"] else r["reason"]}
 
 
 async def _probe_llm(cfg) -> dict:
-    """LLM 轻量探测（薄包装：probes.probe_llm，GET {base_url}/models 5s 超时）"""
+    """LLM 轻量探测（薄包装：parsers.probes.probe_llm，GET {base_url}/models 5s 超时）"""
     return _probe_to_available(await probe_llm(cfg, timeout=PRECHECK_TIMEOUT))
 
 
 async def _probe_embedding(cfg) -> dict:
-    """Embedding 轻量探测（薄包装：probes.probe_embedding，
+    """Embedding 轻量探测（薄包装：parsers.probes.probe_embedding，
     POST {base_url}/embeddings 一条测试文本 5s 超时）"""
     return _probe_to_available(await probe_embedding(cfg, timeout=PRECHECK_TIMEOUT))
 

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 from backend.config import get_active_config
 from backend.services.chat_service import ChatService
-from backend.services.settings_service import merge_chat_config
+from backend.services.settings.service import merge_chat_config
 from conftest import _FakeStream, create_department_and_admin, create_kb, \
     create_user, upload_and_ingest
 

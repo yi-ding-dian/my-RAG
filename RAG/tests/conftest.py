@@ -10,7 +10,7 @@
      与 .env 出厂值隔离）；
    - LLM/Embedding/MinerU 指向本机不可达端口（测试内全部 mock，防意外误连）；
 2. 每个测试前清空临时目录并重置全部服务单例（含 db engine、存储后端、
-   admin token 缓存、模块导入即实例化的 settings_service 非惰性单例），
+   admin token 缓存、模块导入即实例化的 settings.service 非惰性单例），
    实现用例间完全隔离（每次 TestClient 启动时 lifespan 重新 init_db 种子）；
 3. mock embedding（字符直方图向量，离线可跑且相似文本可命中）与
    mock LLM（伪流式客户端）通过 monkeypatch 注入，测试不依赖外部网络；
@@ -80,7 +80,7 @@ Python 被广泛应用于 Web 开发、数据分析、人工智能等领域。
 def reset_services():
     """重置服务单例（vector_store 除外），使下次 get_xxx_service() 重新加载
 
-    - settings_service 是模块导入即实例化的非惰性单例，需重建实例；
+    - settings.service 是模块导入即实例化的非惰性单例，需重建实例；
     - 数据库 engine 需重置：TestClient 每次启动新 event loop，旧连接
       跨 event loop 不可用（reset_db_engine 同步 dispose，异常可忽略）；
     - 存储后端单例重置（STORAGE_BACKEND=local，新目录句柄）；
@@ -92,9 +92,10 @@ def reset_services():
     """
     from backend.services import (chat_service, document_service,
                                   embedding_service, ext_query_service,
-                                  ingestion_service, kb_service,
-                                  parser_client, ragas_client,
+                                  kb_service, ragas_client,
                                   retrieval_service, storage_service)
+    from backend.services.ingestion import service as ingestion_service
+    from backend.services.parsers import client as parser_client
     kb_service._kb_service = None
     document_service._document_service = None
     embedding_service._embedding_service = None
@@ -120,8 +121,8 @@ def reset_services():
     from backend import db as db_module
     db_module.reset_db_engine()
 
-    from backend.services import settings_service
-    from backend.services.settings_service import SettingsService
+    from backend.services.settings import service as settings_service
+    from backend.services.settings.service import SettingsService
     settings_service._settings_service = SettingsService()
 
     _ADMIN_AUTH_CACHE["token"] = None
@@ -148,16 +149,16 @@ def _mock_parser_probe(monkeypatch):
     - 探测涉及真实网络（MinerU/ragflow-server），且探测不可用会触发
       ingestion 自动降级（engine 变化），mock 全可用保证现有测试行为不变；
     - 探测降级类测试（test_parser_probe.py）用 monkeypatch 覆盖
-      backend.services.parser_probe.probe_parsers 或直接测其内部函数。
+      backend.services.parsers.probe.probe_parsers 或直接测其内部函数。
     """
     async def _all_ok(cfg=None, **kw):
         return _PARSER_PROBE_ALL_OK
 
-    # 只 patch 调用方（from-import 复制的引用）；parser_probe 模块本身保留
+    # 只 patch 调用方（from-import 复制的引用）；parsers.probe 模块本身保留
     # 原函数，供 test_parser_probe.py 直接测探测逻辑
     for module in ("backend.routers.knowledge_bases",
-                   "backend.routers.documents",
-                   "backend.services.ingestion_service"):
+                   "backend.routers.documents.crud",
+                   "backend.services.ingestion.service"):
         monkeypatch.setattr(module + ".probe_parsers", _all_ok)
 
 
@@ -330,7 +331,7 @@ def mock_embedding(monkeypatch):
     """
     fake_getter = lambda: FakeEmbeddingService()  # noqa: E731
     for module in ("backend.services.embedding_service",
-                   "backend.services.ingestion_service",
+                   "backend.services.ingestion.service",
                    "backend.services.retrieval_service"):
         monkeypatch.setattr(module + ".get_embedding_service", fake_getter)
 

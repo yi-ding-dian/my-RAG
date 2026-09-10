@@ -110,7 +110,7 @@ def _patch_rec_embedding(monkeypatch) -> _RecordingEmbedding:
     """替换 ingestion/retrieval 的 embedding 服务为记录式实现（引用复制需双 patch）"""
     rec = _RecordingEmbedding()
     fake_getter = lambda: rec  # noqa: E731
-    for module in ("backend.services.ingestion_service",
+    for module in ("backend.services.ingestion.service",
                    "backend.services.retrieval_service"):
         monkeypatch.setattr(module + ".get_embedding_service", fake_getter)
     return rec

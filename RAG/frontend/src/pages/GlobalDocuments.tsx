@@ -43,13 +43,13 @@ import {
   methodLabel,
 } from '../api/client';
 import { buildStatusOptions } from '../components/documents/BatchActionsBar';
-import AppEmpty from '../components/AppEmpty';
+import AppEmpty from '../components/common/AppEmpty';
 import PageLayout from '../components/layout/PageLayout';
 import TableSectionLayout from '../components/layout/TableSectionLayout';
-import RenameDocumentModal from '../components/RenameDocumentModal';
+import RenameDocumentModal from '../components/documents/RenameDocumentModal';
 import DocumentProfileModal from '../components/documents/DocumentProfileModal';
-import DocumentPreviewModal from '../components/DocumentPreviewModal';
-import ResizableTitle from '../components/ResizableTitle';
+import DocumentPreviewModal from '../components/documents/DocumentPreviewModal';
+import ResizableTitle from '../components/common/ResizableTitle';
 import { useDetailModal } from '../components/documents/DocumentModals';
 import { useAuth } from '../auth/AuthContext';
 import { useResizableColumns } from '../hooks/useResizableColumns';
@@ -182,6 +182,28 @@ const GlobalDocumentsPage: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [items, setItems] = useState<GlobalDocumentItem[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // 解析中计时：每秒 tick 驱动「已耗时」刷新（仅当列表存在解析中文档时才起
+  // 定时器，空闲不空转）；起点用 updated_at —— 状态转入 parsing 的时刻
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const hasParsing = items.some(d => d.status === 'parsing');
+  useEffect(() => {
+    if (!hasParsing) return;
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasParsing]);
+
+  /** 已解析耗时文本（秒 → m:ss，超 1 小时 → h:mm:ss）；起点缺失/非法返回空串 */
+  const formatElapsed = (startAt: string | undefined): string => {
+    if (!startAt) return '';
+    const t = Date.parse(startAt.replace(' ', 'T'));
+    if (Number.isNaN(t)) return '';
+    const s = Math.max(0, Math.floor((nowTick - t) / 1000));
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+  };
 
   // 重命名弹窗 / 档案弹窗
   const [renameDoc, setRenameDoc] = useState<GlobalDocumentItem | null>(null);
@@ -476,10 +498,12 @@ const GlobalDocumentsPage: React.FC = () => {
       onHeaderCell: () => ({ width: colWidths.status ?? 100, onResize: handleResize('status'), title: '状态' }),
       render: (status: DocumentStatus, row) => {
         const meta = statusMeta[status] ?? { color: 'default', text: status };
+        // 解析中：状态标签内附已耗时（如「解析中 2:35」），与部门文档页同口径
+        const elapsed = status === 'parsing' ? formatElapsed(row.updated_at) : '';
         const tag =
           status === 'parsing' ? (
             <Tag color={meta.color} icon={<Spin size="small" />}>
-              {meta.text}
+              {meta.text}{elapsed ? ` ${elapsed}` : ''}
             </Tag>
           ) : (
             <Tag color={meta.color}>{meta.text}</Tag>

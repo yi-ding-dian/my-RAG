@@ -21,10 +21,10 @@ import pytest
 from conftest import char_vector, create_kb, upload_doc, wait_for_status
 from backend.chunking import Chunk
 from backend.config import ContextualRetrievalConfig, build_default_config
-from backend.services import settings_service as ss
+from backend.services.settings import service as ss
 from backend.services.contextual_retriever import (DocTooLongError,
                                                    enrich_chunks)
-from backend.services.settings_service import SECTION_SCHEMA
+from backend.services.settings.service import SECTION_SCHEMA
 
 
 # ==================== 伪 LLM 客户端（记录 prompt 组装） ====================
@@ -69,7 +69,7 @@ class _RecordingEmbedding:
 def _patch_rec_embedding(monkeypatch) -> _RecordingEmbedding:
     rec = _RecordingEmbedding()
     monkeypatch.setattr(
-        "backend.services.ingestion_service.get_embedding_service",
+        "backend.services.ingestion.service.get_embedding_service",
         lambda: rec)
     return rec
 

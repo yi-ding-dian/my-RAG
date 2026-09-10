@@ -28,8 +28,8 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 
-import ProtectedRoute from './components/ProtectedRoute';
-import ForcedPasswordModal from './components/ForcedPasswordModal';
+import ProtectedRoute from './components/layout/ProtectedRoute';
+import ForcedPasswordModal from './components/users/ForcedPasswordModal';
 import { AuthProvider, useAuth } from './auth/AuthContext';
 import { THEME_PRESETS, useTheme } from './theme';
 import { APP_VERSION } from './constants';
@@ -42,16 +42,16 @@ const RetrievalTestPage = lazy(() => import('./pages/RetrievalTest'));
 const DocumentsPage = lazy(() => import('./pages/Documents'));
 const GlobalDocumentsPage = lazy(() => import('./pages/GlobalDocuments'));
 const KnowledgeBasesPage = lazy(() => import('./pages/KnowledgeBases'));
-const AnalyticsPage = lazy(() => import('./pages/Analytics'));
-const AnalyticsQualityDetailPage = lazy(() => import('./pages/AnalyticsQualityDetail'));
-const AnalyticsRagasDetailPage = lazy(() => import('./pages/AnalyticsRagasDetail'));
-const AnalyticsFeedbackDetailPage = lazy(() => import('./pages/AnalyticsFeedbackDetail'));
-const SettingsPage = lazy(() => import('./pages/Settings'));
+const AnalyticsPage = lazy(() => import('./pages/analytics/Analytics'));
+const AnalyticsQualityDetailPage = lazy(() => import('./pages/analytics/AnalyticsQualityDetail'));
+const AnalyticsRagasDetailPage = lazy(() => import('./pages/analytics/AnalyticsRagasDetail'));
+const AnalyticsFeedbackDetailPage = lazy(() => import('./pages/analytics/AnalyticsFeedbackDetail'));
+const SettingsPage = lazy(() => import('./pages/settings'));
 const UsersPage = lazy(() => import('./pages/Users'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
 const LoginPage = lazy(() => import('./pages/Login'));
 const ExtQueriesPage = lazy(() => import('./pages/ExtQueries'));
-const LogsPage = lazy(() => import('./pages/Logs'));
+const LogsPage = lazy(() => import('./pages/logs'));
 /* 外部查询公开页（无登录，独立于布局） */
 const ExtQueryPage = lazy(() => import('./pages/ExtQueryPage'));
 

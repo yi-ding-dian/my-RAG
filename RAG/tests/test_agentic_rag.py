@@ -7,7 +7,7 @@
   纯 BM25 命中（vector_score=None）视为通过
 - TestAgenticChatIntegration：chat_service 集成（默认关闭零影响、
   高分直接答、拒答不调 LLM；mock_embedding + mock_llm 离线）
-- TestAgenticMerge：settings_merge 部门字段级覆盖
+- TestAgenticMerge：settings.merge 部门字段级覆盖
 
 全部离线（mock_embedding / mock_llm / 桩 retrieve / 桩 llm_completion）。
 项目无 pytest-asyncio：async 用例统一 asyncio.run()。
@@ -306,10 +306,10 @@ class TestAgenticChatIntegration:
 
 
 class TestAgenticMerge:
-    """settings_merge 部门字段级覆盖（纯函数）"""
+    """settings.merge 部门字段级覆盖（纯函数）"""
 
     def test_dept_overrides_global(self):
-        from backend.services.settings_merge import merge_chat_config
+        from backend.services.settings.merge import merge_chat_config
         profile = {"agentic": {"enabled": False, "max_retries": 1,
                                "recheck_threshold": 0.55,
                                "abstain_threshold": 0.25},
@@ -319,7 +319,7 @@ class TestAgenticMerge:
         assert merged["agentic"]["max_retries"] == 1  # 未覆盖字段沿用全局
 
     def test_global_defaults(self):
-        from backend.services.settings_merge import chat_payload
+        from backend.services.settings.merge import chat_payload
         payload = chat_payload({"agentic": {}})
         assert payload["agentic"] == {
             "enabled": False, "max_retries": 1,

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import AppModal from '../components/AppModal';
+import AppModal from '../components/common/AppModal';
 import {
   App as AntApp, 
   Button, 
@@ -37,8 +37,8 @@ import {
   toggleExtQuery,
   updateExtQuery,
 } from '../api/client';
-import PageHeader from '../components/PageHeader';
-import ResizableTitle from '../components/ResizableTitle';
+import PageHeader from '../components/layout/PageHeader';
+import ResizableTitle from '../components/common/ResizableTitle';
 import { useResizableColumns } from '../hooks/useResizableColumns';
 
 const { TextArea } = Input;

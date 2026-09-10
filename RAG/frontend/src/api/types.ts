@@ -59,10 +59,10 @@ export type DocumentStatus =
   | 'failed'
   | 'pending_confirm';
 
-export type ParseMethod = 'naive' | 'title' | 'regex' | 'parent_child' | 'qa' | 'agentic';
+export type ParseMethod = 'naive' | 'title' | 'regex' | 'parent_child' | 'qa' | 'agentic' | 'hierarchical';
 
-/** 解析引擎：auto=自动（MinerU 优先，不可用自动降级；layout=DeepDOC 时走 DeepDoc）| mineru=强制 MinerU 高精度（PDF 混排）| deepdoc=强制 DeepDoc（RAGFlow，表格输出可检索 HTML，仅 PDF）| plain=纯文本提取 */
-export type ParserEngine = 'auto' | 'mineru' | 'deepdoc' | 'plain';
+/** 解析引擎：auto=自动（MinerU 优先，不可用自动降级；layout=DeepDOC 时走 DeepDoc）| mineru=强制 MinerU 高精度（PDF 混排）| deepdoc=强制 DeepDoc（RAGFlow，表格输出可检索 HTML，仅 PDF）| docx_struct=本地结构化解析（OOXML 直读，标题层级/自动编号保留，仅 docx/doc；doc 经 LibreOffice 转换）| plain=纯文本提取 */
+export type ParserEngine = 'auto' | 'mineru' | 'deepdoc' | 'docx_struct' | 'plain';
 
 /** MinerU 解析后端（mineru-api /file_parse backend 参数）：auto/不传=跟随服务端默认（hybrid-auto-engine）| hybrid-auto-engine=混合自动引擎（质量优：表格规范/OCR 准/流程图识别，速度稍慢）| pipeline=管线（快约 20s，表格可能错乱） */
 export type MinerUBackend = 'auto' | 'hybrid-auto-engine' | 'pipeline';
@@ -70,8 +70,8 @@ export type MinerUBackend = 'auto' | 'hybrid-auto-engine' | 'pipeline';
 /** PDF 版面识别引擎：MinerU=高精度（推荐）| DeepDOC=表格输出为可检索 HTML| PlainText=纯文本直提（pypdf/python-docx，无表格/图片识别） */
 export type LayoutRecognize = 'MinerU' | 'DeepDOC' | 'PlainText';
 
-/** 解析方式（合并解析引擎+版面识别，无自动档）：MinerU=高精度（默认）| DeepDOC=表格输出可检索 HTML（仅 PDF）| PlainText=纯文本直提（本地 pypdf/python-docx，恒可用） */
-export type ParseMode = 'MinerU' | 'DeepDOC' | 'PlainText';
+/** 解析方式（合并解析引擎+版面识别，无自动档）：MinerU=高精度（默认）| DeepDOC=表格输出可检索 HTML（仅 PDF）| DocxStruct=结构解析（OOXML 直读，保留标题层级与自动编号，仅 docx/doc）| PlainText=纯文本直提（本地 pypdf/python-docx，恒可用） */
+export type ParseMode = 'MinerU' | 'DeepDOC' | 'DocxStruct' | 'PlainText';
 
 /** 解析语言：ch=中文 | en=英文 */
 export type ParseLang = 'ch' | 'en';
@@ -83,6 +83,8 @@ export type ThinkingMode = 'disabled' | 'enabled_low' | 'enabled_high' | 'enable
 
 /**
  * 解析配置：naive=通用切块 | title=按标题切块 | regex=正则切块 | parent_child=父子分块
+ * | hierarchical=层级聚合切块（按章节树自底向上聚合，块边界落在标题之间，块首自带
+ * 祖先标题链；仅结构解析 docx_struct 产物可选，参数同 naive：chunk_size/overlap）
  * parent_* 字段仅在 method=parent_child 时使用（其他方式后端忽略，前端也不发送）
  * layout_recognize/pages 等 PDF 解析字段仅 PDF/混排文档场景有意义（简化：始终随表单发送当前值）
  */
@@ -169,7 +171,7 @@ export interface DocumentItem {
   ingest_finished_at?: string | null;
 }
 
-/** 解析方式友好名（契约：naive→通用切块 / title→按标题切块 / regex→正则切块 / parent_child→父子分块 / qa→QA 问答 / agentic→Agentic 智能分块） */
+/** 解析方式友好名（契约：naive→通用切块 / title→按标题切块 / regex→正则切块 / parent_child→父子分块 / qa→QA 问答 / agentic→Agentic 智能分块 / hierarchical→层级聚合切块） */
 export const methodLabel = (method: string): string => {
   switch (method) {
     case 'naive':
@@ -184,12 +186,14 @@ export const methodLabel = (method: string): string => {
       return 'QA 问答';
     case 'agentic':
       return 'Agentic 智能分块';
+    case 'hierarchical':
+      return '层级聚合切块';
     default:
       return method;
   }
 };
 
-/** 解析方式对应 Tag 颜色（契约：通用=blue / 按标题=geekblue / 正则=purple / 父子分块=magenta / QA 问答=cyan / Agentic=gold） */
+/** 解析方式对应 Tag 颜色（契约：通用=blue / 按标题=geekblue / 正则=purple / 父子分块=magenta / QA 问答=cyan / Agentic=gold / 层级聚合=green） */
 export const methodColor = (method: string): string => {
   switch (method) {
     case 'naive':
@@ -204,6 +208,8 @@ export const methodColor = (method: string): string => {
       return 'cyan';
     case 'agentic':
       return 'gold';
+    case 'hierarchical':
+      return 'green';
     default:
       return 'default';
   }
@@ -222,6 +228,26 @@ export interface DocumentDetail {
   full_text?: string;
   chunk_preview?: string[];
   [k: string]: unknown;
+}
+
+/** 文档结构树条目（「查看文档结构」弹窗）：结构解析产物里的一个标题 */
+export interface DocxOutlineItem {
+  /** 标题层级（1=一级标题，最大 6） */
+  level: number;
+  /** 标题文本（Word 自动编号已还原，如 "1.1 安装说明"） */
+  title: string;
+}
+
+/** 「查看文档结构」响应（GET /kbs/{kbId}/documents/{docId}/docx-outline）：
+ *  仅 docx/doc 文档有效；warning 非空表示提取异常（items 通常为空） */
+export interface DocxOutlineResponse {
+  items: DocxOutlineItem[];
+  /** 标题总数 */
+  count: number;
+  /** 最大层级（0=未检测到标题） */
+  max_level: number;
+  /** 提取异常提示（正常为 null） */
+  warning: string | null;
 }
 
 export interface Source {
@@ -402,6 +428,34 @@ export interface AnalyzeStructure {
   heading_count: number;
   numbered_headings: number;
   examples: string[];
+  /** 检测到的标题编号体系（按命中数降序；切块层级推断用，自动启用） */
+  heading_systems?: {
+    system: string;
+    label: string;
+    hits: number;
+    examples: string[];
+  }[];
+  /** 建议启用的体系（按语义优先级排序，入库自动使用） */
+  suggested_systems?: string[];
+  /** docx/doc 结构探测（仅 docx/doc 文档返回；规范性判定用）：样式标题
+   *  覆盖率（outlineLvl/Heading 样式/numPr）+ 编号体系命中 */
+  docx_structure?: {
+    /** 样式标题段落数（outlineLvl / Heading 样式 / numPr 之一） */
+    style_headings: number;
+    /** 非空段落总数 */
+    total_paragraphs: number;
+    /** 样式标题覆盖率（style_headings / total_paragraphs） */
+    style_ratio: number;
+    /** 样式标题的编号体系命中（与 heading_systems 同构） */
+    style_heading_systems: {
+      system: string;
+      label: string;
+      hits: number;
+      examples: string[];
+    }[];
+    /** 是否规范文档（样式标题 >= 3 且覆盖率 >= 2%）：建议结构化解析 */
+    is_normative: boolean;
+  };
 }
 
 /** QA 格式画像：问答对/总段落 + 占比（>=50% 判定 is_qa，与入库检测同口径） */
@@ -422,7 +476,7 @@ export interface AnalyzeReferenceDensity {
 
 /** 引擎建议：基于文件类型 + 解析器可用性探测（probe 为探测结果，可空） */
 export interface EngineSuggestion {
-  suggested: string; // mineru | deepdoc | plain | auto
+  suggested: string; // mineru | deepdoc | docx_struct | plain | auto
   reason: string;
   probe?: ParserStatus | null;
 }
@@ -808,6 +862,10 @@ export interface RetrievalConfig {
 export interface ChunkingConfig {
   chunk_size: number;
   overlap: number;
+  /** 标题分层模型（可选）：层级聚合切块给解析产物标题重新分层用的 LLM 模型
+   *  （值为模型列表里的标识 name/model；空=不做 LLM 分层，只用规则）；
+   *  旧后端可能缺失，前端做可选兼容 */
+  heading_llm_model?: string;
 }
 
 /** 会话参数（聊天设置弹窗可编辑段，temperature/top_p/max_tokens 为 null=跟随模型默认） */
@@ -1057,6 +1115,39 @@ export interface LogFileInfo {
   filename: string;
   size_bytes: number;
   mtime: string;
+  /** 文件行数（小文件精确计数；大文件采样估算，见 line_count_estimated） */
+  line_count: number;
+  /** 行数是否为采样估算值（true 时前端提示「约 N 行」） */
+  line_count_estimated: boolean;
+}
+
+/** 运行日志「输出段」（按相邻两行时间空档切分，供时间段导航） */
+export interface LogSegment {
+  /** 段起（YYYY-MM-DD HH:mm:ss；整段无标准行时为 null） */
+  start_ts: string | null;
+  /** 段止（同格式；活跃段随新日志增长） */
+  end_ts: string | null;
+  /** 段内条数 */
+  count: number;
+  /** 段内分级别条数（取行首 [LEVEL]，非标准行不计入） */
+  levels: Record<string, number>;
+}
+
+export interface LogSegmentsResult {
+  /** 输出段（时间正序） */
+  segments: LogSegment[];
+  /** 实际扫描字节数（只扫尾部，见 truncated） */
+  scanned_bytes: number;
+  /** 是否只覆盖文件尾部（更早内容未统计） */
+  truncated: boolean;
+}
+
+export interface LogRangeResult {
+  lines: LogLine[];
+  /** 区间内实际命中行数（lines 可能因 limit 截断） */
+  total: number;
+  /** 是否因 limit 截断（只返回区间最后 limit 行） */
+  truncated: boolean;
 }
 
 // ========== 外部查询 ==========

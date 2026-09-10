@@ -7,7 +7,7 @@
  * - 首选项：暗色模式开关（与全局 ThemeContext 联动）
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import AppModal from '../components/AppModal';
+import AppModal from '../components/common/AppModal';
 import {
   App as AntApp, 
   Button, 
@@ -42,7 +42,7 @@ import { useAuth } from '../auth/AuthContext';
 import type { User } from '../auth/token';
 import { THEME_PRESETS, useTheme } from '../theme';
 import type { PresetKey } from '../theme';
-import PageHeader from '../components/PageHeader';
+import PageHeader from '../components/layout/PageHeader';
 
 const { Text } = Typography;
 

@@ -98,7 +98,7 @@ class TestDocumentDownload:
 
     def test_download_fallback_local_copy(self, client, admin_headers, monkeypatch):
         """存储不可用（MinIO 异常）→ 回退本地副本 data/uploads/，内容一致"""
-        from backend.routers import documents as documents_router
+        from backend.routers.documents import crud as documents_router
         monkeypatch.setattr(documents_router, "get_storage_service",
                             lambda: _FailingStorage())
         kb = create_kb(client)
@@ -119,7 +119,7 @@ class TestDocumentDownload:
     def test_download_404_storage_and_local_both_missing(
             self, client, admin_headers, monkeypatch):
         """存储不可用且本地副本已清理 → 404（中文 detail）"""
-        from backend.routers import documents as documents_router
+        from backend.routers.documents import crud as documents_router
         monkeypatch.setattr(documents_router, "get_storage_service",
                             lambda: _FailingStorage())
         kb = create_kb(client)
@@ -135,7 +135,7 @@ class TestDocumentDownload:
         """URL 网页导入文档（file_type=url）也可下载（原始 md 文本）"""
         async def _fake_fetch(url):
             return "网页标题", "网页正文内容（来自测试 mock）"
-        monkeypatch.setattr("backend.routers.documents.fetch_webpage",
+        monkeypatch.setattr("backend.routers.documents.crud.fetch_webpage",
                             _fake_fetch)
         kb = create_kb(client)
         resp = client.post(

@@ -474,7 +474,7 @@ class TestConfigCompatibility:
 
     def _write_old_settings_json(self):
         """构造旧格式 settings.json（retrieval 段无 enable_hybrid/rerank）"""
-        from backend.services import settings_service as ss
+        from backend.services.settings import service as ss
         old_profile = {
             "id": "old01",
             "name": "旧档案",

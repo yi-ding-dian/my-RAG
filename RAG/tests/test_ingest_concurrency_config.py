@@ -3,8 +3,8 @@
 背景：后台入库并发上限原为环境变量 INGEST_CONCURRENCY（模块导入时读取，
 改环境变量需重启）。改造为系统配置段 ingestion.concurrency（默认 3，
 范围 1~10，超管在 Settings 页可调，即时生效）：
-- settings_service SECTION_SCHEMA 加 ingestion 段（range 校验 + 旧档案补段）
-- ingestion_service 信号量按配置值惰性重建（每次 acquire 前比对配置，
+- settings.service SECTION_SCHEMA 加 ingestion 段（range 校验 + 旧档案补段）
+- backend/services/ingestion/service.py 信号量按配置值惰性重建（每次 acquire 前比对配置，
   变化 → 按新值重建，见 _get_ingest_semaphore）
 
 覆盖：
@@ -79,7 +79,7 @@ class TestIngestConcurrencyConfig:
         信号量创建后不可变，_get_ingest_semaphore 每次 acquire 前比对
         当前系统配置，变化则按新值重建（旧任务按各自获取时计数继续）。
         """
-        from backend.services import ingestion_service
+        from backend.services.ingestion import service as ingestion_service
 
         orig_cfg = get_active_config()
         try:
@@ -111,7 +111,7 @@ class TestIngestConcurrencyConfig:
 
     def test_old_profile_fills_ingestion_section(self):
         """旧档案缺 ingestion 段：_coerce 自动补默认段（fill_section）"""
-        from backend.services.settings_service import SettingsService
+        from backend.services.settings.service import SettingsService
 
         coerced = SettingsService._coerce({
             "id": "old",
@@ -123,7 +123,7 @@ class TestIngestConcurrencyConfig:
 
     def test_old_profile_fills_missing_concurrency(self):
         """旧档案 ingestion 段缺字段：自动补默认（fill_missing）"""
-        from backend.services.settings_service import SettingsService
+        from backend.services.settings.service import SettingsService
 
         coerced = SettingsService._coerce({
             "id": "old2",

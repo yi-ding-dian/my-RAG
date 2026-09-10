@@ -17,6 +17,10 @@ from __future__ import annotations
 from backend.chunking.base import Chunk, Chunker
 from backend.chunking.common import (VALID_METHODS, add_heading_paths,
                                      find_protected_ranges)
+from backend.chunking.heading_presets import (ALL_SYSTEMS, SYSTEM_LABELS,
+                                              detect_heading_systems,
+                                              match_system_position,
+                                              order_systems)
 from backend.chunking.markdown_splitter import MarkdownSplitter
 from backend.chunking.parent_child import (ParentChildChunkResult,
                                            ParentChildChunker)
@@ -61,11 +65,21 @@ def get_chunker(method: str, config: dict) -> Chunker:
             parent_chunk_size=config.get("parent_chunk_size"),
             parent_chunk_overlap=config.get("parent_chunk_overlap"),
             parent_split_level=config.get("parent_split_level"),
+            heading_systems=config.get("heading_systems"),
         )
     if method == "qa":
         return QaChunker(
             chunk_size=config.get("chunk_size"),
             overlap=config.get("overlap"),
+        )
+    if method == "hierarchical":
+        # 规范文档层级聚合切块（实现在独立包 backend/normative；函数内延迟
+        # 导入，避免模块加载时就拉入该包的 docx 解析依赖）
+        from backend.normative.chunker import HierarchicalChunker
+        return HierarchicalChunker(
+            chunk_size=config.get("chunk_size"),
+            overlap=config.get("overlap"),
+            chapter_level=config.get("chapter_level") or 1,
         )
     raise ValueError(f"未知切块方式: {method}（支持: {'/'.join(VALID_METHODS)}）")
 

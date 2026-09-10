@@ -3,7 +3,7 @@
 设计要点（阶段2 预留）：
 - LLM / Embedding / MinerU / 检索 / 切块 / 会话 / MySQL / MinIO 配置集中在一个
   ServiceConfig pydantic 模型里，.env 提供出厂默认值；
-- 阶段2 settings_service 实现"配置档案"后，只需替换 _active_config（或调用
+- 阶段2 settings.service 实现"配置档案"后，只需替换 _active_config（或调用
   set_active_config），各 service 均通过 get_active_config() 运行时动态读取，
   无需改动任何调用方代码。
 
@@ -231,6 +231,13 @@ class ChunkingConfig(BaseModel):
     """切块参数"""
     chunk_size: int
     chunk_overlap: int
+    # 标题分层模型（可选）：层级聚合切块（hierarchical）且解析产物层级不可靠
+    # （非 docx 结构解析）时，用于给标题重新分层的 LLM 模型——带编号的标题走
+    # 规则、无编号的交 LLM（见 normative.heading_llm.hybrid_levels）。值为
+    # 激活档案 LLM 模型列表里的标识（name 或 model 字符串，见
+    # settings.service.llm_cfg_for_parser）；空 = 不做 LLM 分层，只用规则
+    # 分层（运行时动态读取，改配置即生效）
+    heading_llm_model: str = ""
 
 
 class ChatConfig(BaseModel):
@@ -274,7 +281,7 @@ class IngestionConfig(BaseModel):
 
     - concurrency：同时解析入库的文档数上限（默认 3，范围 1~10）。
       超出上限的任务在信号量队列等待，避免批量解析打爆 MinerU/embedding；
-      运行时由 ingestion_service 每次 acquire 前实时读取，改动即生效
+      运行时由 backend/services/ingestion/service.py 每次 acquire 前实时读取，改动即生效
       （信号量按配置值惰性重建，见 _get_ingest_semaphore）
     - kb_doc_limit：单知识库最大文档数，0=不限；上传/URL 导入时校验，
       超限返回友好 400（防单库无限膨胀/多用户上传耗尽磁盘）
@@ -433,7 +440,7 @@ def build_default_config() -> ServiceConfig:
     )
 
 
-# 活跃配置（阶段1：默认值来自 .env；阶段2：settings_service 启动时替换为档案）
+# 活跃配置（阶段1：默认值来自 .env；阶段2：settings.service 启动时替换为档案）
 _active_config: ServiceConfig = build_default_config()
 
 
@@ -443,6 +450,6 @@ def get_active_config() -> ServiceConfig:
 
 
 def set_active_config(config: ServiceConfig):
-    """阶段2 settings_service 覆盖活跃配置（本阶段仅默认实现）"""
+    """阶段2 settings.service 覆盖活跃配置（本阶段仅默认实现）"""
     global _active_config
     _active_config = config

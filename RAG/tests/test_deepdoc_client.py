@@ -6,7 +6,7 @@
   轮询 DONE → 取 chunks（按 positions 页序拼接）→ DELETE 清理；调用顺序断言
 - 失败路径：轮询 FAILED 抛中文异常（带 progress_msg）；超时抛异常；
   任一步失败清理仍执行（finally）
-- parser_client engine=deepdoc 分支：pdf 走 deepdoc_client（mock）、docx 抛异常
+- parsers.client engine=deepdoc 分支：pdf 走 parsers.deepdoc（mock）、docx 抛异常
 - 配置档案：deepdoc 段默认值 / 密码脱敏 / 旧档案补缺
 """
 from __future__ import annotations
@@ -78,13 +78,13 @@ class FakeAsyncClient:
         return self._match("get", url)
 
     async def request(self, method, url, **kw):
-        # httpx 的 delete 不支持 json body，deepdoc_client 用 request("DELETE")
+        # httpx 的 delete 不支持 json body，parsers.deepdoc 用 request("DELETE")
         self.calls.append((method.lower(), url, kw))
         return self._match(method.lower(), url)
 
 
 def _install_fake_http(monkeypatch, responses):
-    """替换 deepdoc_client 使用的 httpx.AsyncClient 为 FakeAsyncClient"""
+    """替换 parsers.deepdoc 使用的 httpx.AsyncClient 为 FakeAsyncClient"""
     fake = FakeAsyncClient(responses)
     monkeypatch.setattr(httpx, "AsyncClient",
                         lambda timeout=None: fake)
@@ -142,7 +142,7 @@ class TestRsaEncrypt:
         from cryptography.hazmat.primitives.asymmetric import rsa
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import padding as rsa_padding
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
 
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         public_pem = key.public_key().public_bytes(
@@ -159,13 +159,13 @@ class TestRsaEncrypt:
 
     def test_encrypt_with_default_public_key_outputs_valid_b64(self):
         """默认（真实 RAGFlow）公钥加密产物：Base64 可解码、2048 位密文长度 256 字节"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         cipher_b64 = ddc._rsa_encrypt_password("admin")
         cipher = base64.b64decode(cipher_b64)
         assert len(cipher) == 256, "2048 位 RSA 密文应为 256 字节"
 
     def test_empty_password_ok(self):
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         assert ddc._rsa_encrypt_password("")
 
 
@@ -176,7 +176,7 @@ class TestParseViaDeepdocChain:
     def test_full_chain_order_and_join(self, monkeypatch, tmp_path):
         """完整调用链：login→new_token→datasets→documents→chunks→poll→chunks→delete；
         chunks 按 positions 页序拼接（第 0 页在前），表格 HTML 保留"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         fake = _install_fake_http(monkeypatch, _ok_chain_responses())
@@ -221,7 +221,7 @@ class TestParseViaDeepdocChain:
 
     def test_login_uses_rsa_encrypted_password(self, monkeypatch, tmp_path):
         """登录请求的 password 是 RSA 密文（与明文不同，Base64 可解码）"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         fake = _install_fake_http(monkeypatch, _ok_chain_responses())
@@ -234,7 +234,7 @@ class TestParseViaDeepdocChain:
 
     def test_new_token_headers_no_bearer_prefix(self, monkeypatch, tmp_path):
         """new_token 的 Authorization 头直接放登录 token 值（无 Bearer 前缀）"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         fake = _install_fake_http(monkeypatch, _ok_chain_responses())
@@ -245,7 +245,7 @@ class TestParseViaDeepdocChain:
 
     def test_chunks_pagination(self, monkeypatch, tmp_path):
         """total 超过单页 page_size 时自动翻页取全"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         responses = [
@@ -281,7 +281,7 @@ class TestParseViaDeepdocChain:
 class TestDeepdocFailures:
     def test_poll_failed_raises_with_progress_msg(self, monkeypatch, tmp_path):
         """轮询 FAILED → 抛中文异常且带 progress_msg"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         responses = _ok_chain_responses()
@@ -303,7 +303,7 @@ class TestDeepdocFailures:
 
     def test_timeout_raises(self, monkeypatch, tmp_path):
         """轮询永不 DONE → 超时异常（轮询间隔缩短加速）"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         monkeypatch.setattr(ddc, "_POLL_INTERVAL", 0.01)
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
@@ -322,7 +322,7 @@ class TestDeepdocFailures:
 
     def test_cleanup_on_mid_chain_failure(self, monkeypatch, tmp_path):
         """触发解析失败（HTTP 400）→ 异常含步骤名，且 DELETE 清理仍执行（finally）"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         responses = _ok_chain_responses()
@@ -342,7 +342,7 @@ class TestDeepdocFailures:
 
     def test_login_fail_no_dataset_created(self, monkeypatch, tmp_path):
         """登录失败：未建数据集，无清理调用"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         responses = [
@@ -359,7 +359,7 @@ class TestDeepdocFailures:
 
     def test_no_base_url_raises(self, tmp_path):
         """服务地址未配置 → 明确异常"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         with pytest.raises(RuntimeError) as exc:
@@ -369,7 +369,7 @@ class TestDeepdocFailures:
 
     def test_semaphore_serializes_concurrent(self, monkeypatch, tmp_path):
         """并发两个解析任务：模块级信号量串行化（总耗时 ≈ 单任务 × 2）"""
-        import backend.services.deepdoc_client as ddc
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
         monkeypatch.setattr(ddc, "_POLL_INTERVAL", 0.02)
@@ -408,17 +408,17 @@ class TestDeepdocFailures:
         assert all(r[0] == "X" for r in results)
 
 
-# ==================== parser_client engine=deepdoc 分支 ====================
+# ==================== parsers.client engine=deepdoc 分支 ====================
 
 
 class TestParserClientDeepdoc:
     async def _parse(self, path, file_type, engine="deepdoc"):
-        from backend.services.parser_client import get_parser_client
+        from backend.services.parsers.client import get_parser_client
         return await get_parser_client().parse(path, file_type, engine=engine)
 
     def test_pdf_engine_deepdoc(self, monkeypatch, tmp_path):
-        """pdf + engine=deepdoc：走 deepdoc_client，返回 (text, [], "deepdoc")"""
-        import backend.services.deepdoc_client as ddc
+        """pdf + engine=deepdoc：走 parsers.deepdoc，返回 (text, [], "deepdoc")"""
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
 
@@ -442,8 +442,8 @@ class TestParserClientDeepdoc:
 
     def test_pdf_engine_deepdoc_failure_promotes_error(self, monkeypatch,
                                                        tmp_path):
-        """deepdoc_client 失败 → 异常含服务地址提示（上层标记 failed 用）"""
-        import backend.services.deepdoc_client as ddc
+        """parsers.deepdoc 失败 → 异常含服务地址提示（上层标记 failed 用）"""
+        import backend.services.parsers.deepdoc as ddc
         pdf = tmp_path / "demo.pdf"
         pdf.write_bytes(b"%PDF-1.4 mock")
 
@@ -475,7 +475,7 @@ class TestIngestEngineSelection:
     def test_ingest_layout_deepdoc_forces_deepdoc_engine(
             self, client, mock_embedding, admin_headers, monkeypatch):
         """layout_recognize=DeepDOC + engine=auto → 后端自动走 DeepDoc 引擎"""
-        from backend.services.parser_client import ParserClient
+        from backend.services.parsers.client import ParserClient
         from conftest import create_kb, upload_doc, wait_for_status
 
         captured = {}
@@ -505,7 +505,7 @@ class TestIngestEngineSelection:
     def test_ingest_explicit_deepdoc_engine(self, client, mock_embedding,
                                             admin_headers, monkeypatch):
         """parser_engine=deepdoc 显式指定 → engine=deepdoc 透传"""
-        from backend.services.parser_client import ParserClient
+        from backend.services.parsers.client import ParserClient
         from conftest import create_kb, upload_doc, wait_for_status
 
         captured = {}
@@ -531,7 +531,7 @@ class TestIngestEngineSelection:
     def test_ingest_layout_mineru_keeps_auto(self, client, mock_embedding,
                                              admin_headers, monkeypatch):
         """layout_recognize=MinerU（默认）+ engine=auto → engine=auto（现有逻辑不变）"""
-        from backend.services.parser_client import ParserClient
+        from backend.services.parsers.client import ParserClient
         from conftest import create_kb, upload_doc, wait_for_status
 
         captured = {}
@@ -605,7 +605,7 @@ class TestDeepdocConfigSection:
 
     def test_old_profile_backfill_deepdoc(self):
         """旧档案缺 deepdoc 段 → _coerce 自动补默认值（兼容历史数据）"""
-        from backend.services.settings_service import SettingsService
+        from backend.services.settings.service import SettingsService
         old = {
             "id": "old1", "name": "旧档案",
             "llm": {"base_url": "http://x", "api_key": "k", "model": "m",
@@ -677,7 +677,7 @@ class TestDeepdocConnectionTest:
 
     def test_deepdoc_test_no_base_url(self, monkeypatch):
         """服务地址未配置 → ok=False 且 message 明确（直接测连接测试方法）"""
-        from backend.services.settings_service import SettingsService
+        from backend.services.settings.service import SettingsService
         svc = SettingsService()
         # 空地址不发起任何网络请求，直接返回未配置
         result = asyncio.run(svc._test_deepdoc(

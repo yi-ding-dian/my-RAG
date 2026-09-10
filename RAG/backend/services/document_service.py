@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 VALID_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed",
                 "pending_confirm"}
 
-# 支持的文件扩展名（xlsx/xls/csv 走 spreadsheet_reader 直读表格）
-SUPPORTED_EXTS = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv"}
+# 支持的文件扩展名（xlsx/xls/csv 走 spreadsheet.reader 直读表格；
+# doc 为老二进制 Word，走本地结构化解析，见 parsers.client.convert_doc_to_docx）
+SUPPORTED_EXTS = {".txt", ".md", ".pdf", ".docx", ".doc",
+                  ".xlsx", ".xls", ".csv"}
 
 # 服务重启后残留 parsing 状态文档的错误消息（recover_stuck_parsing 写入）
 _RECOVER_ERROR = "服务重启，解析中断，请重新解析"

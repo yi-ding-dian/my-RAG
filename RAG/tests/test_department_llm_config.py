@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from backend.config import get_active_config
 from backend.services.department_service import _merge_legacy_config
-from backend.services.settings_service import mask_api_key, \
+from backend.services.settings.service import mask_api_key, \
     merge_department_llm
 from conftest import create_department_and_admin, create_kb, create_user, \
     upload_and_ingest

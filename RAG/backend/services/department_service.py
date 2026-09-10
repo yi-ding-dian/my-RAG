@@ -201,7 +201,7 @@ async def get_department_chat_config(db: AsyncSession,
 
 
 def _coerce_field(section: str, key: str, value):
-    """部门配置字段类型归一化（与 settings_service._coerce chat 段语义一致）
+    """部门配置字段类型归一化（与 settings.service._coerce chat 段语义一致）
 
     - temperature/top_p/similarity_threshold/timeout → float；
       max_tokens/history_rounds/top_k → int；enable_multi_turn → bool；

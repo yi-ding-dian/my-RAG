@@ -600,7 +600,7 @@ def _patch_rec_embedding(monkeypatch) -> _RecordingEmbedding:
     """替换 ingestion/retrieval 的 embedding 服务为记录式实现（引用复制需双 patch）"""
     rec = _RecordingEmbedding()
     fake_getter = lambda: rec  # noqa: E731
-    for module in ("backend.services.ingestion_service",
+    for module in ("backend.services.ingestion.service",
                    "backend.services.retrieval_service"):
         monkeypatch.setattr(module + ".get_embedding_service", fake_getter)
     return rec
@@ -925,7 +925,7 @@ class TestGraphCleanup:
 
         # from-import 后名字绑定在 documents 模块，须在此 patch（_purge_graph_refs
         # 内部 try/except 会吞掉该异常 → warning 不阻塞 purge 主流程）
-        monkeypatch.setattr("backend.routers.documents.save_graph",
+        monkeypatch.setattr("backend.routers.documents.crud.save_graph",
                             _boom_save)
         resp = client.delete(f"/api/kbs/{kb['id']}/documents/{doc['id']}",
                              headers=admin_headers)
@@ -941,6 +941,9 @@ class TestGraphCleanup:
         """无图谱文件时 purge 文档：不报错、不创建图谱文件（remove 0 条不落盘）"""
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"])
+        # 彻底删除要求文档在回收站内（purge 校验回收站状态）→ 先软删
+        assert client.delete(f"/api/kbs/{kb['id']}/documents/{doc['id']}",
+                             headers=admin_headers).status_code == 200
         resp = client.post(f"/api/kbs/{kb['id']}/documents/{doc['id']}/purge",
                            headers=admin_headers)
         assert resp.status_code == 200, resp.text

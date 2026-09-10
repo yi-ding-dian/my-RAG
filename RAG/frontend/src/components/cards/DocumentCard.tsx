@@ -53,6 +53,8 @@ const methodColor = (m: string): string => {
       return 'purple';
     case 'parent_child':
       return 'magenta';
+    case 'hierarchical':
+      return 'green';
     default:
       return 'cyan';
   }

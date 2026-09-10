@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import AppModal from '../components/AppModal';
+import AppModal from '../components/common/AppModal';
 import { App as AntApp,  Button,  Card,  Empty,  Input,  List,  Popconfirm,  Select,  Tooltip,  Typography,  theme } from 'antd';
 import { DeleteOutlined, DownloadOutlined, EditOutlined, FolderOpenOutlined, MessageOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -20,11 +20,11 @@ import {
   renameSession,
   streamChat,
 } from '../api/client';
-import MessageList from '../components/MessageList';
+import MessageList from '../components/chat/MessageList';
 import { cleanAnswerText } from '../utils/cleanMarkdown';
-import ChatInput from '../components/ChatInput';
-import ChatSettingsModal from '../components/ChatSettingsModal';
-import CitationTraceModal from '../components/CitationTraceModal';
+import ChatInput from '../components/chat/ChatInput';
+import ChatSettingsModal from '../components/chat/ChatSettingsModal';
+import CitationTraceModal from '../components/chat/CitationTraceModal';
 import { useAuth } from '../auth/AuthContext';
 
 const KB_ID_KEY = 'myrag.kb_id';

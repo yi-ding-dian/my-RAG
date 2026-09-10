@@ -124,7 +124,7 @@ def _write_session_file(session_id, title="审计测试会话", messages=None):
 
 def _mock_conn_tests(monkeypatch, ok_map: dict):
     """monkeypatch SettingsService 各项连接测试秒回（ok_map: {section: ok}）"""
-    from backend.services import settings_service as ss
+    from backend.services.settings import service as ss
 
     def _ok(section):
         return {"ok": ok_map.get(section, True), "latency_ms": 1,

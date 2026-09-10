@@ -37,7 +37,7 @@ from backend.services.llm_client import get_llm_client, llm_to_dict
 from backend.services.agentic_service import get_agentic_service
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
-from backend.services.settings_service import (merge_chat_config,
+from backend.services.settings.service import (merge_chat_config,
                                                merge_department_llm)
 from backend.services.thinking_strategy import get_thinking_strategy
 
@@ -64,11 +64,13 @@ _SYSTEM_PROMPT_TEMPLATE = (
 # 自定义 system_prompt（无占位符）自动追加引用段时一并追加的行内标注规则：
 # 自定义模板覆盖内置规则，不追加标注指令则模型无 [n] 标注依据（行内引用功能失效）。
 # 标注仅添加编号不改变引用原文，与"原样输出"类模板语义兼容。
-# 引用文本单条长度上限（进 prompt 的 [引用] 段，兼顾回答依据完整性与 token 成本：
-# 默认 naive 切块 800 字基本不触发，仅标题/父块等大块生效；5 源全满上限时
-# 约 3 万字 ≈ 2.2 万 token 输入，qwen 长上下文可容纳；前端面板展示不受此限
-# ——meta 下发的 sources.text/parent_text 为完整文本，面板另有"展开全文"交互）
-_REF_TEXT_MAX_LEN = 6000
+# 引用文本单条长度上限（进 prompt 的 [引用] 段，兜底路径使用；兼顾回答依据
+# 完整性与 token 成本：默认 naive 切块 800 字基本不触发，仅标题/父块等大块生效；
+# 5 源全满上限时约 3 万字 ≈ 2.2 万 token 输入，qwen 长上下文可容纳；前端面板
+# 展示不受此限——meta 下发的 sources.text/parent_text 为完整文本，面板另有"展开全文"）
+# 取值对齐入库侧 _PARENT_TEXT_META_LIMIT（8000）：两者不一致时会出现"入库保留了、
+# 喂给模型却被截掉"的命中词盲区（常规路径已由 _ref_snippet 窗口组装规避）
+_REF_TEXT_MAX_LEN = 8000
 
 
 _CITATION_RULE = (
@@ -254,6 +256,11 @@ class ChatService:
         """
         session = self._load_or_create(session_id, kb_id, message, user_id)
         answer_parts: List[str] = []
+        # 本次请求的 prompt 详情（与 prompt 事件同源）：随调用透传给 _finalize，
+        # 落进 assistant 消息供历史会话"详情"回看。**必须放局部变量**——
+        # ChatService 是进程级单例，并发问答共用同一个实例，存实例属性会被
+        # 另一个请求覆盖/清空（表现为历史详情串台或丢失）
+        prompt_detail: dict = {}
         agentic_meta: dict = {}  # Agentic 决策轨迹（会话落盘用；默认关闭=空）
         saved = False
         dept = dept_config or {}
@@ -392,7 +399,7 @@ class ChatService:
                        "请尝试换一种问法，或先在知识库中上传相关文档。")
                 answer_parts.append(tip)
                 yield sse_event("delta", {"text": tip})
-                self._finalize(session, message, answer_parts, sources, agentic_meta)
+                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
                 saved = True
                 yield sse_event("done", {
                     "session_id": session.id,
@@ -412,7 +419,7 @@ class ChatService:
             temperature = merged_chat["temperature"]
             top_p = merged_chat["top_p"]
             max_tokens = merged_chat["max_tokens"]
-            refs = self._build_refs(sources)
+            refs = self._build_refs(sources, self._load_doc_chunks(sources))
             knowledge = self._build_knowledge(sources)
             # 用户画像注入（仅聊天问答）：memory_enabled 关 / 无条目 → 空串跳过；
             # 画像段由 _build_system_content 置于引用段之前（自定义模板经
@@ -467,9 +474,6 @@ class ChatService:
                 "kg_ms": kg_ms,
             }
             yield sse_event("prompt", prompt_detail)
-            # 落盘详情缓存：_finalize 写入 ChatMessage（历史会话"详情"按钮
-            # 依赖 prompt/耗时字段；服务单实例即可，无需锁）
-            self._pending_prompt_detail = prompt_detail
 
             # 5) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
             #    部门 llm 段字段级覆盖全局 LLM——地址/密钥/模型/生成参数，
@@ -521,7 +525,7 @@ class ChatService:
             except asyncio.CancelledError:
                 logger.info("客户端中断流式问答: %s", session.id)
                 if answer_parts:
-                    self._finalize(session, message, answer_parts, sources, agentic_meta)
+                    self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
                     saved = True
                 raise
             except (APITimeoutError, APIConnectionError, RateLimitError,
@@ -531,7 +535,7 @@ class ChatService:
                 logger.warning("LLM 流式调用失败（LLM 服务异常）: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources, agentic_meta)
+                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
                 saved = True
                 yield sse_event("error", {"message": err_msg})
                 return
@@ -540,13 +544,14 @@ class ChatService:
                 logger.error("LLM 流式调用失败: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources, agentic_meta)
+                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
                 saved = True
                 yield sse_event("error", {"message": err_msg})
                 return
 
             # 6) done
-            self._finalize(session, message, answer_parts, sources)
+            self._finalize(session, message, answer_parts, sources,
+                           detail=prompt_detail)
             saved = True
             yield sse_event("done", {
                 "session_id": session.id,
@@ -559,7 +564,7 @@ class ChatService:
             # 兜底：异常路径下只要已有文本也落盘（优雅收尾）
             if not saved and answer_parts:
                 try:
-                    self._finalize(session, message, answer_parts, [], agentic_meta)
+                    self._finalize(session, message, answer_parts, [], agentic_meta, detail=prompt_detail)
                 except Exception:
                     logger.exception("兜底落盘失败: %s", session.id)
 
@@ -629,7 +634,78 @@ class ChatService:
         return "\n\n".join(parts)
 
     @staticmethod
-    def _build_refs(sources: List[Source]) -> str:
+    def _load_doc_chunks(sources: List[Source]) -> Dict[str, List[str]]:
+        """取本次引用涉及文档的切块文本（doc_id → [块文本，按 chunk_index 序]）
+
+        数据源是 document_service 内存中的 chunks_meta（零 IO）；任一文档
+        读取失败按缺失处理——_ref_snippet 会自动退化为父块截断，不影响组装
+        """
+        out: Dict[str, List[str]] = {}
+        try:
+            from backend.services.document_service import get_document_service
+            doc_svc = get_document_service()
+        except Exception:  # 导入/初始化异常不应影响引用组装
+            return out
+        for s in sources:
+            doc_id = s.document_id
+            if not doc_id or doc_id in out:
+                continue
+            try:
+                doc = doc_svc.get(doc_id)
+                meta = getattr(doc, "chunks_meta", None) or []
+            except Exception:
+                continue
+            texts: List[str] = []
+            for m in meta:
+                if isinstance(m, dict):
+                    texts.append(m.get("text") or "")
+                else:
+                    texts.append(getattr(m, "text", "") or "")
+            out[doc_id] = texts
+        return out
+
+    @staticmethod
+    def _ref_window(s: Source,
+                    doc_chunks: Optional[Dict[str, List[str]]]) -> Optional[str]:
+        """命中窗口文本（命中块 + 前后各 1 个邻块）；不适用返回 None
+
+        顺序以"命中子块排最前"为准（命中词最早可见），邻块按索引升序跟随。
+        仅父子模式（有 parent_text）且能定位到命中块时启用——非父子模式的
+        子块本身就是检索单元，无窗口可言。
+        """
+        if not doc_chunks or not s.parent_text:
+            return None
+        chunks = doc_chunks.get(s.document_id or "")
+        if not chunks:
+            return None
+        idx = s.chunk_index
+        if idx is None or not 0 <= idx < len(chunks):
+            return None
+        parts = [chunks[idx]]
+        if idx - 1 >= 0:
+            parts.append(chunks[idx - 1])
+        if idx + 1 < len(chunks):
+            parts.append(chunks[idx + 1])
+        return "\n\n".join(p for p in parts if p and p.strip())
+
+    @staticmethod
+    def _ref_snippet(s: Source,
+                     doc_chunks: Optional[Dict[str, List[str]]] = None) -> str:
+        """单条引用的正文文本：命中窗口优先，退化父块/子块截断
+
+        父子分块下父块是"完整章节"且无大小上限（实测存在 3 万字的长章），
+        若固定取 parent_text 开头若干字，命中词落在截断之后时模型看不到命中词
+        → 回答"未找到"而引用面板却有原文。窗口模式改取「命中子块全文 + 前后
+        各 1 个邻块」，命中词必定可见；非父子/邻块缺失时按上限截断兜底。
+        """
+        window = ChatService._ref_window(s, doc_chunks)
+        if window is not None:
+            return window
+        return (s.parent_text or s.text)[:_REF_TEXT_MAX_LEN]
+
+    @staticmethod
+    def _build_refs(sources: List[Source],
+                    doc_chunks: Optional[Dict[str, List[str]]] = None) -> str:
         # 引用编号规则：编号 = sources 列表位置（1..N 连续），与 meta 事件
         # 下发的 sources 顺序完全一致（stream_chat 中 meta 与 _build_refs 都
         # 以同一列表为源）；前端行内 [n] 按 sources[n-1] 映射、面板角标按
@@ -640,8 +716,8 @@ class ChatService:
         for i, s in enumerate(sources, start=1):
             name = s.document_name or s.document_id
             head = f"[引用 {i}]（来源：{name}）"
-            # 引用文本优先用父块全文（上下文更完整，parent_child 模式），无父块用子块
-            text = (s.parent_text or s.text)[:_REF_TEXT_MAX_LEN]  # 单块保护截断
+            # 引用正文：命中窗口优先，父块/子块截断兜底（见 _ref_snippet）
+            text = ChatService._ref_snippet(s, doc_chunks)
             # 上下文摘要：有 context 且文本未含摘要前缀时拼到引用头部——
             # 父块全文本身无摘要（摘要是对子块生成的），补前缀让引用也显示；
             # s.text 为向量化增强文本（已含【上下文】前缀）时不重复拼接
@@ -669,11 +745,13 @@ class ChatService:
 
     def _finalize(self, session: ChatSession, message: str,
                   answer_parts: List[str], sources: List[Source],
-                  agentic: Optional[dict] = None):
-        """落盘会话（追加 user 消息 + assistant 消息，含 sources 快照）"""
-        # 请求详情（prompt 事件缓存）：写入 assistant 消息供历史会话"详情"回看
-        detail = getattr(self, "_pending_prompt_detail", None)
-        self._pending_prompt_detail = None  # 写后清空，防下一条串扰
+                  agentic: Optional[dict] = None,
+                  detail: Optional[dict] = None):
+        """落盘会话（追加 user 消息 + assistant 消息，含 sources 快照）
+
+        detail：本次请求的 prompt 详情（与 prompt 事件同源），由调用方透传，
+        写入 assistant 消息供历史会话"详情"回看；无详情（早退路径）传 None
+        """
         chat_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session.messages.append(ChatMessage(role="user", content=message,
                                             created_at=chat_time))

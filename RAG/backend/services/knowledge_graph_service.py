@@ -44,7 +44,7 @@ from openai import AsyncOpenAI
 
 from backend.config import LLMConfig, STORAGE_DIR, get_active_config
 from backend.models.rag_models import Source
-from backend.services.settings_service import llm_cfg_for_parser
+from backend.services.settings.service import llm_cfg_for_parser
 from backend.services.chat_service import _llm_to_dict
 from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,
                                          get_llm_client, llm_completion)

@@ -22,8 +22,8 @@ import pytest
 from types import SimpleNamespace
 
 from backend.config import build_default_config, get_active_config
-from backend.services import settings_service as ss
-from backend.services.settings_service import SettingsService, \
+from backend.services.settings import service as ss
+from backend.services.settings.service import SettingsService, \
     active_llm_item
 
 
@@ -417,7 +417,7 @@ class TestLlmConnectionTest:
     def test_profile_test_uses_active_item(self, client, admin_headers,
                                            monkeypatch):
         """档案级连接测试：测的是激活模型条目（非激活模型坏连接不影响）"""
-        from backend.services.settings_service import OpenAI
+        from backend.services.settings.service import OpenAI
 
         class _FakeOpenAI:
             def __init__(self, base_url="", api_key="", timeout=5.0):
@@ -437,7 +437,7 @@ class TestLlmConnectionTest:
                 return SimpleNamespace(choices=[SimpleNamespace(
                     message=SimpleNamespace(content="hi"))])
 
-        monkeypatch.setattr("backend.services.settings_service.OpenAI",
+        monkeypatch.setattr("backend.services.settings.service.OpenAI",
                             _FakeOpenAI)
         p = _create_profile(
             client, admin_headers,

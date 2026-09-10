@@ -23,7 +23,7 @@ import {
   listDocuments,
   listKbs,
 } from '../api/client';
-import PageHeader from '../components/PageHeader';
+import PageHeader from '../components/layout/PageHeader';
 import { useAuth } from '../auth/AuthContext';
 import UploadArea from '../components/documents/UploadArea';
 import BatchActionsBar, {

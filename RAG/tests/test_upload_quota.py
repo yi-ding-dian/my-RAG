@@ -12,7 +12,7 @@ from tests.conftest import create_kb, upload_doc
 
 def test_quota_default_unlimited(client, admin_headers, mock_embedding):
     """默认 kb_doc_limit=0（不限）：多文档可上传；随后配额=1 拦新文档"""
-    import backend.routers.documents as doc_router
+    import backend.routers.documents.crud as doc_router
     kb = create_kb(client)
     upload_doc(client, kb["id"], filename="文档一.txt", content="文档一")
     upload_doc(client, kb["id"], filename="文档二.txt", content="文档二")

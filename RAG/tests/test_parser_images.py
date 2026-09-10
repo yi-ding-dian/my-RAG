@@ -1,4 +1,4 @@
-"""Markdown 图片引用处理纯函数单测（parser_images.py）
+"""Markdown 图片引用处理纯函数单测（parsers/images.py）
 
 覆盖：extract_image_refs 提取（普通/多张/空文本）、rewrite_image_refs
 替换（basename 命中替换、http 外链保留、data URI 保留、未命中保留、
@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from backend.services.parser_images import extract_image_refs, rewrite_image_refs
+from backend.services.parsers.images import extract_image_refs, rewrite_image_refs
 
 
 class TestExtractImageRefs:

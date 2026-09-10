@@ -5,7 +5,7 @@
   source/metrics/top_k/task_id，preview 模式不落）
 - /api/audit/actions 中文标签含 ragas.evaluate（AUDIT_ACTION_LABELS 同源）
 - 超管重命名/软删文档走现有端点 → doc.rename/doc.delete 埋点已覆盖
-  （admin_documents.py 仅有列表接口无写操作，超管复用部门内端点，天然被审计）
+  （documents/admin.py 仅有列表接口无写操作，超管复用部门内端点，天然被审计）
 - DELETE /api/audit/logs?date=YYYY-MM-DD：按天删除审计记录（created_at 前缀
   LIKE 匹配，sqlite 下验证）；非法日期 400；非超管 403
 
@@ -122,7 +122,7 @@ class TestRagasAudit:
 
 
 class TestSuperAdminDocAudit:
-    """超管文档操作（admin_documents 页的入口）走现有端点，埋点已覆盖"""
+    """超管文档操作（documents.admin 页的入口）走现有端点，埋点已覆盖"""
 
     def test_rename_and_delete_recorded(self, client, admin_headers):
         """超管重命名/软删 → doc.rename/doc.delete 审计记录"""

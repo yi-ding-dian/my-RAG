@@ -5,7 +5,7 @@
    hybrid-auto-engine/pipeline 合法并持久化到 parser_config（重跑沿用）
 2. ingestion 透传：mock parser 断言 parse_opts.backend（仅显式选择时透传，
    auto/None 不透传）
-3. parser_client 表单构造：backend 出现在 /file_parse form data；
+3. parsers.client 表单构造：backend 出现在 /file_parse form data；
    None/缺省时无该字段
 4. 显式 backend="auto" 可重置上次持久化的 backend（新配置覆盖旧值）
 
@@ -19,9 +19,9 @@ import asyncio
 import pytest
 
 from conftest import create_kb, upload_doc, wait_for_status
-from backend.services.parser_client import _build_mineru_form_data
+from backend.services.parsers.client import _build_mineru_form_data
 
-# 解析后端合法值（与 backend/services/ingestion_service.py _VALID_MINERU_BACKENDS 契约一致）
+# 解析后端合法值（与 backend/services/ingestion/params.py _VALID_MINERU_BACKENDS 契约一致）
 VALID_BACKENDS = ("hybrid-auto-engine", "pipeline")
 
 PDF_BYTES = b"%PDF-1.4 fake"
@@ -61,9 +61,9 @@ def _install_fake_parser(monkeypatch, text: str, images: list,
                          delay: float = 0.0) -> _FakeParser:
     """替换 get_parser_client（源模块与消费模块两处引用复制，同 test_parser_images_chain）"""
     fake = _FakeParser(text, images, delay=delay)
-    monkeypatch.setattr("backend.services.parser_client.get_parser_client",
+    monkeypatch.setattr("backend.services.parsers.client.get_parser_client",
                         lambda: fake)
-    monkeypatch.setattr("backend.services.ingestion_service.get_parser_client",
+    monkeypatch.setattr("backend.services.ingestion.service.get_parser_client",
                         lambda: fake)
     return fake
 
@@ -201,7 +201,7 @@ class TestIngestBackendPassthrough:
 
 
 class TestParserBackendFormData:
-    """parser_client 表单构造：backend 出现在 form data / None 时无该字段"""
+    """parsers.client 表单构造：backend 出现在 form data / None 时无该字段"""
 
     def test_form_data_builder_backend_present(self):
         """_build_mineru_form_data：backend 非空时同名透传"""
@@ -217,7 +217,7 @@ class TestParserBackendFormData:
 
     def test_request_top_level_backend(self, monkeypatch, tmp_path):
         """_parse_via_mineru 全链路：backend 以顶层 form 字段发送"""
-        from backend.services.parser_client import ParserClient
+        from backend.services.parsers.client import ParserClient
 
         class _FakeResp:
             def raise_for_status(self):
@@ -241,7 +241,7 @@ class TestParserBackendFormData:
                 return _FakeResp()
 
         fake = _FakeAsyncClient()
-        monkeypatch.setattr("backend.services.parser_client.httpx.AsyncClient",
+        monkeypatch.setattr("backend.services.parsers.client.httpx.AsyncClient",
                             lambda timeout=None: fake)
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(PDF_BYTES)

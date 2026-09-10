@@ -1,4 +1,4 @@
-"""统一探测服务测试：probes.py 六类探测（成功/超时/连接失败/401/未配置）
+"""统一探测服务测试：parsers/probes.py 六类探测（成功/超时/连接失败/401/未配置）
 
 覆盖：
 - probe_llm / probe_embedding（httpx 轻量形态，stats precheck 用）：
@@ -13,7 +13,7 @@
   失败，client_cls 注入可测
 - probe_mysql：URL 覆盖模式跳过、mock aiomysql.connect 成功/失败
 - probe_minio：endpoint 未配置、mock Minio 桶存在/连接失败
-- 契约映射：settings_service._test_*（{ok, latency_ms, message}）、
+- 契约映射：settings.service._test_*（{ok, latency_ms, message}）、
   stats._probe_llm/_probe_embedding（{available, reason}）
 
 全部离线 mock（httpx / aiomysql / minio / OpenAI 客户端类）。
@@ -26,8 +26,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from backend.services import probes
-from backend.services.probes import (probe_deepdoc, probe_deepdoc_sync,
+from backend.services.parsers import probes
+from backend.services.parsers.probes import (probe_deepdoc, probe_deepdoc_sync,
                                      probe_embedding, probe_embedding_sdk,
                                      probe_llm, probe_llm_sdk, probe_mineru,
                                      probe_mineru_sync, probe_minio,
@@ -556,7 +556,7 @@ class TestProbeMinio:
 
 class TestContractMapping:
     def test_stats_available_mapping(self, monkeypatch):
-        """stats precheck 薄包装：probes {ok, latency_ms, reason} →
+        """stats precheck 薄包装：parsers.probes {ok, latency_ms, reason} →
         {available, reason}（成功时 reason 空串）"""
         from backend.routers.stats import (_probe_embedding, _probe_llm)
         fake = _patch_async_http(monkeypatch, [
@@ -580,7 +580,7 @@ class TestContractMapping:
 
     def test_settings_message_mapping(self, monkeypatch):
         """settings 薄包装：{ok, latency_ms, message}（message = reason + 耗时）"""
-        from backend.services.settings_service import get_settings_service
+        from backend.services.settings.service import get_settings_service
         svc = get_settings_service()
         monkeypatch.setattr(httpx, "get",
                             lambda url, **kw: SimpleNamespace(status_code=200))
@@ -591,9 +591,9 @@ class TestContractMapping:
         assert "耗时" in result["message"]
 
     def test_parser_probe_mapping(self, monkeypatch):
-        """parser_probe 薄包装：probes 结果 → {available, reason}
+        """parsers.probe 薄包装：parsers.probes 结果 → {available, reason}
         （成功时 reason 空串，契约与测试一致）"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         fake = _patch_async_http(monkeypatch, [
             ("get", "/health", FakeResponse(200)),
             ("post", "/v1/user/login",

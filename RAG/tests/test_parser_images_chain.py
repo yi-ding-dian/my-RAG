@@ -1,7 +1,7 @@
 """MinerU 解析图片链路测试
 
 覆盖：
-1. parser_client 请求：全部参数为顶层 multipart form 字段（布尔开关、数组
+1. parsers.client 请求：全部参数为顶层 multipart form 字段（布尔开关、数组
    lang_list、字符串 backend/parse_method、0 基页码），files 传 multipart；
    响应 results.<名>.images 为 dict（mineru-api v3 实测形态，文件名→
    "data:image/xxx;base64,..."）→ 归一化为 [{name, data: bytes}]；
@@ -20,7 +20,7 @@ import base64
 from pathlib import Path
 
 from backend.config import PARSED_DIR, STORAGE_DIR
-from backend.services.parser_client import _normalize_images, ParserClient
+from backend.services.parsers.client import _normalize_images, ParserClient
 
 JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01"
 JPEG_B64 = base64.b64encode(JPEG_BYTES).decode()
@@ -28,7 +28,7 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 PNG_B64 = base64.b64encode(PNG_BYTES).decode()
 
 
-# ---------------- parser_client 请求构造（顶层 form 字段） ----------------
+# ---------------- parsers.client 请求构造（顶层 form 字段） ----------------
 
 class _FakeResp:
     def __init__(self, payload):
@@ -69,7 +69,7 @@ class TestParserRequestTopLevelForm:
     def _run(self, monkeypatch, tmp_path, payload, **opts):
         fake = _FakeAsyncClient(payload)
         monkeypatch.setattr(
-            "backend.services.parser_client.httpx.AsyncClient",
+            "backend.services.parsers.client.httpx.AsyncClient",
             lambda timeout=None: fake)
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
@@ -115,7 +115,7 @@ class TestParserRequestTopLevelForm:
 
     def test_form_data_builder_boolean_passthrough(self):
         """_build_mineru_form_data：布尔/数组/字符串/页码字段全量透传"""
-        from backend.services.parser_client import _build_mineru_form_data
+        from backend.services.parsers.client import _build_mineru_form_data
         data = _build_mineru_form_data({
             "table_enable": True, "formula_enable": False, "return_images": True,
             "return_md": True, "return_middle_json": False,
@@ -137,12 +137,12 @@ class TestParserRequestTopLevelForm:
 
     def test_form_data_builder_lang_list_as_list(self):
         """lang_list 传入列表形态时逐项展开（防御）"""
-        from backend.services.parser_client import _build_mineru_form_data
+        from backend.services.parsers.client import _build_mineru_form_data
         data = _build_mineru_form_data({"lang_list": ["ch", "en"]})
         assert data["lang_list"] == ["ch", "en"]
 
 
-# ---------------- parser_client 响应解析（dict / list images） ----------------
+# ---------------- parsers.client 响应解析（dict / list images） ----------------
 
 class TestParserResponseImages:
     """results.{name}.images 为 dict → [{name, bytes}]；list 兼容；无 images → []"""
@@ -150,7 +150,7 @@ class TestParserResponseImages:
     def _run(self, monkeypatch, tmp_path, payload):
         fake = _FakeAsyncClient(payload)
         monkeypatch.setattr(
-            "backend.services.parser_client.httpx.AsyncClient",
+            "backend.services.parsers.client.httpx.AsyncClient",
             lambda timeout=None: fake)
         pdf = tmp_path / "a.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
@@ -256,11 +256,11 @@ class _FakeParser:
 
 def _install_fake_parser(monkeypatch, text: str, images: list) -> _FakeParser:
     fake = _FakeParser(text, images)
-    # ingestion_service 顶部是 `from ... import get_parser_client`（引用复制），
+    # ingestion.service 顶部是 `from ... import get_parser_client`（引用复制），
     # 源模块与消费模块两处都要替换
-    monkeypatch.setattr("backend.services.parser_client.get_parser_client",
+    monkeypatch.setattr("backend.services.parsers.client.get_parser_client",
                         lambda: fake)
-    monkeypatch.setattr("backend.services.ingestion_service.get_parser_client",
+    monkeypatch.setattr("backend.services.ingestion.service.get_parser_client",
                         lambda: fake)
     return fake
 

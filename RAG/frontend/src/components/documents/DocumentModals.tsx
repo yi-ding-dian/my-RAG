@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import AppModal from '../AppModal';
+import AppModal from '../common/AppModal';
 import {
   Alert,  
   App as AntApp,  
@@ -28,15 +28,15 @@ import {
   getLlmModelList,
   testLlmModelByName,
 } from '../../api/client';
-import ChunkCompareView from '../ChunkCompareView';
-import KnowledgeGraphTab from '../KnowledgeGraphTab';
-import DocumentPortrait from '../DocumentPortrait';
-import DocumentPreviewModal from '../DocumentPreviewModal';
-import ParseConfigModal from '../ParseConfigModal';
-import SmartParseWizard from '../SmartParseWizard';
-import RenameDocumentModal from '../RenameDocumentModal';
-import UrlImportModal from '../UrlImportModal';
-import BatchImportModal from '../BatchImportModal';
+import ChunkCompareView from '../knowledge/ChunkCompareView';
+import KnowledgeGraphTab from '../knowledge/KnowledgeGraphTab';
+import DocumentPortrait from './DocumentPortrait';
+import DocumentPreviewModal from './DocumentPreviewModal';
+import ParseConfigModal from './ParseConfigModal';
+import SmartParseWizard from './SmartParseWizard';
+import RenameDocumentModal from './RenameDocumentModal';
+import UrlImportModal from './UrlImportModal';
+import BatchImportModal from './BatchImportModal';
 
 // ========== 图谱构建弹窗（LLM 模型选择状态机，自包含） ==========
 
@@ -267,6 +267,11 @@ export function usePortraitModal(kbId: string | undefined): PortraitModalApi {
         loading={portraitLoading}
         error={portraitError}
         onRetry={() => portraitDoc && void openPortrait(portraitDoc)}
+        // 结构弹窗定位：kb 优先用文档自身所属（页面级 kbId 在全局文档页
+        // 点击时可能尚未生效，与 useDetailModal 同口径）
+        kbId={portraitDoc?.kb_id || kbId}
+        docId={portraitDoc?.id}
+        fileName={portraitDoc?.original_name}
       />
     </AppModal>
   );

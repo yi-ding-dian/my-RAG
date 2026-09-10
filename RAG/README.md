@@ -61,7 +61,7 @@
         │   ├── vector_store                    Chroma 嵌入式（data/chroma，collection kb_{id}）
         │   ├── embedding_service               bge-m3（批量 32 / 截断 8000 字符）
         │   ├── parser_client                   MinerU（不可用自动降级 pypdf/python-docx）
-        │   ├── ingestion_service               上传→解析→切块→向量化 状态机
+        │   ├── ingestion/                      上传→解析→切块→向量化 状态机（params/trace/images/service）
         │   ├── retrieval_service / chat_service 向量+BM25 混合 / rerank / SSE 流式（引用标注）
         │   ├── bm25 / rerank_client            混合检索与重排序
         │   ├── dim_check                       向量维度检测 + 后台重建任务
@@ -236,11 +236,16 @@ my-RAG/
 ├── backend/
 │   ├── main.py config.py deps.py db.py
 │   ├── models/        rag_models.py user_models.py
-│   ├── routers/       auth users departments knowledge_bases documents chat stats settings files audit
-│   ├── services/      kb document vector_store embedding parser ingestion retrieval chat bm25
-│   │                  rerank_client dim_check retrieval_log ragas_client settings audit storage
+│   ├── routers/       auth users departments knowledge_bases chat stats settings files audit
+│   │                  documents/（crud admin smart_parse）
+│   ├── services/      kb document vector_store embedding ingestion retrieval chat bm25
+│   │                  rerank_client dim_check retrieval_log ragas_client audit storage
 │   │                  auth user department web_importer
-│   └── chunking/splitter.py
+│   │                  settings/（service schema merge validate connect_test）
+│   │                  parsers/（client probe probes images deepdoc）
+│   │                  spreadsheet/（reader csv xlsx xls formula preview）
+│   ├── chunking/      base common recursive markdown_splitter regex_chunker parent_child qa_chunker
+│   └── normative/     docx_parser chunker heading_llm
 ├── frontend/src/      App.tsx api/client.ts components/ pages/
 └── data/              uploads/ parsed/ kbs/ documents/ chat/ chroma/ storage/ settings.json（运行时，gitignore）
 ```

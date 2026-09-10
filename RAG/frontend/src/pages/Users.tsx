@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import AppModal from '../components/AppModal';
+import AppModal from '../components/common/AppModal';
 import {
   App as AntApp, 
   Button, 
@@ -53,11 +53,11 @@ import {
   updateUser,
 } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
-import BatchCreateUsersModal from '../components/BatchCreateUsersModal';
-import { UserAvatar } from '../components/MessageList';
-import PageHeader from '../components/PageHeader';
+import BatchCreateUsersModal from '../components/users/BatchCreateUsersModal';
+import { UserAvatar } from '../components/chat/MessageList';
+import PageHeader from '../components/layout/PageHeader';
 import LeftPagination from '../components/layout/LeftPagination';
-import ResizableTitle from '../components/ResizableTitle';
+import ResizableTitle from '../components/common/ResizableTitle';
 import { useResizableColumns } from '../hooks/useResizableColumns';
 
 const { Text } = Typography;

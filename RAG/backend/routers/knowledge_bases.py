@@ -33,7 +33,7 @@ from backend.services.dim_check import (get_kb_vector_status,
 from backend.services.document_service import get_document_service
 from backend.services.kb_service import get_kb_service
 from backend.services.knowledge_graph_service import graph_path
-from backend.services.parser_probe import probe_parsers
+from backend.services.parsers.probe import probe_parsers
 from backend.services.retrieval_service import get_retrieval_service
 from backend.services.storage_service import get_storage_service
 from backend.services.vector_store import get_vector_store

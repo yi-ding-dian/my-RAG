@@ -21,8 +21,8 @@ from conftest import SAMPLE_TEXT, char_vector, create_kb, upload_and_ingest, upl
 
 def _patch_embedding_dim(monkeypatch, dim):
     """把 embedding mock 换成指定维度（替换源模块 + 引用复制模块，与 conftest 同构）"""
-    from backend.services import (embedding_service, ingestion_service,
-                                  retrieval_service)
+    from backend.services import embedding_service, retrieval_service
+    from backend.services.ingestion import service as ingestion_service
 
     class Fake:
         async def embed(self, texts):
@@ -38,8 +38,8 @@ def _patch_embedding_dim(monkeypatch, dim):
 
 def _patch_embedding_fail(monkeypatch, marker="fail-me"):
     """mock embedding：文本含 marker 时抛错（重建部分失败场景）"""
-    from backend.services import (embedding_service, ingestion_service,
-                                  retrieval_service)
+    from backend.services import embedding_service, retrieval_service
+    from backend.services.ingestion import service as ingestion_service
 
     class Fake:
         async def embed(self, texts):

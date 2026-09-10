@@ -9,7 +9,7 @@ interface TaskPageSizeFieldProps {
 }
 
 /** 任务页面大小：每个解析任务处理的页数（1-128，默认 12）。
- * C1：后端当前只存配置不消费（单任务解析，见 ingestion_service
+ * C1：后端当前只存配置不消费（单任务解析，见 backend/services/ingestion/params.py
  * _DEFAULT_PARSER_CONFIG 注释"存配置，当前单任务解析"），文案补"暂不生效"提示 */
 const TaskPageSizeField: React.FC<TaskPageSizeFieldProps> = ({
   name = 'task_page_size',

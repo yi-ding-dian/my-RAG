@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 from backend.config import get_active_config
-from backend.services.settings_service import get_settings_service
+from backend.services.settings.service import get_settings_service
 
 
 def _make_profile(client, admin_headers, name="基建档案", **sections):

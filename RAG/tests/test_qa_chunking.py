@@ -22,7 +22,7 @@ import pytest
 from backend.chunking import (Chunk, QaChunker, QaStats,
                                        analyze_qa_format, get_chunker,
                                        is_qa_format_valid)
-from backend.services.ingestion_service import resolve_parser_engine
+from backend.services.ingestion.params import resolve_parser_engine
 from conftest import (_resolve_headers, create_kb, upload_doc,
                       wait_for_status)
 

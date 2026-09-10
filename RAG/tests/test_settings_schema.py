@@ -2,7 +2,7 @@
 
 覆盖：
 1. schema 与 config.py dataclass 一致性（反射来源验证：段/字段/默认值）
-2. 白名单从 schema 派生（settings_service 与 routers 双份消除；未知字段 400 仍生效）
+2. 白名单从 schema 派生（settings.service 与 routers 双份消除；未知字段 400 仍生效）
 3. 默认值补全 / coerce / merge / to_service_config 边界行为与重构前一致
 4. 加装演练：临时注册一个测试段 → 全部处理函数自动支持（"一处定义"的证明）
 """
@@ -15,8 +15,8 @@ from backend.config import (ChatConfig, ChunkingConfig, DeepDocConfig,
                             MinIOConfig, MySQLConfig, RerankConfig,
                             RetrievalConfig, ServiceConfig,
                             build_default_config)
-from backend.services import settings_service as ss
-from backend.services.settings_service import (SECTION_SCHEMA, FieldSpec,
+from backend.services.settings import service as ss
+from backend.services.settings.service import (SECTION_SCHEMA, FieldSpec,
                                                SectionSpec,
                                                get_settings_service,
                                                is_secret_field)
@@ -149,7 +149,7 @@ class TestWhitelistFromSchema:
             assert SECTION_SCHEMA["chat"].fields[fname].whitelist
 
     def test_routers_whitelist_same_source(self):
-        """routers/settings.py 白名单与 settings_service 派生一致（双份已消除）"""
+        """routers/settings.py 白名单与 settings.service 派生一致（双份已消除）"""
         from backend.routers import settings as router_settings
         assert router_settings.CHAT_SECTION_FIELDS == set(ss.CHAT_FIELD_NAMES)
         assert router_settings.CHAT_RETRIEVAL_FIELDS == set(

@@ -44,7 +44,7 @@ from backend.config import LLMConfig, get_active_config
 from backend.services.chat_service import _llm_to_dict
 from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,
                                          get_llm_client, llm_completion)
-from backend.services.settings_service import llm_cfg_for_parser
+from backend.services.settings.service import llm_cfg_for_parser
 from backend.services.thinking_strategy import get_thinking_strategy
 
 logger = logging.getLogger(__name__)

@@ -20,7 +20,7 @@ import io
 import pytest
 
 from conftest import admin_headers_of, create_kb, upload_doc
-from backend.services import settings_service as ss
+from backend.services.settings import service as ss
 
 # ==================== 解析器探测 mock（画像接口同款） ====================
 
@@ -51,7 +51,7 @@ def _mock_probe(monkeypatch):
     async def _probe(cfg=None, **kw):
         return state["probe"]
 
-    monkeypatch.setattr("backend.routers.smart_parse.probe_parsers", _probe)
+    monkeypatch.setattr("backend.routers.documents.smart_parse.probe_parsers", _probe)
     return state
 
 
@@ -172,8 +172,8 @@ class TestTextExtraction:
         assert data["structure"]["heading_count"] == 0
 
     def test_pdf_via_extract_plain(self, client, admin_headers, monkeypatch):
-        """pdf 复用 parser_client._extract_plain（mock 提取，验证接口链路）"""
-        import backend.services.parser_client as pc_mod
+        """pdf 复用 parsers.client._extract_plain（mock 提取，验证接口链路）"""
+        import backend.services.parsers.client as pc_mod
 
         def _fake_extract(self, file_path, file_type):
             return "# PDF 标题\n\nPDF 正文内容。\n\n又一段正文。"

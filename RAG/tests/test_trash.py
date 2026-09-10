@@ -161,6 +161,10 @@ class TestSoftDelete:
         assert [d["id"] for d in trash] == [doc["id"]]
         assert _restore(client, kb["id"], doc["id"], admin_headers).status_code == 200
         assert _trash(client, kb["id"], admin_headers).json() == []
+        # 彻底删除要求文档在回收站内（purge 校验回收站状态）：恢复后直接删应被拒
+        assert _purge(client, kb["id"], doc["id"], admin_headers).status_code == 409
+        # 重新移入回收站后可彻底删除
+        assert _delete(client, kb["id"], doc["id"], admin_headers).status_code == 200
         assert _purge(client, kb["id"], doc["id"], admin_headers).status_code == 200
 
     def test_soft_delete_twice_conflict(self, client, admin_headers):
@@ -401,7 +405,7 @@ class TestDocumentPreview:
 
     def test_raw_pdf_preview(self, client, admin_headers, monkeypatch):
         """pdf 预览：application/pdf 字节流；超过上限 → 413 中文提示"""
-        import backend.routers.documents as docs_router
+        import backend.routers.documents.crud as docs_router
         kb = create_kb(client)
         content = b"%PDF-1.4 fake pdf bytes"
         doc = upload_doc(client, kb["id"], filename="文档.pdf",

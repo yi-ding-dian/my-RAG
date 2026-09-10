@@ -107,7 +107,7 @@ def _all_down_status(mineru_reason="连接超时", deepdoc_reason="连接超时"
 class TestProbeParsers:
     def test_probe_all_ok(self, monkeypatch):
         """mineru /health 200 + deepdoc 登录 200 带 token → 全部可用"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         _install_fake_http(monkeypatch, [
             ("get", "/health", FakeResponse(status_code=200)),
             ("post", "/v1/user/login",
@@ -121,7 +121,7 @@ class TestProbeParsers:
 
     def test_probe_mineru_connect_error(self, monkeypatch):
         """MinerU 连接失败（所有端点异常）→ 不可用 + 原因；deepdoc 仍可用"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         _install_fake_http(monkeypatch, [
             ("get", "/health", httpx.ConnectError("connection refused")),
             ("post", "/v1/user/login",
@@ -134,7 +134,7 @@ class TestProbeParsers:
 
     def test_probe_mineru_timeout(self, monkeypatch):
         """MinerU 连接超时 → 不可用 + 超时原因（不再试后续端点）"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         fake = _install_fake_http(monkeypatch, [
             ("get", "/health", httpx.TimeoutException("timed out")),
             ("post", "/v1/user/login",
@@ -149,7 +149,7 @@ class TestProbeParsers:
 
     def test_probe_mineru_http_500_falls_through_endpoints(self, monkeypatch):
         """MinerU 全部端点非 2xx（500/404/503）→ 不可用 + HTTP 原因"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         fake = _install_fake_http(monkeypatch, [
             ("get", "/health", [
                 FakeResponse(status_code=500),
@@ -167,7 +167,7 @@ class TestProbeParsers:
 
     def test_probe_deepdoc_login_fail(self, monkeypatch):
         """DeepDoc 登录失败（401 无 token 头）→ 不可用 + 登录失败原因"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         _install_fake_http(monkeypatch, [
             ("get", "/health", FakeResponse(status_code=200)),
             ("post", "/v1/user/login", FakeResponse(status_code=401)),
@@ -179,7 +179,7 @@ class TestProbeParsers:
 
     def test_probe_deepdoc_connect_error(self, monkeypatch):
         """DeepDoc 连接失败 → 不可用 + 连接失败原因"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         _install_fake_http(monkeypatch, [
             ("get", "/health", FakeResponse(status_code=200)),
             ("post", "/v1/user/login",
@@ -191,7 +191,7 @@ class TestProbeParsers:
 
     def test_probe_deepdoc_no_base_url(self, monkeypatch):
         """DeepDoc 服务地址未配置 → 不可用 + 明确原因（不发起网络请求）"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         _install_fake_http(monkeypatch, [])
         cfg = SimpleNamespace(
             mineru=SimpleNamespace(api_url="http://m:8001"),
@@ -202,14 +202,14 @@ class TestProbeParsers:
 
     def test_probe_mineru_no_api_url(self, monkeypatch):
         """MinerU 服务地址未配置 → 不可用 + 明确原因"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         result = asyncio.run(pp._probe_mineru("", 5.0))
         assert result["available"] is False
         assert "未配置" in result["reason"]
 
     def test_probe_all_down_plain_still_available(self, monkeypatch):
         """全部不可用不抛异常；plain 恒 available"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
 
         async def fake_mineru(api_url, timeout):
             return {"available": False, "reason": "连接超时"}
@@ -226,7 +226,7 @@ class TestProbeParsers:
 
     def test_probe_timeouts_passed_through(self, monkeypatch):
         """超时参数透传：弹窗默认 5s/8s，ingestion 内 3s/5s"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         captured = {}
 
         async def fake_mineru(api_url, timeout):
@@ -249,7 +249,7 @@ class TestProbeParsers:
 
     def test_probe_deepdoc_login_uses_rsa_password(self, monkeypatch):
         """DeepDoc 登录探测发送 RSA 加密密码（与解析同契约）"""
-        import backend.services.parser_probe as pp
+        import backend.services.parsers.probe as pp
         fake = _install_fake_http(monkeypatch, [
             ("get", "/health", FakeResponse(status_code=200)),
             ("post", "/v1/user/login",
@@ -305,15 +305,15 @@ def _install_probe(monkeypatch, status):
     """覆盖路由层与 ingestion 层的探测结果为指定状态"""
     async def fake(cfg=None, **kw):
         return status
-    for mod in ("backend.routers.documents",
-                "backend.services.ingestion_service"):
+    for mod in ("backend.routers.documents.crud",
+                "backend.services.ingestion.service"):
         monkeypatch.setattr(mod + ".probe_parsers", fake)
 
 
 def _install_fake_parse(monkeypatch, text="<table>x</table> 说明",
                         method="mineru"):
     """mock ParserClient.parse 捕获 engine/opts，返回固定文本"""
-    from backend.services.parser_client import ParserClient
+    from backend.services.parsers.client import ParserClient
     captured = {}
 
     async def fake_parse(self, file_path, file_type, engine="auto", **opts):
@@ -442,9 +442,9 @@ class TestIngestDegrade:
             called["probed"] = True
             return _all_down_status()
         monkeypatch.setattr(
-            "backend.routers.documents.probe_parsers", fake)
+            "backend.routers.documents.crud.probe_parsers", fake)
         monkeypatch.setattr(
-            "backend.services.ingestion_service.probe_parsers", fake)
+            "backend.services.ingestion.service.probe_parsers", fake)
         captured = _install_fake_parse(monkeypatch, method="plain")
 
         kb = create_kb(client, headers=admin_headers)

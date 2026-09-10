@@ -1,10 +1,10 @@
-"""Excel/CSV 表格读取链路测试（spreadsheet 读取器 + parser_client 集成）
+"""Excel/CSV 表格读取链路测试（spreadsheet 读取器 + parsers.client 集成）
 
 公共基础：fill_merged 合并填充 / pad_rows 等宽 / render_sheet_pipe 管道
 渲染（| 转义与换行折叠复用 table_normalizer.pipe_escape）/ 多 sheet 拼接
 读取器：xlsx（多 sheet/合并单元格/日期/公式无缓存/空表跳过）、
 xls（xlwt 生成样本）、csv（utf-8/gbk 编码探测/引号/分号/空行）
-解析链路：parser_client.parse（xlsx/csv/xls → parse_method=spreadsheet）、
+解析链路：parsers.client.parse（xlsx/csv/xls → parse_method=spreadsheet）、
 空表报错语义、非法扩展名 ValueError、is_spreadsheet_ext 判定。
 """
 from __future__ import annotations
@@ -14,8 +14,8 @@ import datetime
 
 import pytest
 
-from backend.services import parser_client
-from backend.services.spreadsheet_reader import (Sheet, fill_merged,
+from backend.services.parsers import client as parser_client
+from backend.services.spreadsheet.reader import (Sheet, fill_merged,
                                                  is_spreadsheet_ext, pad_rows,
                                                  read_spreadsheet,
                                                  render_sheet_pipe,
@@ -208,7 +208,7 @@ def test_read_xls_basic(tmp_path):
     assert sheets[0].rows[2] == ["B", "45.5"]
 
 
-# ------------------- parser_client 集成（asyncio.run 同步包装，项目惯例） -------------------
+# ------------------- parsers.client 集成（asyncio.run 同步包装，项目惯例） -------------------
 
 
 def test_parser_parse_xlsx(tmp_path):

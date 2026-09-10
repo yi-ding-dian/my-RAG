@@ -11,7 +11,7 @@
  *   混合检索=BM25 关键词与向量 RRF 融合（关闭即纯向量），重排=rerank 服务重排
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import AppModal from '../components/AppModal';
+import AppModal from '../components/common/AppModal';
 import {
   Alert,  Button,  Card,  Col,  Divider,  Input,  InputNumber,  Row,  Select, 
   Skeleton,  Slider,  Space,  Statistic,  Tag,  Tooltip,  Typography,  message,  theme} from 'antd';
@@ -22,10 +22,10 @@ import {
   KnowledgeBase, ServiceProfile, Source, getActiveProfile, getDocument,
   listKbs, retrieveChat,
 } from '../api/client';
-import AppEmpty from '../components/AppEmpty';
-import MdImages from '../components/MdImages';
+import AppEmpty from '../components/common/AppEmpty';
+import MdImages from '../components/common/MdImages';
 import renderTextWithTables from '../utils/richText';
-import PageHeader from '../components/PageHeader';
+import PageHeader from '../components/layout/PageHeader';
 
 const { Text } = Typography;
 

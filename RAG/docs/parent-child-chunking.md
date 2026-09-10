@@ -1,7 +1,7 @@
 # 父子分块（Parent-Child Chunking）原理
 
 > 本文档说明 my-RAG 知识库"父子分块"切块方式的原理、生成流程与检索用法。
-> 对应代码：`backend/chunking/splitter.py`（`ParentChildChunker`，对齐 KnowFlow parent_child 语义）
+> 对应代码：`backend/chunking/parent_child.py`（`ParentChildChunker`，对齐 KnowFlow parent_child 语义）
 
 ---
 

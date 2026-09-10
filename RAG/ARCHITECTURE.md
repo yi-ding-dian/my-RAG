@@ -17,7 +17,7 @@ flowchart LR
     subgraph 后端["后端 FastAPI (8091)"]
         ROUTERS[路由层<br/>auth users departments knowledge_bases<br/>documents chat stats settings files audit ext_query]
         SERVICES[Services 层<br/>kb / document / vector_store / embedding / parser<br/>ingestion / retrieval / chat / bm25 / rerank /<br/>settings / audit / storage / auth / user / dept /<br/>web_importer / ragas_client / dim_check ...]
-        CHUNK[chunking/splitter.py<br/>切块引擎]
+        CHUNK[chunking/<br/>切块引擎（一算法一文件）]
     end
 
     subgraph 数据["数据层"]
@@ -105,7 +105,7 @@ flowchart LR
 | `routers/auth.py` | 登录、当前用户、改密（JWT 签发/校验） |
 | `routers/users.py` `departments.py` | 用户/部门管理（仅超管） |
 | `routers/knowledge_bases.py` | 知识库 CRUD、标签、向量重建、文档列表/上传/解析/重命名/回收站 |
-| `routers/admin_documents.py` | 超管跨库文档管理（全库文档视图） |
+| `routers/documents/admin.py` | 超管跨库文档管理（全库文档视图） |
 | `routers/documents.py` | 文档明细、原始内容预览、状态查询 |
 | `routers/chat.py` | SSE 流式问答、检索接口、会话历史 CRUD/重命名/导出 |
 | `routers/stats.py` | 检索质量统计、RAGAS 只读对接与评估发起 |
@@ -116,21 +116,21 @@ flowchart LR
 | `services/kb_service.py` `document_service.py` | 知识库/文档元数据（JSON + MySQL） |
 | `services/vector_store.py` | Chroma 向量存储（collection kb_{id}，软删除过滤） |
 | `services/embedding_service.py` | bge-m3 向量化（批量/截断/失败降级） |
-| `services/parser_client.py` `parser_probe.py` `parser_images.py` | 解析器（MinerU/纯文本）探测、调用与图片链路 |
-| `services/ingestion_service.py` | 入库状态机编排（上传→解析→切块→向量化，并发信号量） |
+| `services/parsers/client.py` `parser_probe.py` `parser_images.py` | 解析器（MinerU/纯文本）探测、调用与图片链路 |
+| `services/ingestion/` | 入库状态机编排（params 参数校验 / trace 轨迹 / images 图片链 / service 主体，并发信号量） |
 | `services/retrieval_service.py` `contextual_retriever.py` | 混合检索、RRF 融合、父子块回填、多库合并 |
 | `services/bm25.py` `rerank_client.py` | BM25 中文分词索引 / Rerank 客户端（未配置自动跳过） |
 | `services/chat_service.py` | SSE 流式问答、强制引用溯源、多轮上下文 |
 | `services/dim_check.py` | 向量维度检测 + 后台重建任务（轮询进度） |
 | `services/retrieval_log.py` | 检索质量日志（近 30 天命中率/零命中） |
 | `services/ragas_client.py` `ragas_sampling.py` | RAGAS(8090) 只读/评估发起对接、真实问答采样 |
-| `services/settings_service.py` | 配置档案（data/settings.json，多档案 + 连接测试） |
+| `services/settings/service.py` | 配置档案（data/settings.json，多档案 + 连接测试） |
 | `services/audit_service.py` | 审计日志落库（MySQL） |
 | `services/storage_service.py` | 对象存储抽象（MinIO / local 可切换） |
 | `services/auth_service.py` `user_service.py` `department_service.py` | 多租户认证与账号体系 |
 | `services/web_importer.py` | URL 网页导入 |
-| `services/deepdoc_client.py` `probes.py` | DeepDoc/探测客户端（可选解析链路） |
-| `chunking/splitter.py` | 切块引擎（通用/按标题/正则/父子分块/QA 问答；Agentic 为 services/agentic_chunker.py 异步 LLM 分块） |
+| `services/parsers/deepdoc.py` `probes.py` | DeepDoc/探测客户端（可选解析链路） |
+| `chunking/` | 切块引擎，一个算法一个文件（`recursive` 通用 / `markdown_splitter` 按标题 / `regex_chunker` 正则 / `parent_child` 父子分块 / `qa_chunker` QA 问答；Agentic 为 services/agentic_chunker.py 异步 LLM 分块） |
 
 ### 2.2 前端（frontend/src/pages/）
 
@@ -142,8 +142,9 @@ flowchart LR
 | `GlobalDocuments.tsx` | 超管全库文档视图 |
 | `Chat.tsx` | 流式问答（SSE）、会话历史/重命名/导出 |
 | `RetrievalTest.tsx` | 检索测试（多库/混合/重排参数调试） |
-| `Analytics.tsx` | 检索质量统计 + RAGAS 评估发起与报告 |
-| `Settings.tsx` | 配置档案（LLM/Embedding/MinerU/检索/切块/会话/MySQL/MinIO） |
+| `analytics/` | 检索质量统计 + RAGAS 评估发起与报告（`Analytics` / `FeedbackDetail` / `QualityDetail` / `RagasDetail` + shared） |
+| `settings/` | 配置档案（`index` 容器 + 10 个面板：ar / retrieval / ingest / llm / embedding / mineru / deepdoc / mysql / minio / vector_store） |
+| `logs/` | 日志查看（`index` + 操作审计 / 系统日志文件 / 实时系统日志 三个 Tab） |
 | `Users.tsx` | 用户/部门管理（超管） |
 | `Profile.tsx` | 个人资料与改密 |
 | `ExtQueries.tsx` / `ExtQueryPage.tsx` | 外部查询配置与演示页 |
@@ -183,7 +184,7 @@ purge 才物理删除；知识库级联删除同样先入回收站。
         │   ├── vector_store                    Chroma 嵌入式（data/chroma，collection kb_{id}）
         │   ├── embedding_service               bge-m3（批量 32 / 截断 8000 字符）
         │   ├── parser_client                   MinerU（不可用自动降级 pypdf/python-docx）
-        │   ├── ingestion_service               上传→解析→切块→向量化 状态机
+        │   ├── ingestion/                      上传→解析→切块→向量化 状态机（params/trace/images/service）
         │   ├── retrieval_service / chat_service 向量+BM25 混合 / rerank / SSE 流式（引用标注）
         │   ├── bm25 / rerank_client            混合检索与重排序
         │   ├── dim_check                       向量维度检测 + 后台重建任务

@@ -1,26 +1,25 @@
-"""引用溯源合规：越界编号标记（S1）+ 命中窗口引用组装（S2）测试
+"""引用溯源：命中窗口引用组装（S2）测试
 
 背景（实测发现）：
-- S1：LLM 偶发自造越界编号（实测 sources 仅 2 条却输出 [34]）——后端只
-  标记不改文本，SSE done 事件附 citation_issues、消息落盘携带；前端据
-  此渲染"失效引用"灰标（渲染判定在本文件外的前端 renderCitationContent）。
-- S2：parent_child 父块超长时旧逻辑 refs = parent_text[:6000]，命中词在
-  父块 6000~8000（入库 _PARENT_TEXT_META_LIMIT=8000 展示区）或 8000 之外
-  （入库截断区）时模型看不见命中词 → 回答"未找到"而引用面板却有原文。
-  修复：_REF_TEXT_MAX_LEN 提到 8000（对齐入库展示上限）；命中组装改为
-  「命中子块全文 + 相邻前后各 1 子块」窗口优先（doc_chunks 由文档
-  chunks_meta 提供），命中词最早可见，入库截断外的命中子块同样可覆盖。
+- parent_child 的父块是"完整章节"且无大小上限（实测最长 31438 字），旧逻辑
+  refs 固定取 parent_text[:6000]，命中词落在截断之后时模型看不到命中词 →
+  回答"未找到"而引用面板却有原文。
 
-本文件：纯函数（_citation_issues / _ref_snippet / _build_refs）+ 全链路
-集成（真实入库 parent_child + 伪检索固定命中块 → prompt/done 断言）。
+修复（本文件覆盖）：
+- _REF_TEXT_MAX_LEN 提到 8000（对齐入库侧 _PARENT_TEXT_META_LIMIT，消除
+  "入库保留了、喂给模型却被截掉"的盲区）；
+- 引用组装改为「命中子块全文 + 相邻前后各 1 子块」窗口优先（doc_chunks 由
+  文档 chunks_meta 提供，内存读取零 IO），命中词最早可见；非父子模式或
+  邻块缺失时退化为父块/子块截断（现状行为不变）。
+
+本文件：纯函数（_ref_snippet / _build_refs）+ 全链路集成（真实入库
+parent_child + 伪检索固定命中块 → prompt refs 断言）。
 """
 from __future__ import annotations
 
 import json
 
-import pytest
-
-from backend.models.rag_models import ChatMessage, Source
+from backend.models.rag_models import Source
 from backend.services.chat_service import (ChatService, _REF_TEXT_MAX_LEN)
 from conftest import create_kb, upload_and_ingest
 
@@ -130,40 +129,6 @@ class TestRefSnippetWindow:
         assert refs.index("[引用 1]（来源") < refs.index("[引用 2]（来源")
 
 
-class TestCitationIssuesPure:
-    """S1：_citation_issues 越界编号解析（与前端 renderCitationContent 同构）"""
-
-    def test_collects_out_of_range_numbers(self):
-        assert ChatService._citation_issues(
-            "上限550元[1]。另有未知[34]。", 2) == [34]
-        assert ChatService._citation_issues(
-            "越界[99]。以及[0]。", 1) == [99, 0]
-
-    def test_valid_numbers_ignored(self):
-        assert ChatService._citation_issues(
-            "标准[1]与补充[2]以及合并[1,2]。", 2) == []
-
-    def test_zero_and_boundary(self):
-        """n=0 越界；n=len(sources) 恰好有效"""
-        assert ChatService._citation_issues("编号[0]。", 2) == [0]
-        assert ChatService._citation_issues("编号[2]。", 2) == []
-
-    def test_no_sources_all_numbers_out_of_range(self):
-        assert ChatService._citation_issues("回答[1]。", 0) == [1]
-        assert ChatService._citation_issues("无引用回答。", 0) == []
-
-    def test_deduplicated_in_order(self):
-        assert ChatService._citation_issues(
-            "首次[34]。再次[34]。后来[7]。", 2) == [34, 7]
-
-    def test_number_followed_by_chinese_not_citation(self):
-        """正文 "[2024]年"（后接汉字）不是句尾引用标注，不误报"""
-        assert ChatService._citation_issues("数据于[2024]年发布。", 3) == []
-
-    def test_unclosed_bracket_not_matched(self):
-        assert ChatService._citation_issues("流式半截[3", 2) == []
-
-
 class TestStreamCitationIntegration:
     """全链路集成：真实入库 parent_child + 伪检索固定命中块
     （绕过检索不确定性，聚焦 引用组装 → prompt / done 标记 链路）"""
@@ -228,54 +193,3 @@ class TestStreamCitationIntegration:
         entry = system.split("[引用 1]（来源：", 1)[1]
         assert entry.startswith(f"{doc['original_name']}）\n{hit_text}"), \
             "引用 1 条目应以命中块开头"
-
-    def test_done_and_history_carry_citation_issues(
-            self, client, mock_embedding, mock_llm, admin_headers, monkeypatch):
-        """S1 端到端：回答含越界 [34] → done 附 citation_issues + 落盘携带"""
-        kb, doc = self._ingest_parent_doc(client, admin_headers)
-        chunks = self._detail_chunks(client, admin_headers, kb, doc)
-        srcs = [
-            _src(chunks[0]["text"], doc["id"], 0, doc["original_name"]),
-            _src(chunks[1]["text"], doc["id"], 1, doc["original_name"]),
-        ]
-        self._patch_retrieve(monkeypatch, srcs)
-        # 模型输出：句尾有效 [1] + 越界 [34]（sources 仅 2 条）
-        mock_llm(parts=["量子谐振阻尼器标定周期为每季度一次[1]。"
-                        "以及另一个编号[34]。"])
-
-        resp = client.post("/api/chat/stream", json={
-            "kb_id": kb["id"], "query": "标定周期是多久？",
-        }, headers=admin_headers)
-        assert resp.status_code == 200, resp.text
-        done_block = resp.text.split("event: done", 1)[1].split("\n\n", 1)[0]
-        done_data = json.loads(done_block.split("data: ", 1)[1].strip())
-        assert done_data.get("citation_issues") == [34], \
-            f"done 应携带越界编号: {done_data}"
-
-        # 会话落盘（历史重放同样可标失效引用）
-        session_id = done_data["session_id"]
-        hist = client.get(f"/api/chat/history/{session_id}",
-                          headers=admin_headers)
-        assert hist.status_code == 200, hist.text
-        last = hist.json()["messages"][-1]
-        assert last["role"] == "assistant"
-        assert last.get("citation_issues") == [34], \
-            f"落盘消息应携带 citation_issues: {last}"
-
-    def test_done_omits_field_when_no_issues(
-            self, client, mock_embedding, mock_llm, admin_headers, monkeypatch):
-        """无越界编号：done 不带 citation_issues 字段（向后兼容缺省）"""
-        kb, doc = self._ingest_parent_doc(client, admin_headers)
-        chunks = self._detail_chunks(client, admin_headers, kb, doc)
-        src = _src(chunks[0]["text"], doc["id"], 0, doc["original_name"])
-        self._patch_retrieve(monkeypatch, [src])
-        mock_llm(parts=["标定周期为每季度一次[1]。"])
-
-        resp = client.post("/api/chat/stream", json={
-            "kb_id": kb["id"], "query": "标定周期是多久？",
-        }, headers=admin_headers)
-        assert resp.status_code == 200, resp.text
-        done_block = resp.text.split("event: done", 1)[1].split("\n\n", 1)[0]
-        done_data = json.loads(done_block.split("data: ", 1)[1].strip())
-        assert "citation_issues" not in done_data, \
-            f"无越界时不应带字段: {done_data}"

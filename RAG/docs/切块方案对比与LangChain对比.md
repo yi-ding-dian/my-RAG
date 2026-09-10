@@ -2,9 +2,11 @@
 
 > 本文档归纳知识库切块引擎的 6 种方式,并逐项与 LangChain 对应组件对比:
 > 哪些是思想同源、哪些是**纯自研 LangChain 没有的能力**,以及整体为何不引入 LangChain。
-> 对应代码:`backend/chunking/splitter.py`(naive/title/regex/parent_child/qa)、
+> 对应代码:`backend/chunking/`——一个算法一个文件(`recursive.py` naive /
+> `markdown_splitter.py` title / `regex_chunker.py` regex /
+> `parent_child.py` parent_child / `qa_chunker.py` qa)、
 > `backend/services/agentic_chunker.py`(Agentic)、
-> `backend/services/spreadsheet_reader.py`(Excel 行窗口分段,与切块器协同)。
+> `backend/services/spreadsheet/reader.py`(Excel 行窗口分段,与切块器协同)。
 
 ---
 

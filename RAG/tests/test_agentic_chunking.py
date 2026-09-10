@@ -22,7 +22,7 @@ from backend.models.rag_models import DocumentItem
 from backend.services.agentic_chunker import (
     AgenticChunkError, _parse_response, agentic_chunk, align_chunks,
     normalize_label, restore_heading_prefix)
-from backend.services.ingestion_service import resolve_parser_config
+from backend.services.ingestion.params import resolve_parser_config
 
 # ==================== 样例与伪客户端 ====================
 
@@ -121,7 +121,7 @@ def _patch_rec_embedding(monkeypatch):
             return [char_vector(t) for t in texts]
 
     rec = _Rec()
-    for module in ("backend.services.ingestion_service",
+    for module in ("backend.services.ingestion.service",
                    "backend.services.retrieval_service"):
         monkeypatch.setattr(module + ".get_embedding_service",
                             lambda: rec)
@@ -523,7 +523,7 @@ class TestIngestAgentic:
         _patch_rec_embedding(monkeypatch)
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"], content=_AGENTIC_DOC)
-        with caplog.at_level("WARNING", logger="backend.services.ingestion_service"):
+        with caplog.at_level("WARNING", logger="backend.services.ingestion.service"):
             final = self._ingest_and_wait(client, kb["id"], doc["id"],
                                           {"method": "agentic"},
                                           headers=admin_headers)

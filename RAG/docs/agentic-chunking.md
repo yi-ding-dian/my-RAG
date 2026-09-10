@@ -2,7 +2,7 @@
 
 > 本文档说明 my-RAG 知识库"Agentic 智能分块"（第六种切块方式）的原理与完整流程。
 > 对应代码：`backend/services/agentic_chunker.py`（LLM 切块 + 偏移对齐）、
-> `backend/services/ingestion_service.py`（入库链路接入与回退）。
+> `backend/services/ingestion/service.py`（入库链路接入与回退）。
 
 ---
 

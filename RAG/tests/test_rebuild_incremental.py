@@ -142,8 +142,8 @@ class TestRebuildIncrementalIntegration:
 
     def _slow_embedding(self, monkeypatch, sleep=0.3):
         """慢速 embedding：放大重建任务与并发 ingest 的窗口"""
-        from backend.services import (embedding_service, ingestion_service,
-                                      retrieval_service)
+        from backend.services import embedding_service, retrieval_service
+        from backend.services.ingestion import service as ingestion_service
 
         class SlowEmb:
             async def embed(self, texts):

@@ -183,7 +183,7 @@ class TestActivate:
 class _FakeOpenAI:
     """伪 OpenAI 同步客户端：base_url 含 'bad' 时调用失败，否则成功
 
-    兼容 settings_service 的两种调用形态：
+    兼容 settings.service 的两种调用形态：
     client.chat.completions.create(messages=[...]) / client.embeddings.create(input=...)
     """
 
@@ -220,8 +220,8 @@ class _FakeOpenAI:
 
 @pytest.fixture()
 def mock_openai(monkeypatch):
-    """替换 settings_service 的 OpenAI 客户端（连接测试用，离线）"""
-    monkeypatch.setattr("backend.services.settings_service.OpenAI",
+    """替换 settings.service 的 OpenAI 客户端（连接测试用，离线）"""
+    monkeypatch.setattr("backend.services.settings.service.OpenAI",
                         _FakeOpenAI)
 
 

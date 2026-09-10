@@ -1,7 +1,7 @@
 import React from 'react';
 import { Descriptions, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
-import AppModal from '../AppModal';
+import AppModal from '../common/AppModal';
 import type { DocumentItem } from '../../api/types';
 import { methodLabel } from '../../api/types';
 

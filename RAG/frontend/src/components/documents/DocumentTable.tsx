@@ -40,9 +40,9 @@ import {
   purgeDocument,
   restoreDocument,
 } from '../../api/client';
-import AppEmpty from '../AppEmpty';
+import AppEmpty from '../common/AppEmpty';
 import LeftPagination from '../layout/LeftPagination';
-import ResizableTitle from '../ResizableTitle';
+import ResizableTitle from '../common/ResizableTitle';
 import { useResizableColumns } from '../../hooks/useResizableColumns';
 
 const { Text } = Typography;
@@ -112,12 +112,13 @@ const renderIngestTrace = (
   </div>
 );
 
-/** 解析方式语义说明（与后端 splitter.py / ingestion_service.py 实际行为对齐） */
+/** 解析方式语义说明（与后端 backend/chunking/ / backend/services/ingestion/ 实际行为对齐） */
 const METHOD_DESC: Record<string, string> = {
   naive: '按分隔符递归字符切块，块大小与重叠可配',
   title: '按标题切块',
   regex: '按正则匹配位置切块，匹配片段与其余文本都成块',
   parent_child: '父块按标题聚合章节，子块细粒度切分；命中子块返回父块上下文',
+  hierarchical: '按章节树自底向上聚合，块边界落在标题之间，块首自带标题链',
   qa: '按问/答标记聚合问答对为整块，入库检测问答对占比 ≥50%',
   agentic: 'LLM 语义切分逻辑段落并打标签',
 };
@@ -264,6 +265,30 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
 }) => {
   const { colWidths, handleResize } = useResizableColumns();
 
+  // 解析中计时：每秒 tick 驱动「已耗时」刷新。只在列表里存在解析中文档时起
+  // 定时器（空闲不空转）；耗时起点用 updated_at —— 状态转入 parsing 的那一刻
+  // 就是解析开始时刻（后端状态落库时间）
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const hasParsing = docs.some(d => d.status === 'parsing');
+  useEffect(() => {
+    if (!hasParsing) return;
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasParsing]);
+
+  /** 已解析耗时文本（秒 → m:ss，超 1 小时 → h:mm:ss）；起点缺失/非法返回空串 */
+  const formatElapsed = (startAt: string | undefined): string => {
+    if (!startAt) return '';
+    // 后端时间戳形如 "2026-09-10 16:36:56"，补 T 后交给 Date.parse
+    const t = Date.parse(startAt.replace(' ', 'T'));
+    if (Number.isNaN(t)) return '';
+    const s = Math.max(0, Math.floor((nowTick - t) / 1000));
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+  };
+
   /** 更多下拉菜单项（按文档状态/权限动态组装）：
    *  - 图谱补建/重建：仅已入库（ingested）显示；building 时禁用灰显（Spin），
    *    并提供「中断构建」（danger）入口（原操作列中断按钮移入）
@@ -365,10 +390,13 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       onHeaderCell: () => ({ width: colWidths.status ?? 110, onResize: handleResize('status'), title: '状态' }),
       render: (status: DocumentStatus, row) => {
         const meta = statusMeta[status] ?? { color: 'default', text: status };
+        // 解析中：状态标签内附已耗时（如「解析中 2:35」），长文档解析时能看出
+        // 等了多久；起点取不到（历史数据缺 updated_at）则不显示，不影响标签
+        const elapsed = status === 'parsing' ? formatElapsed(row.updated_at) : '';
         const tag =
           status === 'parsing' ? (
             <Tag color={meta.color} icon={<Spin size="small" />}>
-              {meta.text}
+              {meta.text}{elapsed ? ` ${elapsed}` : ''}
             </Tag>
           ) : (
             <Tag color={meta.color}>{meta.text}</Tag>

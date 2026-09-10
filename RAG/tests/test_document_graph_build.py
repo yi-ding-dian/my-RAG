@@ -100,7 +100,7 @@ def _patch_rec_embedding(monkeypatch):
     """替换 ingestion/retrieval 的 embedding 服务为记录式实现（引用复制需双 patch）"""
     rec = _RecordingEmbedding()
     fake_getter = lambda: rec  # noqa: E731
-    for module in ("backend.services.ingestion_service",
+    for module in ("backend.services.ingestion.service",
                    "backend.services.retrieval_service"):
         monkeypatch.setattr(module + ".get_embedding_service", fake_getter)
     return rec
@@ -389,7 +389,7 @@ class TestGraphBuildTask:
                                          admin_headers):
         """任务内 build_graph_for_doc 抛异常 → failed + graph_error（原因截断）"""
         _patch_rec_embedding(monkeypatch)
-        import backend.routers.documents as documents_mod
+        import backend.routers.documents.crud as documents_mod
 
         async def _boom(*args, **kwargs):
             raise RuntimeError("图谱落盘失败（测试构造）")
@@ -425,7 +425,7 @@ def _setup_multi_models(active=0):
     """把当前激活档案的 llm 段替换为双模型（模型A=激活 m-a / 模型B=m-b），
     测试内直接改服务单例（conftest 每测试重建，隔离安全；
     与 test_parse_llm_model._setup_multi_models 同款模式）"""
-    from backend.services.settings_service import get_settings_service
+    from backend.services.settings.service import get_settings_service
     svc = get_settings_service()
     p = svc.get_active()
     p["llm"] = {

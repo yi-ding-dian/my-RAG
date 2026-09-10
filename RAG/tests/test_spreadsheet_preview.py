@@ -1,4 +1,4 @@
-"""类 Excel 预览 HTML 渲染测试（spreadsheet_preview）
+"""类 Excel 预览 HTML 渲染测试（spreadsheet.preview）
 
 覆盖：HTML 骨架（纯 CSS tab 切换无 script）/ 多 sheet /
 合并单元格 rowspan-colspan / 列宽 / 百分比与日期格式 /
@@ -30,7 +30,7 @@ def _make_xlsx(tmp_path, name="p.xlsx"):
 
 
 def test_xlsx_html_structure_and_tabs(tmp_path):
-    from backend.services.spreadsheet_preview import render_spreadsheet_html
+    from backend.services.spreadsheet.preview import render_spreadsheet_html
     html = render_spreadsheet_html(_make_xlsx(tmp_path))
     assert html.startswith("<!doctype html>")
     assert "<script" not in html, "纯 CSS 切换，零 JS"
@@ -40,7 +40,7 @@ def test_xlsx_html_structure_and_tabs(tmp_path):
 
 
 def test_xlsx_merged_and_width_and_format(tmp_path):
-    from backend.services.spreadsheet_preview import render_spreadsheet_html
+    from backend.services.spreadsheet.preview import render_spreadsheet_html
     html = render_spreadsheet_html(_make_xlsx(tmp_path))
     assert 'rowspan="2"' in html, "合并单元格 rowspan 还原"
     assert "width:" in html and "px" in html, "列宽还原"
@@ -49,14 +49,14 @@ def test_xlsx_merged_and_width_and_format(tmp_path):
 
 
 def test_xlsx_value_escaped(tmp_path):
-    from backend.services.spreadsheet_preview import render_spreadsheet_html
+    from backend.services.spreadsheet.preview import render_spreadsheet_html
     html = render_spreadsheet_html(_make_xlsx(tmp_path))
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html, "单元格值须转义（防 XSS）"
 
 
 def test_csv_html(tmp_path):
-    from backend.services.spreadsheet_preview import render_spreadsheet_html
+    from backend.services.spreadsheet.preview import render_spreadsheet_html
     p = tmp_path / "t.csv"
     p.write_bytes("城市,预算\n桂林,3000\n".encode("gbk"))
     html = render_spreadsheet_html(p)
@@ -65,7 +65,7 @@ def test_csv_html(tmp_path):
 
 
 def test_empty_sheet_raises(tmp_path):
-    from backend.services.spreadsheet_preview import render_spreadsheet_html
+    from backend.services.spreadsheet.preview import render_spreadsheet_html
     import openpyxl
     p = tmp_path / "e.xlsx"
     wb = openpyxl.Workbook()
@@ -77,7 +77,7 @@ def test_empty_sheet_raises(tmp_path):
 
 def test_xls_basic(tmp_path):
     import xlwt
-    from backend.services.spreadsheet_preview import render_spreadsheet_html
+    from backend.services.spreadsheet.preview import render_spreadsheet_html
     wb = xlwt.Workbook()
     sh = wb.add_sheet("Old")
     sh.write(0, 0, "项目")

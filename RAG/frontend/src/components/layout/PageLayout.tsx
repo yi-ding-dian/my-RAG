@@ -1,5 +1,5 @@
 import React from 'react';
-import PageHeader from '../PageHeader';
+import PageHeader from './PageHeader';
 
 /**
  * 页面布局器（父类骨架）：标题 + 描述 + 面包屑 + 右上按钮区 + 子布局容器。

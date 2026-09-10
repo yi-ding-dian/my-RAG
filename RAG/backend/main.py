@@ -23,10 +23,14 @@ from backend.config import (BASE_DIR, CHAT_DIR, CHROMA_DIR, DATA_DIR,
                             get_active_config, settings as config_settings)
 from backend.db import init_db
 # 注意: routers.settings 模块名与 config.settings 同名，必须用别名避免遮蔽
-from backend.routers import (admin_documents, audit, auth, chat, departments,
-                             documents, ext_query, files, graphs,
-                             knowledge_bases, logs, settings, smart_parse,
-                             stats, user_memory, users)
+from backend.routers import (audit, auth, chat, departments, ext_query, files,
+                             graphs, knowledge_bases, logs, settings, stats,
+                             user_memory, users)
+# 文档域三个路由模块归入 routers/documents 包（各自 APIRouter 的 prefix/tags
+# 不变，注册结果与拆分前完全一致）
+from backend.routers.documents import admin as admin_documents
+from backend.routers.documents import crud as documents
+from backend.routers.documents import smart_parse
 
 logging.basicConfig(
     level=logging.INFO,

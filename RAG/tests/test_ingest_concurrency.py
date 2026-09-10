@@ -24,8 +24,8 @@ class TestIngestConcurrency:
     def test_ingest_concurrency_capped(self, client, admin_headers,
                                        monkeypatch):
         """同时触发 5 个 ingest：embedding 并发峰值 ≤3（信号量生效）"""
-        from backend.services import (embedding_service, ingestion_service,
-                                      retrieval_service)
+        from backend.services import embedding_service, retrieval_service
+        from backend.services.ingestion import service as ingestion_service
 
         class CountingEmb:
             """统计同时进行的 embed 调用数（asyncio 单线程，无需加锁）"""

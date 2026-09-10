@@ -2,7 +2,7 @@
 
 问题：API 直传负数/0/超大值无校验 → chat_service messages[-(n*2):] 切片
 语义错乱。
-修复：settings_service.update_profile 对 chat.history_rounds 校验 1~20
+修复：settings.service.update_profile 对 chat.history_rounds 校验 1~20
 （越界 → ValueError → 路由层 400）；前端表单已限 1-20（InputNumber）。
 """
 from __future__ import annotations

@@ -21,10 +21,10 @@ import httpx
 import pytest
 
 from backend.chunking import Chunk
-from backend.services import settings_service as ss
+from backend.services.settings import service as ss
 from backend.services.contextual_retriever import enrich_chunks
 from backend.services.knowledge_graph_service import build_graph_for_doc
-from backend.services.settings_service import (find_llm_item,
+from backend.services.settings.service import (find_llm_item,
                                                llm_cfg_for_parser)
 
 
@@ -118,7 +118,7 @@ class TestFindLlmItem:
 
     def test_parser_config_default_field(self):
         """ingestion 默认解析配置含 parse_llm_model（空=激活模型）"""
-        from backend.services.ingestion_service import _DEFAULT_PARSER_CONFIG
+        from backend.services.ingestion.params import _DEFAULT_PARSER_CONFIG
         assert _DEFAULT_PARSER_CONFIG["parse_llm_model"] == ""
 
     def test_ingest_request_passes_field_through(self):

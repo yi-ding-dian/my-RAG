@@ -10,6 +10,7 @@ import type {
   DocumentDetail,
   DocumentItem,
   DocumentPage,
+  DocxOutlineResponse,
   GlobalDocumentPage,
   IngestConfig,
   IngestResult,
@@ -116,6 +117,14 @@ export const listDocuments = (
 
 export const getDocument = (kbId: string, docId: string) =>
   api.get<DocumentDetail>(`/kbs/${kbId}/documents/${docId}`);
+
+/** 文档标题结构预览（「查看文档结构」弹窗数据源，can_access_kb）：结构解析
+ * （docx_struct）会把这份文档解析成什么样的标题层级树（层级 + 标题文本，
+ * 自动编号已还原）；仅 docx/doc 文档有效（其他类型 400）；提取异常走
+ * warning 字段（非空时 items 通常为空） */
+export const getDocxOutline = (kbId: string, docId: string) =>
+  api.get<DocxOutlineResponse>(
+    `/kbs/${kbId}/documents/${docId}/docx-outline`);
 
 /** 文档状态计数（Segmented 筛选标签的圆形数字徽标数据源；语义与状态筛选
  *  开关一致：unparsed=uploaded+parsed（待解析/已解析均未入库），

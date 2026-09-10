@@ -33,12 +33,14 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def upload_bytes(self, key: str, data: bytes,
-                           content_type: Optional[str] = None):
-        """上传字节内容到 key"""
+                           content_type: Optional[str] = None,
+                           quiet: bool = False):
+        """上传字节内容到 key（quiet=True 不打上传日志，由调用方汇总输出，
+        批量上传场景避免逐条刷屏）"""
 
     @abstractmethod
-    async def upload_path(self, key: str, path: Path):
-        """上传本地文件到 key"""
+    async def upload_path(self, key: str, path: Path, quiet: bool = False):
+        """上传本地文件到 key（quiet=True 不打上传日志，同 upload_bytes）"""
 
     @abstractmethod
     async def download_to(self, key: str, dest_path):
@@ -130,7 +132,8 @@ class MinIOBackend(StorageBackend):
             return False
 
     async def upload_bytes(self, key: str, data: bytes,
-                           content_type: Optional[str] = None):
+                           content_type: Optional[str] = None,
+                           quiet: bool = False):
         await self.ensure_bucket()
         cfg = self._cfg()
         try:
@@ -139,11 +142,12 @@ class MinIOBackend(StorageBackend):
                     cfg.bucket, key, io.BytesIO(data), len(data),
                     content_type=content_type or "application/octet-stream")
             await asyncio.to_thread(_run)
-            logger.info("MinIO 上传: %s (%d 字节)", key, len(data))
+            if not quiet:
+                logger.info("MinIO 上传: %s (%d 字节)", key, len(data))
         except Exception as e:
             raise RuntimeError(f"MinIO 上传失败 {key}: {e}") from e
 
-    async def upload_path(self, key: str, path: Path):
+    async def upload_path(self, key: str, path: Path, quiet: bool = False):
         await self.ensure_bucket()
         cfg = self._cfg()
         size = Path(path).stat().st_size
@@ -151,7 +155,8 @@ class MinIOBackend(StorageBackend):
             def _run():
                 self._get_client().fput_object(cfg.bucket, key, str(path))
             await asyncio.to_thread(_run)
-            logger.info("MinIO 上传文件: %s (%d 字节)", key, size)
+            if not quiet:
+                logger.info("MinIO 上传文件: %s (%d 字节)", key, size)
         except Exception as e:
             raise RuntimeError(f"MinIO 上传失败 {key}: {e}") from e
 
@@ -234,12 +239,14 @@ class LocalBackend(StorageBackend):
         return True
 
     async def upload_bytes(self, key: str, data: bytes,
-                           content_type: Optional[str] = None):
+                           content_type: Optional[str] = None,
+                           quiet: bool = False):
+        # quiet 仅为对齐抽象接口签名（本地实现本就不打上传日志）
         p = self._path(key)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
 
-    async def upload_path(self, key: str, path: Path):
+    async def upload_path(self, key: str, path: Path, quiet: bool = False):
         p = self._path(key)
         p.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(str(path), p)

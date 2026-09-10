@@ -67,7 +67,7 @@ class DocumentItem(BaseModel):
     status: str = Field("uploaded", description="状态: uploaded/parsing/parsed/ingested/failed")
     error: Optional[str] = Field(None, description="失败原因")
     chunk_count: int = Field(0, description="切块数")
-    parse_method: Optional[str] = Field(None, description="解析方式: mineru/deepdoc/plain")
+    parse_method: Optional[str] = Field(None, description="解析方式: mineru/deepdoc/normative/plain/spreadsheet")
     parser_id: Optional[str] = Field(None, description="切块方式: naive/title/regex（None=未入库）")
     parser_config: Optional[dict] = Field(None, description="切块参数: chunk_size/overlap/delimiter/split_level/regex_pattern")
     chunk_preview: List[str] = Field(default_factory=list, description="切块预览（限 20 条，每条截 500 字符，兼容保留）")
@@ -101,14 +101,14 @@ class UrlImportRequest(BaseModel):
 class IngestRequest(BaseModel):
     """手动触发入库的切块参数（全部可选，不传用文档已有配置或默认）
 
-    校验规则（同步 400 + 任务内写回 failed 双保险，见 ingestion_service.resolve_parser_config）：
+    校验规则（同步 400 + 任务内写回 failed 双保险，见 backend/services/ingestion/params.py 的 resolve_parser_config）：
     - method 仅 naive/title/regex/parent_child/qa；regex 必须有 regex_pattern；chunk_size 限 50~20000
     - parent_child 父块参数：parent_chunk_size 限 200~4000、parent_chunk_overlap 0~500、
       parent_split_level 1~6；retrieval_mode 仅 parent/child（默认 parent）
     - qa 问答切块：解析后检测问答对占比（问答对/总段落，≥50% 合格），不合格
       且未带 qa_force_continue → 任务失败（错误信息带检测详情，前端确认后
       带 qa_force_continue=true 重新提交强制入库）
-    - 解析配置（新字段，默认见 ingestion_service._DEFAULT_PARSER_CONFIG）：
+    - 解析配置（新字段，默认见 backend/services/ingestion/params.py 的 _DEFAULT_PARSER_CONFIG）：
       layout_recognize 仅 MinerU/DeepDOC/PlainText（均已生效：MinerU=高精度/
       DeepDOC 表格输出为可检索 HTML/PlainText 纯文本直提）；pages 为 [[from,to],...]
       （from/to>=1 且 from<=to）；task_page_size 限 1~128；
@@ -119,7 +119,7 @@ class IngestRequest(BaseModel):
       额外 token 费用）
     """
     method: Optional[str] = Field(None, description="切块方式: naive=通用切块/title=按标题切块/regex=正则切块/parent_child=父子分块/qa=QA 问答切块（按问/答标记聚合问答对为整块）")
-    parser_engine: Optional[str] = Field(None, description="解析引擎: auto=自动（MinerU 优先、不可用降级；layout_recognize=DeepDOC 时走 DeepDoc）/mineru=强制 MinerU（不可用标 failed）/deepdoc=强制 DeepDoc（RAGFlow，表格输出为可检索 HTML，仅 PDF）/plain=纯文本提取（默认 auto）")
+    parser_engine: Optional[str] = Field(None, description="解析引擎: auto=自动（MinerU 优先、不可用降级；layout_recognize=DeepDOC 时走 DeepDoc）/mineru=强制 MinerU（不可用标 failed）/deepdoc=强制 DeepDoc（RAGFlow，表格输出为可检索 HTML，仅 PDF）/docx_struct=本地结构化解析（OOXML 直读，标题层级/自动编号保留，仅 docx/doc；doc 经 LibreOffice 转换）/plain=纯文本提取（默认 auto）")
     backend: Optional[str] = Field(None, description="MinerU 解析后端: hybrid-auto-engine=混合自动引擎（默认，质量优：表格规范/OCR 准/流程图识别）/pipeline=管线（速度快约 20s，表格可能错乱）/auto=跟随服务端默认（与不传等价，不持久化不透传；仅 MinerU 引擎生效）")
     chunk_size: Optional[int] = Field(None, description="块大小（字符数，默认取活跃配置）")
     overlap: Optional[int] = Field(None, description="重叠字符数（默认取活跃配置）")
@@ -278,6 +278,20 @@ class DocumentDetail(DocumentItem):
     """文档详情（详情接口响应：在 DocumentItem 基础上补充 chunks 对象数组与 full_text）"""
     chunks: List[ChunkInfo] = Field(default_factory=list, description="切块（完整列表，含偏移，来源 chunks_meta）")
     full_text: str = Field("", description="解析后全文（data/parsed/{doc_id}.md，偏移以此为基准；未入库/文件缺失为空）")
+
+
+class DocxOutlineItem(BaseModel):
+    """标题结构条目（结构解析产物里的一个标题：层级 + 文本）"""
+    level: int = Field(..., description="标题层级（1=一级标题，最大 6）")
+    title: str = Field("", description="标题文本（Word 自动编号已还原，如 1.1.1 Linx80系统）")
+
+
+class DocxOutlineResponse(BaseModel):
+    """「查看文档结构」响应：结构解析（docx_struct）会把文档解析成的标题层级树"""
+    items: List[DocxOutlineItem] = Field(default_factory=list, description="标题列表（按文档顺序）")
+    count: int = Field(0, description="标题总数")
+    max_level: int = Field(0, description="最大层级（0=未检测到标题）")
+    warning: Optional[str] = Field(None, description="提取异常提示（正常为 null；非 null 时 items 通常为空）")
 
 
 class GraphChunkRef(BaseModel):

@@ -1,5 +1,5 @@
 import React from 'react';
-import { renderTableBlocks } from '../components/MarkdownTable';
+import { renderTableBlocks } from '../components/common/MarkdownTable';
 
 /**
  * 富文本段落渲染助手：先提取表格块（管道/HTML 表格 → 真表格），

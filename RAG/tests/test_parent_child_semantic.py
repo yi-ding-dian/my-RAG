@@ -134,7 +134,7 @@ class TestSemanticChunking:
                                      parent_chunk_size=200, parent_split_level=2)
         result = chunker.chunk_parent_child(SEM_TEXT)
         # 父块数与章节段数一致（无文档头 → 6 段）
-        sections = chunker._split_sections(SEM_TEXT, list(_HEADING_RE.finditer(SEM_TEXT)), 2)
+        sections = chunker._split_sections(SEM_TEXT, [(m.start(), len(m.group(1))) for m in _HEADING_RE.finditer(SEM_TEXT)], 2)
         assert len(result.parents) == len(sections) == 6
         for p, (s, e) in zip(result.parents, sections):
             assert p.text == SEM_TEXT[s:e].strip(), "父块应为完整章节（标题行起）"
@@ -172,7 +172,7 @@ class TestSemanticChunking:
         chunker = ParentChildChunker(chunk_size=50, overlap=20,
                                      parent_chunk_size=200, parent_split_level=1)
         result = chunker.chunk_parent_child(SEM_TEXT)
-        sections = chunker._split_sections(SEM_TEXT, list(_HEADING_RE.finditer(SEM_TEXT)), 1)
+        sections = chunker._split_sections(SEM_TEXT, [(m.start(), len(m.group(1))) for m in _HEADING_RE.finditer(SEM_TEXT)], 1)
         assert len(sections) == 2, "按 H1 切应有 2 个章节段"
         for c in result.children:
             inside = [s for s in sections
@@ -290,7 +290,7 @@ class TestHeadingInjection:
         chunker = ParentChildChunker(chunk_size=50, overlap=10,
                                      parent_split_level=2)
         result = chunker.chunk_parent_child(SEM_TEXT)
-        # 模拟 ingestion_service 的 enable_heading_in_content 流程
+        # 模拟 backend/services/ingestion/service.py 的 enable_heading_in_content 流程
         children = add_heading_paths(result.children, SEM_TEXT)
         injected = [c.text for c in children if " > " in c.text[:100]]
         assert injected, "应存在补了父标题链的子块"

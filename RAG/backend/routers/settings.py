@@ -35,7 +35,7 @@ from backend.db import get_db
 from backend.deps import get_current_user, require_super_admin, require_user_admin
 from backend.models.user_models import UserPublic
 from backend.services import audit_service, department_service
-from backend.services.settings_service import (LLM_TEST_TIMEOUT,
+from backend.services.settings.service import (LLM_TEST_TIMEOUT,
                                                SECTION_SCHEMA,
                                                find_llm_item,
                                                get_settings_service,
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["系统配置"])
 
 # 聊天设置白名单：仅这些字段可经 /api/settings/chat 读写（防越权改基础设施段）。
-# 全部从 settings_service.SECTION_SCHEMA 的 whitelist 标记派生（schema 是唯一来源；
+# 全部从 settings.service.SECTION_SCHEMA 的 whitelist 标记派生（schema 是唯一来源；
 # llm 段白名单 = 部门可覆盖的 LLM 字段，其余基础设施段仍仅超管档案管理可改）
 def _whitelist(section: str) -> frozenset:
     return frozenset(f.name for f in SECTION_SCHEMA[section].fields.values()
@@ -200,7 +200,7 @@ def _validate_chat_section(section: str, body: dict, payload: dict,
 def _validate_chat_payload(body: dict) -> dict:
     """聊天设置白名单校验：只接受 chat/retrieval/llm 段内的白名单字段
 
-    返回仅含白名单字段的载荷（可直接交给 settings_service.update_profile）：
+    返回仅含白名单字段的载荷（可直接交给 settings.service.update_profile）：
     - 顶层出现其他段（embedding/minio/...）→ 400（防越权改基础设施配置）
     - 段内出现未知字段 → 400；数值字段不可转数字 → 400
     - chat 段 temperature/top_p/max_tokens 显式传 null 合法（= 用 LLM 配置默认）
@@ -342,7 +342,7 @@ async def test_profile(request: Request, profile_id: str,
         # 表单未保存值覆盖测试（支持传单 section 或全量；chat 段不入测试
         # ——连接测试只覆盖可探测的服务段，与 schema 段序一致）
         profile = dict(profile)
-        from backend.services.settings_schema import is_secret_field
+        from backend.services.settings.schema import is_secret_field
 
         def _merge_subsection(sub_cur: dict, sub_orig: dict) -> dict:
             """子段（如 retrieval.rerank）与"保存"语义对齐：空值(None/"")
@@ -404,7 +404,7 @@ async def test_llm_connection(body: dict,
       直接用脱敏值探测必然 401；api_key 为脱敏值时按 name 从激活档案
       回查真实 key 再探测（只测不写）。匹配不到 → 明确失败原因。
     """
-    from backend.services.probes import probe_llm_sdk
+    from backend.services.parsers.probes import probe_llm_sdk
     if is_masked(body.get("api_key")):
         _active = get_settings_service().get_active()
         _models = ((_active or {}).get("llm") or {}).get("models") or []
@@ -458,10 +458,10 @@ async def test_llm_model_by_name(body: dict,
     """按模型名测试连接（解析配置弹窗切换模型前调用；只测不写，登录即可）
 
     前端无明文 api_key 且 /llm/test 为管理员专用，故本接口按 name 从激活
-    档案查完整条目（含 api_key）→ probes.probe_llm（GET {base_url}/models，
+    档案查完整条目（含 api_key）→ parsers.probes.probe_llm（GET {base_url}/models，
     ≤5s）；查不到模型 → 404；返回 {ok, reason, latency_ms}。
     """
-    from backend.services.probes import probe_llm
+    from backend.services.parsers.probes import probe_llm
     name = (body or {}).get("name")
     if not name or not isinstance(name, str):
         raise HTTPException(status_code=400, detail="缺少模型名称 name")

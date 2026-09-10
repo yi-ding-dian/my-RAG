@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import AppModal from '../components/AppModal';
+import AppModal from '../components/common/AppModal';
 import { useNavigate } from 'react-router-dom';
 import {
   App as AntApp, 
@@ -32,9 +32,9 @@ import {
   updateKb,
   updateKbTags,
 } from '../api/client';
-import AppEmpty from '../components/AppEmpty';
-import KbCard from '../components/KbCard';
-import PageHeader from '../components/PageHeader';
+import AppEmpty from '../components/common/AppEmpty';
+import KbCard from '../components/knowledge/KbCard';
+import PageHeader from '../components/layout/PageHeader';
 import { useAuth } from '../auth/AuthContext';
 
 const KnowledgeBasesPage: React.FC = () => {
