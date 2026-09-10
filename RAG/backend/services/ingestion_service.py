@@ -73,7 +73,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from backend.chunking.splitter import (VALID_METHODS, Chunk, QaStats,
+from backend.chunking import (VALID_METHODS, Chunk, QaStats,
                                        add_heading_paths, analyze_qa_format,
                                        get_chunker, is_qa_format_valid,
                                        ParentChildChunkResult)
@@ -276,14 +276,18 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
     # MinerU 解析后端（仅 MinerU 引擎生效）：请求显式传 > 文档已有配置（重跑沿用）；
     # None/auto 语义=跟随服务端默认：不写入 cfg（不持久化、不透传），
     # 显式传 "auto" 可重置上次持久化的 backend（新配置覆盖旧值）
+    # 默认改 pipeline（2026-09-09）：本环境 MinerU 服务未配 GPU device，
+    # hybrid-auto-engine 报"Device string must not be empty"不可用，pipeline 实测可用；
+    # 未显式传且文档无旧配置 → 按新默认 pipeline（写入 cfg 生效，重跑沿用）
     backend = params.get("backend", old.get("backend"))
-    if backend is not None:
-        if backend not in _VALID_MINERU_BACKENDS:
-            raise ValueError(
-                f"backend 非法: {backend}"
-                f"（支持: {'/'.join(_VALID_MINERU_BACKENDS)}，None=跟随服务端默认）")
-        if backend != "auto":
-            cfg["backend"] = backend
+    if backend is None:
+        backend = "pipeline"
+    if backend not in _VALID_MINERU_BACKENDS:
+        raise ValueError(
+            f"backend 非法: {backend}"
+            f"（支持: {'/'.join(_VALID_MINERU_BACKENDS)}，None=跟随服务端默认）")
+    if backend != "auto":
+        cfg["backend"] = backend
     # 块大小 / 重叠：请求 > 已有配置 > 活跃配置
     chunk_size = params.get("chunk_size", old.get("chunk_size", active.chunk_size))
     if not _MIN_CHUNK_SIZE <= chunk_size <= _MAX_CHUNK_SIZE:
@@ -906,9 +910,15 @@ class IngestionService:
         # 仅改块文本，char_start/char_end 保持原文偏移（归属/定位不受影响）
         # 原始块文本在加前缀前保留：父标题只用于展示，知识图谱实体偏移
         # 以原文为准（与 chunks_meta 偏移契约一致）
+        # 父块（parent_text，retrieval_mode=parent 时检索返回的上下文）同样
+        # 拼接标题链：父块全文常以「节标题」开头但缺「章标题」（如
+        # "13.1 主界面" 开头而缺 "十三、二代压板逻辑生成工具"），LLM 无法
+        # 定位章节归属 → 与子块一致处理
         raw_chunk_texts: List[str] = [c.text for c in chunk_objects]
         if parser_config.get("enable_heading_in_content"):
             chunk_objects = add_heading_paths(chunk_objects, text)
+            if parent_chunks:
+                parent_chunks = add_heading_paths(parent_chunks, text)
 
         return _IngestChunkStage(
             chunk_objects=chunk_objects, parent_chunks=parent_chunks,

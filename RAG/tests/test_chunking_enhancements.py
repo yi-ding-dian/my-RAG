@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from backend.chunking.splitter import (Chunk, MarkdownSplitter,
+from backend.chunking import (Chunk, MarkdownSplitter,
                                        ParentChildChunker, find_protected_ranges)
 
 # 含 markdown 表格的章节（表格 5 行：表头+分隔行+3 数据行）
@@ -172,7 +172,7 @@ class TestImageIntegrity:
 
     def test_image_not_cut_in_naive_split(self):
         """naive（RecursiveChunker 兜底保护）：引用完整保留、无残缺链接文本"""
-        from backend.chunking.splitter import RecursiveChunker
+        from backend.chunking import RecursiveChunker
         chunks = RecursiveChunker(chunk_size=800, overlap=0).chunk(self.IMG_TEXT)
         _assert_offsets(chunks, self.IMG_TEXT)
         _assert_ranges_intact(chunks, find_protected_ranges(self.IMG_TEXT),

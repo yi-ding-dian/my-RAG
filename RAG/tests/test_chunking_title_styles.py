@@ -22,8 +22,8 @@ import re
 
 import pytest
 
-from backend.chunking.splitter import (Chunk, MarkdownSplitter,
-                                       _iter_headings, find_protected_ranges)
+from backend.chunking import (Chunk, MarkdownSplitter, find_protected_ranges)
+from backend.chunking.common import _iter_headings
 
 # 真实文档：纯文本 E 文件导出实例（1495 行，44 个 '===== 6.x =====' +
 # 43 个 '--- 备注 ---' + 4 个【】标题 + 多处纯 =/- 装饰线）

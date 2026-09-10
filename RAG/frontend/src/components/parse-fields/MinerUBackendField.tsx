@@ -10,15 +10,15 @@ interface MinerUBackendFieldProps {
 }
 
 /**
- * MinerU 解析后端选择（mineru-api /file_parse backend 参数，实测对比见
- * 项目 mcp-server/kb-ext-server/record.md）。
+ * MinerU 解析后端选择（mineru-api /file_parse backend 参数）。
  * 仅在解析引擎选择「MinerU 高精度」时显示（ParseConfigModal 条件渲染）。
- * 自动=不传（跟随 MinerU 服务端默认 hybrid-auto-engine）/ 混合自动引擎=质量优
- * （表格规范/OCR 准/流程图识别，速度稍慢）/ 管线=速度快（约快 20s，表格可能错乱）。
+ * 默认值 pipeline（2026-09-09 起，后端 resolve_parser_config 兜底同值）：
+ * 本环境 MinerU 服务无 GPU 配置，混合自动引擎（hybrid-auto-engine）不可用，
+ * 管线（pipeline）CPU 可跑且实测正常；若以后服务端补 GPU，可改回混合引擎。
  */
 const MinerUBackendField: React.FC<MinerUBackendFieldProps> = ({
   name = 'backend',
-  initialValue = 'auto',
+  initialValue = 'pipeline',
 }) => {
   return (
     <Form.Item
@@ -26,7 +26,7 @@ const MinerUBackendField: React.FC<MinerUBackendFieldProps> = ({
       label={
         <span>
           MinerU 解析后端
-          <Tooltip title="mineru-api 两种解析引擎实测：混合自动引擎（hybrid-auto-engine）质量优——表格规范/OCR 准/流程图识别，速度慢约 30%；管线（pipeline）快约 20s 但表格可能错乱。自动=跟随服务端默认（混合自动引擎）。">
+          <Tooltip title="混合自动引擎：先识别页面结构再分块处理，表格/OCR/流程图更准，速度快慢取决于服务端硬件；管线：标准流水线，速度快，但复杂表格可能错乱。当前默认管线。">
             <span style={{ marginLeft: 6, color: '#999', cursor: 'help' }}>?</span>
           </Tooltip>
         </span>
@@ -35,7 +35,7 @@ const MinerUBackendField: React.FC<MinerUBackendFieldProps> = ({
     >
       <Select
         options={[
-          { value: 'auto', label: '自动（默认）' },
+          { value: 'auto', label: '自动（跟随服务端）' },
           { value: 'hybrid-auto-engine', label: '混合自动引擎（质量优）' },
           { value: 'pipeline', label: '管线（速度快）' },
         ]}

@@ -84,7 +84,8 @@ class TestIngestBackendValidation:
             "status"] == "uploaded"
 
     def test_backend_none_default_ok(self, client, mock_embedding, admin_headers):
-        """不传 backend（None）：成功，parser_config 不出现 backend 键（跟随服务端默认）"""
+        """不传 backend（None）：成功，默认 pipeline（本环境 hybrid 因无 GPU 不可用，
+        默认改为 pipeline，2026-09-09）"""
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"])
         resp = _ingest(client, kb["id"], doc["id"],
@@ -92,7 +93,7 @@ class TestIngestBackendValidation:
         assert resp.status_code == 200, resp.text
         final = wait_for_status(client, kb["id"], doc["id"])
         assert final["status"] == "ingested"
-        assert "backend" not in final["parser_config"]
+        assert final["parser_config"].get("backend") == "pipeline"
 
     def test_backend_auto_not_persisted(self, client, mock_embedding, admin_headers):
         """backend="auto"：合法（=跟随服务端默认），不持久化不透传"""
@@ -193,10 +194,10 @@ class TestIngestBackendPassthrough:
 
     def test_backend_unset_not_passed(self, client, monkeypatch, mock_embedding,
                                       admin_headers):
-        """不传 backend → parse_opts 无 backend"""
+        """不传 backend → 默认 pipeline（新默认，2026-09-09）"""
         fake = self._run(client, monkeypatch, {"method": "naive"}, admin_headers)
         assert fake.last_opts is not None
-        assert "backend" not in fake.last_opts
+        assert fake.last_opts.get("backend") == "pipeline"
 
 
 class TestParserBackendFormData:

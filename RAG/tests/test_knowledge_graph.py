@@ -24,7 +24,7 @@ import pytest
 
 from conftest import (char_vector, create_department_and_admin, create_kb,
                       create_user, upload_doc, wait_for_status)
-from backend.chunking.splitter import Chunk
+from backend.chunking import Chunk
 from backend.services.knowledge_graph_service import (
     GRAPH_DIR, _empty_graph, build_graph_context, build_graph_for_doc,
     build_thinking_extra_body, expand_neighbors, extract_query_entities,

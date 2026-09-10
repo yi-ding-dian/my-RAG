@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import char_vector, create_kb, upload_doc, wait_for_status
-from backend.chunking.splitter import Chunk
+from backend.chunking import Chunk
 from backend.services.contextual_retriever import enrich_chunks
 
 

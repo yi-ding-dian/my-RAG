@@ -17,8 +17,8 @@ import re
 
 import pytest
 
-from backend.chunking.splitter import (Chunk, ParentChildChunker,
-                                       _HEADING_RE, add_heading_paths)
+from backend.chunking import (Chunk, ParentChildChunker, add_heading_paths)
+from backend.chunking.common import _HEADING_RE
 
 # 语义样本：多级标题 + 长短章节（1.1 节内容足够长以切出多子块）
 SEM_TEXT = """# 第一章 总览

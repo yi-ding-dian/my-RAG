@@ -38,8 +38,8 @@ from typing import List, Optional, Tuple
 
 from openai import AsyncOpenAI
 
-from backend.chunking.splitter import (
-    Chunk, _iter_headings, find_protected_ranges)
+from backend.chunking import Chunk, find_protected_ranges
+from backend.chunking.common import _iter_headings
 from backend.config import LLMConfig, get_active_config
 from backend.services.chat_service import _llm_to_dict
 from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,

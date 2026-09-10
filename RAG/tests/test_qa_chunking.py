@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from backend.chunking.splitter import (Chunk, QaChunker, QaStats,
+from backend.chunking import (Chunk, QaChunker, QaStats,
                                        analyze_qa_format, get_chunker,
                                        is_qa_format_valid)
 from backend.services.ingestion_service import resolve_parser_engine

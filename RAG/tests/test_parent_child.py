@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.chunking.splitter import (Chunk, ParentChildChunker,
+from backend.chunking import (Chunk, ParentChildChunker,
                                        get_chunker)
 from conftest import create_kb, upload_doc, wait_for_status
 

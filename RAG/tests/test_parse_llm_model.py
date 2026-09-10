@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from backend.chunking.splitter import Chunk
+from backend.chunking import Chunk
 from backend.services import settings_service as ss
 from backend.services.contextual_retriever import enrich_chunks
 from backend.services.knowledge_graph_service import build_graph_for_doc

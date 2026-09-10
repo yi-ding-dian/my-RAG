@@ -291,9 +291,8 @@ const renderPromptEntries = (
         >
           {title}
         </div>
-        <pre
+        <div
           style={{
-            margin: 0,
             fontSize: 12,
             lineHeight: 1.6,
             whiteSpace: 'pre-wrap',
@@ -304,8 +303,14 @@ const renderPromptEntries = (
             borderRadius: 6,
           }}
         >
-          {content || '（空）'}
-        </pre>
+          {/* 内容走 renderContent（清洗 + MdImages 渲染 ![]() 图片）：
+              prompt 是发给 LLM 的原始 messages，其中的图片标记应显示为
+              图片（如引用溯源弹窗正文），而非裸 markdown 文本；无 sources/ha
+              引用标时 renderContent 原样输出，行为安全 */}
+          {content
+            ? renderContent(content, undefined, undefined)
+            : '（空）'}
+        </div>
       </div>
     );
   });

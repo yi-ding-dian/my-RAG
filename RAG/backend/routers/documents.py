@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.chunking.splitter import Chunk
+from backend.chunking import Chunk
 from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404

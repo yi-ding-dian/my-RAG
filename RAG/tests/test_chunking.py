@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.chunking.splitter import (Chunk, MarkdownSplitter,
+from backend.chunking import (Chunk, MarkdownSplitter,
                                        RecursiveChunker, RegexChunker,
                                        get_chunker)
 

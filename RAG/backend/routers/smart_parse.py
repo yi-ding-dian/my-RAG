@@ -22,10 +22,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.chunking.splitter import (analyze_qa_format,
-                                       find_protected_ranges,
-                                       is_qa_format_valid, _iter_headings,
-                                       _is_pure_symbol_line)
+from backend.chunking import (analyze_qa_format, find_protected_ranges,
+                                       is_qa_format_valid)
+from backend.chunking.common import _iter_headings, _is_pure_symbol_line
 from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
