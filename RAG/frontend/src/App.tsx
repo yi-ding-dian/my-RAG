@@ -28,32 +28,32 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 
-import ProtectedRoute from './components/layout/ProtectedRoute';
-import ForcedPasswordModal from './components/users/ForcedPasswordModal';
-import { AuthProvider, useAuth } from './auth/AuthContext';
+import ProtectedRoute from './shared/components/layout/ProtectedRoute';
+import ForcedPasswordModal from './modules/users/components/ForcedPasswordModal';
+import { AuthProvider, useAuth } from './shared/auth/AuthContext';
 import { THEME_PRESETS, useTheme } from './theme';
 import { APP_VERSION } from './constants';
-import { avatarUrl } from './api/client';
-import type { User } from './auth/token';
+import { avatarUrl } from './shared/api/client';
+import type { User } from './shared/auth/token';
 
 /* 页面按需加载（代码分割）：主 chunk 只含框架与路由，页面与业务依赖各自独立 chunk */
-const ChatPage = lazy(() => import('./pages/Chat'));
-const RetrievalTestPage = lazy(() => import('./pages/RetrievalTest'));
-const DocumentsPage = lazy(() => import('./pages/Documents'));
-const GlobalDocumentsPage = lazy(() => import('./pages/GlobalDocuments'));
-const KnowledgeBasesPage = lazy(() => import('./pages/KnowledgeBases'));
-const AnalyticsPage = lazy(() => import('./pages/analytics/Analytics'));
-const AnalyticsQualityDetailPage = lazy(() => import('./pages/analytics/AnalyticsQualityDetail'));
-const AnalyticsRagasDetailPage = lazy(() => import('./pages/analytics/AnalyticsRagasDetail'));
-const AnalyticsFeedbackDetailPage = lazy(() => import('./pages/analytics/AnalyticsFeedbackDetail'));
-const SettingsPage = lazy(() => import('./pages/settings'));
-const UsersPage = lazy(() => import('./pages/Users'));
-const ProfilePage = lazy(() => import('./pages/Profile'));
-const LoginPage = lazy(() => import('./pages/Login'));
-const ExtQueriesPage = lazy(() => import('./pages/ExtQueries'));
-const LogsPage = lazy(() => import('./pages/logs'));
+const ChatPage = lazy(() => import('./modules/chat/Chat'));
+const RetrievalTestPage = lazy(() => import('./modules/retrieval/RetrievalTest'));
+const DocumentsPage = lazy(() => import('./modules/documents/Documents'));
+const GlobalDocumentsPage = lazy(() => import('./modules/documents/GlobalDocuments'));
+const KnowledgeBasesPage = lazy(() => import('./modules/knowledge/KnowledgeBases'));
+const AnalyticsPage = lazy(() => import('./modules/analytics/Analytics'));
+const AnalyticsQualityDetailPage = lazy(() => import('./modules/analytics/AnalyticsQualityDetail'));
+const AnalyticsRagasDetailPage = lazy(() => import('./modules/analytics/AnalyticsRagasDetail'));
+const AnalyticsFeedbackDetailPage = lazy(() => import('./modules/analytics/AnalyticsFeedbackDetail'));
+const SettingsPage = lazy(() => import('./modules/settings'));
+const UsersPage = lazy(() => import('./modules/users/Users'));
+const ProfilePage = lazy(() => import('./modules/profile/Profile'));
+const LoginPage = lazy(() => import('./modules/auth/Login'));
+const ExtQueriesPage = lazy(() => import('./modules/ext-queries/ExtQueries'));
+const LogsPage = lazy(() => import('./modules/logs'));
 /* 外部查询公开页（无登录，独立于布局） */
-const ExtQueryPage = lazy(() => import('./pages/ExtQueryPage'));
+const ExtQueryPage = lazy(() => import('./modules/ext-queries/ExtQueryPage'));
 
 const { Sider, Content } = Layout;
 

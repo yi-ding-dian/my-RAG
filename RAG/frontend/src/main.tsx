@@ -8,7 +8,7 @@ import 'antd/dist/reset.css';
 import './index.css';
 
 import App from './App';
-import ErrorBoundary from './components/common/ErrorBoundary';
+import ErrorBoundary from './shared/components/common/ErrorBoundary';
 import { ThemeProvider, useTheme, buildTheme } from './theme';
 
 dayjs.locale('zh-cn');
