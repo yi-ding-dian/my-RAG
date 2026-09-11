@@ -166,16 +166,17 @@ def _mock_parser_probe(monkeypatch):
 def _isolated_env():
     """每个测试前：清空 JSON 元数据与文件目录 + 重置服务单例
 
-    - uploads/parsed/kbs/documents/chat/storage 清空内容（保留目录本身）；
+    - uploads/parsed/kbs/documents/chat/chat_deleted/storage 清空内容
+      （保留目录本身）；
     - settings.json 等根目录 JSON 删除（settings 单例重建后重新初始化默认档案）；
     - chroma 目录保留：vector_store 单例 session 级复用，kb_id 随机
       collection 天然隔离。
     """
-    from backend.config import (CHAT_DIR, DATA_DIR, DOCUMENTS_DIR, KBS_DIR,
-                                PARSED_DIR, STORAGE_DIR, UPLOAD_DIR,
-                                USER_MEMORY_DIR)
+    from backend.config import (CHAT_DELETED_DIR, CHAT_DIR, DATA_DIR,
+                                DOCUMENTS_DIR, KBS_DIR, PARSED_DIR,
+                                STORAGE_DIR, UPLOAD_DIR, USER_MEMORY_DIR)
     for d in (UPLOAD_DIR, PARSED_DIR, KBS_DIR, DOCUMENTS_DIR, CHAT_DIR,
-              STORAGE_DIR, USER_MEMORY_DIR):
+              CHAT_DELETED_DIR, STORAGE_DIR, USER_MEMORY_DIR):
         shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True, exist_ok=True)
     for p in list(DATA_DIR.glob("*.json")) + list(DATA_DIR.glob("*.jsonl")):

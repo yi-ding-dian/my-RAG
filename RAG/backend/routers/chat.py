@@ -3,8 +3,8 @@
 - POST /stream       SSE 流式问答（meta -> delta -> done / error）
 - POST /retrieve     检索调试（返回 Source 列表）
 - GET /history       会话列表（按用户过滤，super_admin 全量；支持 kb_id 过滤）
-- GET /history/{id}  会话详情（owner 或 super_admin）
-- DELETE /history/{id} 删除会话（owner 或 super_admin）
+- GET /history/{id}  会话详情（owner 或 super_admin；include_deleted 仅超管生效=回退读归档）
+- DELETE /history/{id} 删除会话（owner 或 super_admin；真删除，仅按反馈裁剪归档供超管回溯）
 
 权限矩阵：
 - stream/retrieve：登录 + can_access_kb（kb 无权限 404 伪装）；带 session_id 时校验归属
@@ -17,7 +17,7 @@ import logging
 from typing import List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,7 +31,8 @@ from backend.models.rag_models import (ChatHistoryItem, ChatRequest,
 from backend.models.user_models import UserPublic
 from backend.services import audit_service, department_service
 from backend.services.chat_service import get_chat_service, sse_event
-from backend.services.feedback_service import create_feedback
+from backend.services.feedback_service import (create_feedback,
+                                               get_feedback_msg_idxs)
 from backend.services.knowledge_graph_service import build_kg_source
 from backend.services.retrieval_service import get_retrieval_service
 
@@ -184,27 +185,52 @@ async def list_history(kb_id: Optional[str] = None,
 
 
 @router.get("/history/{session_id}")
-async def get_history(session_id: str,
-                      db: AsyncSession = Depends(get_db),
-                      user: UserPublic = Depends(get_current_user)):
-    """会话详情（owner 或 super_admin，否则 404 伪装）"""
-    session = get_chat_service().get_session(session_id)
+async def get_history(
+        session_id: str,
+        include_deleted: bool = Query(
+            False,
+            description="超管专用：会话已删除时回退读归档（回溯反馈现场用）"),
+        db: AsyncSession = Depends(get_db),
+        user: UserPublic = Depends(get_current_user)):
+    """会话详情（owner 或 super_admin，否则 404 伪装）
+
+    - include_deleted=true 仅对 super_admin 生效；其他角色传了也静默按
+      false 处理——与"删除"语义一致，且不因参数差异泄露归档是否存在
+      （否则 owner 拿自己的已删会话 id 就能读回，删除形同虚设）
+    - 归档回退：用户删除的会话留在归档目录（含"点踩后顺手删掉"的），
+      超管回溯反馈现场时仍可读到完整对话与引用快照
+    - 响应在会话字段之外附加 archived（bool）= 内容是否来自归档（即用户
+      已删除该会话），供前端提示超管
+    """
+    read_archived = include_deleted and user.role == "super_admin"
+    chat_svc = get_chat_service()
+    session = chat_svc.get_session(session_id, include_deleted=read_archived)
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
     _check_session_owner(session, user)
-    return session
+    data = session.model_dump(mode="json")
+    # 归档标记：内容来自归档目录（= 用户已删除该会话），前端据此提示超管
+    data["archived"] = chat_svc.is_archived(session_id)
+    return data
 
 
 @router.delete("/history/{session_id}")
 async def delete_history(request: Request, session_id: str,
                          db: AsyncSession = Depends(get_db),
                          user: UserPublic = Depends(get_current_user)):
-    """删除会话（owner 或 super_admin，否则 404 伪装；成功记审计）"""
+    """删除会话（owner 或 super_admin，否则 404 伪装；成功记审计）
+
+    对用户始终是真删除（列表不可见、直读 404）。归档只服务超管回溯反馈
+    现场，且按反馈裁剪：无反馈的会话直接物理删除；有反馈的只保留被反馈的
+    那几轮 + 前 2 轮上下文；反馈查询失败则归档完整会话（宁可多留，不丢证据）。
+    """
     session = get_chat_service().get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
     _check_session_owner(session, user)
-    ok = get_chat_service().delete_session(session_id)
+    # 反馈下标决定归档范围：None=查询失败→归档完整 / 空集=无反馈→物理删除
+    keep_idxs = await get_feedback_msg_idxs(session_id)
+    ok = get_chat_service().delete_session(session_id, keep_msg_idxs=keep_idxs)
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
     await audit_service.record_action(

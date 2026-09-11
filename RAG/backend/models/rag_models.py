@@ -192,6 +192,11 @@ class ChatMessage(BaseModel):
     retrieval_ms: Optional[int] = Field(None, description="检索耗时（ms，请求详情用）")
     kg_ms: Optional[int] = Field(None, description="知识图谱增强耗时（ms，请求详情用）")
     total_ms: Optional[int] = Field(None, description="问答总耗时（ms，前端流式结束补写；后端落盘为 None）")
+    # 本次生成参数快照（模型/温度/思考模式/检索参数等影响输出的配置）：
+    # 事后追溯"这条回答当时是怎么跑出来的"——温度过高、思考被关这类问题
+    # 只能靠它判断。旧数据缺字段=未记录（前端详情区显示明确提示）
+    gen_params: dict = Field(default_factory=dict,
+                             description="本次生成参数快照（详情追溯用；空=未记录）")
     created_at: Optional[str] = Field(None, description="消息时间（落盘写入；旧数据缺失=历史会话时间戳/详情入口隐藏）")
 
 
@@ -204,6 +209,11 @@ class ChatSession(BaseModel):
     messages: List[ChatMessage] = Field(default_factory=list, description="消息列表")
     created_at: str = Field("", description="创建时间")
     updated_at: str = Field("", description="更新时间")
+    # 归档裁剪标记：删除时按反馈裁剪过（只留被反馈轮 + 前 N 轮上下文），
+    # 非完整会话。仅归档文件为 True，活会话恒 False——超管回溯时据此提示，
+    # 避免把"只剩 3 轮"误当成完整现场（Pydantic 会丢弃未声明字段，
+    # 此处不声明则归档里写了也读不出来）
+    trimmed: bool = Field(False, description="归档时是否已裁剪（仅归档文件可能为 True）")
 
 
 class ChatHistoryItem(BaseModel):

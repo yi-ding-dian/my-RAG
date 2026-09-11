@@ -18,9 +18,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
-from backend.config import (BASE_DIR, CHAT_DIR, CHROMA_DIR, DATA_DIR,
-                            DOCUMENTS_DIR, KBS_DIR, PARSED_DIR, UPLOAD_DIR,
-                            get_active_config, settings as config_settings)
+from backend.config import (BASE_DIR, CHAT_DELETED_DIR, CHAT_DIR, CHROMA_DIR,
+                            DATA_DIR, DOCUMENTS_DIR, KBS_DIR, PARSED_DIR,
+                            UPLOAD_DIR, get_active_config,
+                            settings as config_settings)
 from backend.db import init_db
 # 注意: routers.settings 模块名与 config.settings 同名，必须用别名避免遮蔽
 from backend.routers import (audit, auth, chat, departments, ext_query, files,
@@ -140,6 +141,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"  知识库元数据: {KBS_DIR}")
     logger.info(f"  文档元数据: {DOCUMENTS_DIR}")
     logger.info(f"  会话: {CHAT_DIR}")
+    logger.info(f"  会话归档（已删除会话，超管可回溯反馈现场）: {CHAT_DELETED_DIR}")
     logger.info(f"  向量库: {CHROMA_DIR}")
     # 数据库初始化：建库（MySQL，失败降级 warn）→ 建表 → 种子（默认部门 + admin）
     db_info = await init_db()

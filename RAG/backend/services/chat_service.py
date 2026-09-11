@@ -12,6 +12,8 @@
   事件内容（prompt 事件仍为组装后原始 messages）
 - 无命中直接告知，不调用 LLM
 - history 截最近 8 轮（配置可调）；会话落盘 data/chat/{session_id}.json 含 sources 快照
+- 删除会话：无反馈关联的直接物理删除；有反馈的裁剪归档到 data/chat_deleted/
+  （只留被反馈那几轮 + 前 N 轮上下文），供超管从「用户反馈」页回溯现场
 - 标题取问题前 20 字；客户端断开时优雅收尾（已生成文本仍落盘）
 - 运行时读取 get_active_config()（阶段2 配置档案即时生效）
 """
@@ -30,7 +32,8 @@ from typing import AsyncIterator, Dict, List, Optional
 from openai import (APIConnectionError, APIStatusError, APITimeoutError,
                     AsyncOpenAI, RateLimitError)
 
-from backend.config import CHAT_DIR, LLMConfig, get_active_config
+from backend.config import (CHAT_DELETED_DIR, CHAT_DIR, LLMConfig,
+                            get_active_config)
 from backend.models.rag_models import (ChatHistoryItem, ChatMessage,
                                        ChatSession, Source)
 from backend.services.llm_client import get_llm_client, llm_to_dict
@@ -104,6 +107,41 @@ def sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+# 归档裁剪保留的上下文轮数：被反馈那一轮之外，再往前保留的问答轮数
+_ARCHIVE_CONTEXT_ROUNDS = 2
+
+
+def _trim_messages(messages: list, keep_idxs: set) -> tuple[list, bool]:
+    """裁剪会话消息：每个被反馈的回答连同其前 N 轮上下文，其余丢弃
+
+    返回 (裁剪后的消息, 是否真的裁掉了消息)。每条消息整条保留（含 sources
+    引用快照 / prompt 提示词 / 耗时字段），所以回溯详情数据不受裁剪影响。
+
+    起点按"从被反馈下标往前数 N+1 个用户消息"定位，而不是按固定条数减下标
+    ——消息数组并非严格一问一答交替（中断生成、空回答、无命中提示都会打破
+    配对），硬减下标会错位到别的轮次。多个反馈各取一段后取并集。
+    """
+    keep: set = set()
+    need = _ARCHIVE_CONTEXT_ROUNDS + 1
+    for idx in keep_idxs:
+        if not isinstance(idx, int) or not (0 <= idx < len(messages)):
+            continue
+        start = 0
+        found = 0
+        for i in range(idx, -1, -1):
+            if messages[i].get("role") == "user":
+                found += 1
+                if found >= need:
+                    start = i
+                    break
+        keep.update(range(start, idx + 1))
+    if not keep:
+        # 反馈下标全部越界/非法（脏数据）→ 不裁剪，保留完整会话而非清空
+        return messages, False
+    return ([m for i, m in enumerate(messages) if i in keep],
+            len(keep) < len(messages))
+
+
 class ChatService:
 
     def __init__(self):
@@ -128,6 +166,10 @@ class ChatService:
 
     def _get_session_path(self, session_id: str) -> Path:
         return CHAT_DIR / f"{session_id}.json"
+
+    def _get_archived_path(self, session_id: str) -> Path:
+        """已删除会话的归档路径（软删除目录，用户侧不可见）"""
+        return CHAT_DELETED_DIR / f"{session_id}.json"
 
     def _save_session(self, session: ChatSession):
         session.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -196,10 +238,23 @@ class ChatService:
                 logger.warning("加载会话 %s 失败: %s", f.name, e)
         return sorted(items, key=lambda x: x.updated_at, reverse=True)
 
-    def get_session(self, session_id: str) -> Optional[ChatSession]:
+    def get_session(self, session_id: str,
+                    include_deleted: bool = False) -> Optional[ChatSession]:
+        """读取会话
+
+        include_deleted=True 时活会话缺失后回退读归档目录——仅供超管回溯
+        反馈现场（路由层限制 super_admin）；默认 False 保证"删除"对普通
+        用户与 owner 是真删除（读不到 → 路由层 404 伪装）。
+        优先级"活的优先、归档兜底"：同 id 两边都有时读活的（理论上不会，
+        session_id 为随机 uuid，且删除即移走不存在回写）。
+        """
         path = self._get_session_path(session_id)
         if not path.exists():
-            return None
+            if not include_deleted:
+                return None
+            path = self._get_archived_path(session_id)
+            if not path.exists():
+                return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return ChatSession(**data)
@@ -207,12 +262,71 @@ class ChatService:
             logger.warning("读取会话 %s 失败: %s", session_id, e)
             return None
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str,
+                       keep_msg_idxs: Optional[set] = None) -> bool:
+        """删除会话（对用户始终是真的删除；归档只服务超管回溯反馈现场）
+
+        按调用方查得的反馈关联（keep_msg_idxs，见 feedback_service.
+        get_feedback_msg_idxs）决定删除形态：
+
+        - None：无法确定反馈关联（DB 查询失败）→ 归档**完整**会话。宁可多
+          留，不能丢证据——当成"无反馈"直接删会毁掉回溯现场
+        - 空集：确认无任何反馈 → **物理删除**。绝大多数会话没人反馈过，
+          这是省空间的主要来源，归档目录只装被反馈过的会话
+        - 非空：裁剪归档——每个被反馈的回答往前保留 _ARCHIVE_CONTEXT_ROUNDS
+          轮上下文，其余消息丢弃（同会话多反馈各取一段后并集）
+
+        写归档成功后才删原文件：写失败时原会话原样不动，用户可重试删除，
+        不会出现"活目录归档目录两边都没有"的丢失。
+        """
         path = self._get_session_path(session_id)
         if not path.exists():
             return False
-        path.unlink()
+        if keep_msg_idxs is not None and not keep_msg_idxs:
+            try:
+                path.unlink()
+            except OSError as e:
+                logger.warning("删除会话 %s 失败: %s", session_id, e)
+                return False
+            logger.info("会话已删除（无反馈关联，不归档）: %s", session_id)
+            return True
+
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("读取会话 %s 失败: %s", session_id, e)
+            return False
+        messages = data.get("messages") or []
+        raw_count = len(messages)
+        trimmed = False
+        if keep_msg_idxs:
+            messages, trimmed = _trim_messages(messages, keep_msg_idxs)
+        data["messages"] = messages
+        # 裁剪标记：超管回溯时提示"这是裁剪版，非完整现场"，避免把 3 轮误当全程
+        data["trimmed"] = trimmed
+        try:
+            dest = self._get_archived_path(session_id)
+            dest.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+            # mtime 刷为归档时刻（move 会保留原 mtime，与实际归档时间不符）
+            dest.touch()
+            path.unlink()
+        except OSError as e:
+            logger.warning("归档会话 %s 失败: %s", session_id, e)
+            return False
+        logger.info("会话已归档: %s（裁剪=%s，保留 %d/%d 条消息）",
+                    session_id, trimmed, len(messages), raw_count)
         return True
+
+    def is_archived(self, session_id: str) -> bool:
+        """会话是否处于归档状态（活目录无、归档目录有）
+
+        供超管回溯反馈现场时标注来源：会话是用户已删除的（内容来自归档），
+        还是仍在用户的会话列表里——"用户删了会话"本身也是判断反馈严重程度
+        的信号。
+        """
+        return (not self._get_session_path(session_id).exists()
+                and self._get_archived_path(session_id).exists())
 
     def rename_session(self, session_id: str, title: str) -> Optional[ChatSession]:
         """重命名会话（读 JSON → 改 title → 写回）；文件不存在或读取失败返回 None"""
@@ -395,6 +509,10 @@ class ChatService:
 
             # 3) 无命中：直接告知，不调用 LLM
             if not sources:
+                # 未调用模型也要留痕（无 request_kwargs → 模型/采样留空）：
+                # 事后要能分清"检索没给到"和"模型没用上"
+                prompt_detail["gen_params"] = self._build_gen_params(
+                    cfg, merged_chat, agentic_enabled, eff_top_k, eff_min_score)
                 tip = ("未检索到相关内容，我无法回答该问题。"
                        "请尝试换一种问法，或先在知识库中上传相关文档。")
                 answer_parts.append(tip)
@@ -468,8 +586,12 @@ class ChatService:
 
             # 4.5) prompt 事件：LLM 调用前下发完整提示词与检索/图谱耗时
             # （前端"请求详情"展示；此事件在 delta 之前，生成失败也已送达）
+            # prompt 存副本：下面第 4.75 步的思考策略会原地 append prefill
+            # （messages 是同一列表对象），不拷贝则落盘的"完整提示词"里会
+            # 多出一条 assistant <think></think>，与"组装后原始 messages"
+            # 的语义不符（是否跳过思考由 gen_params.thinking_mode 体现）
             prompt_detail = {
-                "prompt": messages,
+                "prompt": list(messages),
                 "retrieval_ms": retrieval_ms,
                 "kg_ms": kg_ms,
             }
@@ -512,6 +634,11 @@ class ChatService:
                 request_kwargs["extra_body"] = extra_body
             if top_p is not None:
                 request_kwargs["top_p"] = top_p
+            # 记录本次实际生效的生成参数（随消息落盘，供「详情」追溯）——
+            # 取值直接来自 request_kwargs = 真正发给模型的那份
+            prompt_detail["gen_params"] = self._build_gen_params(
+                cfg, merged_chat, agentic_enabled, eff_top_k, eff_min_score,
+                request_kwargs)
             try:
                 stream = await client.chat.completions.create(**request_kwargs)
                 async for chunk in stream:
@@ -743,6 +870,46 @@ class ChatService:
             logger.warning("用户画像提取调度失败（无运行中事件循环）: %s",
                            user_id)
 
+    @staticmethod
+    def _build_gen_params(cfg, merged_chat: dict, agentic_enabled: bool,
+                          eff_top_k, eff_min_score,
+                          request_kwargs: Optional[dict] = None) -> dict:
+        """组装本次问答实际生效的生成参数（随消息落盘，供「详情」追溯）
+
+        request_kwargs 是真正发给模型的那份请求参数；为 None 表示本次未调用
+        模型（检索无命中，直接回固定文案），此时模型/采样字段留空、只记检索
+        参数——事后要能分清"答不出是检索没给到"还是"模型没用上"。
+
+        取值一律取实际值而非配置原文："配置里写 1.3" 与 "实际按 1.3 跑"
+        必须一致，否则这份记录不能用于判断。检索三项按 retrieval_service.
+        retrieve 的同口径兜底：top_k/min_score 传 None 时取配置值；rerank
+        除开关外还要求 base_url/model 配好，否则压根没重排。
+        """
+        rk = request_kwargs or {}
+        rcfg = cfg.retrieval.rerank
+        rerank_ready = (bool(rcfg.enabled)
+                        and bool((rcfg.base_url or "").strip())
+                        and bool((rcfg.model or "").strip()))
+        return {
+            "model": rk.get("model"),
+            "temperature": rk.get("temperature"),
+            "top_p": rk.get("top_p"),
+            "max_tokens": rk.get("max_tokens"),
+            "thinking_mode": merged_chat.get("thinking_mode") or "disabled",
+            "enable_multi_turn": merged_chat.get("enable_multi_turn"),
+            "history_rounds": merged_chat.get("history_rounds"),
+            "kg_enhance": merged_chat.get("kg_enhance"),
+            "agentic_enabled": agentic_enabled,
+            "retrieval": {
+                "top_k": (eff_top_k if eff_top_k is not None
+                          else cfg.retrieval.top_k),
+                "similarity_threshold": (eff_min_score if eff_min_score is not None
+                                         else cfg.retrieval.similarity_threshold),
+                "enable_hybrid": cfg.retrieval.enable_hybrid,
+                "enable_rerank": rerank_ready,
+            },
+        }
+
     def _finalize(self, session: ChatSession, message: str,
                   answer_parts: List[str], sources: List[Source],
                   agentic: Optional[dict] = None,
@@ -750,7 +917,9 @@ class ChatService:
         """落盘会话（追加 user 消息 + assistant 消息，含 sources 快照）
 
         detail：本次请求的 prompt 详情（与 prompt 事件同源），由调用方透传，
-        写入 assistant 消息供历史会话"详情"回看；无详情（早退路径）传 None
+        写入 assistant 消息供历史会话"详情"回看；无详情（早退路径）传 None。
+        其中 gen_params（本次实际生效的生成参数）随消息保存，供事后追溯
+        "这条回答当时是怎么跑出来的"。
         """
         chat_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session.messages.append(ChatMessage(role="user", content=message,
@@ -763,6 +932,7 @@ class ChatService:
             prompt=detail.get("prompt", []) if detail else [],
             retrieval_ms=detail.get("retrieval_ms") if detail else None,
             kg_ms=detail.get("kg_ms") if detail else None,
+            gen_params=detail.get("gen_params", {}) if detail else {},
             created_at=chat_time,
         ))
         self._save_session(session)

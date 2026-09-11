@@ -7,8 +7,8 @@ import { authHeader, clearAuth } from '../auth/token';
 import type {
   AgenticStatus,
   AgenticTrace,
-  ChatMessage,
   ChatSession,
+  ChatSessionDetail,
   RetrieveChatParams,
   Source,
   StreamCallbacks,
@@ -200,8 +200,14 @@ export const retrieveChat = async (data: RetrieveChatParams, signal?: AbortSigna
 export const listSessions = (kbId: string) =>
   api.get<ChatSession[]>('/chat/history', { params: { kb_id: kbId } });
 
-export const getSession = (sessionId: string) =>
-  api.get<{ messages: ChatMessage[] }>(`/chat/history/${sessionId}`);
+/**
+ * 会话详情。includeDeleted=true（仅超管生效）时，会话已被用户删除则回退读
+ * 归档目录——「用户反馈」页回溯点踩现场用：点踩者常顺手把会话删了。
+ */
+export const getSession = (sessionId: string, includeDeleted = false) =>
+  api.get<ChatSessionDetail>(`/chat/history/${sessionId}`, {
+    params: includeDeleted ? { include_deleted: true } : undefined,
+  });
 
 export const deleteSession = (sessionId: string) =>
   api.delete(`/chat/history/${sessionId}`);

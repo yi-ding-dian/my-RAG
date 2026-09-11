@@ -282,6 +282,42 @@ export interface ChatSession {
   updated_at: string;
 }
 
+/** 会话详情（GET /chat/history/{id}）：含完整消息与引用快照，用于回溯问答现场 */
+export interface ChatSessionDetail {
+  id: string;
+  kb_id: string;
+  /** 归属用户 ID（旧会话无此字段 = super_admin 归属） */
+  user_id?: string | null;
+  title: string;
+  messages: ChatMessage[];
+  created_at: string;
+  updated_at: string;
+  /** 内容来自归档目录 = 该会话已被用户删除（超管回溯时据此提示） */
+  archived?: boolean;
+  /** 归档时已裁剪：只保留了被反馈轮次及其上下文，非完整会话（回溯时提示） */
+  trimmed?: boolean;
+}
+
+/** 本次问答实际生效的生成参数快照（详情追溯用；model 为空 = 本次未调用模型） */
+export interface GenParams {
+  model?: string | null;
+  temperature?: number | null;
+  top_p?: number | null;
+  max_tokens?: number | null;
+  /** 思考模式：disabled=关闭思考 / enabled_low|enabled_high|enabled_max=开启 */
+  thinking_mode?: string;
+  enable_multi_turn?: boolean;
+  history_rounds?: number;
+  kg_enhance?: boolean;
+  agentic_enabled?: boolean;
+  retrieval?: {
+    top_k?: number;
+    similarity_threshold?: number | null;
+    enable_hybrid?: boolean;
+    enable_rerank?: boolean;
+  };
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -296,6 +332,8 @@ export interface ChatMessage {
   total_ms?: number;
   /** 请求详情：Agentic 检索决策轨迹（改写查询/分档分数/尝试次数；未开启时无） */
   agentic?: AgenticTrace;
+  /** 生成参数快照（模型/温度/思考模式/检索参数；旧数据无此字段） */
+  gen_params?: GenParams;
   created_at?: string;
   /** 前端会话状态专用：用户点击「停止」中断生成（仅 UI 标注，不落盘） */
   stopped?: boolean;

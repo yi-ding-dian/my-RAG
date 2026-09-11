@@ -65,6 +65,52 @@ export interface ChatFeedbackStats {
 export const getChatFeedbackStats = () =>
   api.get<ChatFeedbackStats>('/stats/chat-feedback');
 
+/** 反馈记录项（分页接口；用户名/部门名/知识库名由后端 join 回填，缺失为空串/null） */
+export interface ChatFeedbackLogItem {
+  id: string;
+  user_id: string;
+  username: string;
+  display_name: string;
+  /** 无部门为 null；部门名缺失（无部门/部门已删）为空串 */
+  department_id: string | null;
+  department_name: string;
+  kb_id: string | null;
+  kb_name: string | null;
+  session_id: string | null;
+  /** 被反馈消息在会话 messages 数组中的下标（回溯定位用） */
+  msg_idx: number;
+  rating: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface ChatFeedbackLogPage {
+  total: number;
+  page: number;
+  page_size: number;
+  items: ChatFeedbackLogItem[];
+}
+
+export interface ChatFeedbackLogQuery {
+  page?: number;
+  page_size?: number;
+  rating?: 'up' | 'down';
+  /** 用户名模糊搜索 */
+  username?: string;
+  /** 部门 ID 过滤 */
+  department_id?: string;
+  /** 关键词（模糊匹配点踩原因） */
+  keyword?: string;
+  /** 起始日期 YYYY-MM-DD */
+  date_from?: string;
+  /** 结束日期 YYYY-MM-DD（含当天） */
+  date_to?: string;
+}
+
+/** 聊天反馈分页查询（仅超管）；筛选条件全可选、多条件为 AND */
+export const listChatFeedbackLogs = (params: ChatFeedbackLogQuery) =>
+  api.get<ChatFeedbackLogPage>('/stats/chat-feedback/logs', { params });
+
 export const getRagasReport = (taskId: string) =>
   api.get<RagasReport>(`/stats/ragas/tasks/${taskId}`);
 

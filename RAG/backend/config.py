@@ -130,6 +130,8 @@ def _paths(data_dir: Path):
         "KBS_DIR": data_dir / "kbs",
         "DOCUMENTS_DIR": data_dir / "documents",
         "CHAT_DIR": data_dir / "chat",
+        # 已删除会话的归档目录（软删除：用户侧不可见，仅超管回溯反馈现场可读）
+        "CHAT_DELETED_DIR": data_dir / "chat_deleted",
         "USER_MEMORY_DIR": data_dir / "user_memory",
         "CHROMA_DIR": data_dir / "chroma",
         # 本地存储后端（STORAGE_BACKEND=local）对象存放目录，与 MinIO 桶 key 同构
@@ -366,7 +368,7 @@ class ServiceConfig(BaseModel):
 
 settings = Settings()
 
-# 数据目录自动创建（含 uploads/parsed/kbs/documents/chat/chroma）
+# 数据目录自动创建（含 uploads/parsed/kbs/documents/chat/chat_deleted/chroma）
 _path_map = _paths(settings.DATA_DIR)
 for _dir in _path_map.values():
     _dir.mkdir(parents=True, exist_ok=True)
@@ -377,6 +379,7 @@ PARSED_DIR = _path_map["PARSED_DIR"]
 KBS_DIR = _path_map["KBS_DIR"]
 DOCUMENTS_DIR = _path_map["DOCUMENTS_DIR"]
 CHAT_DIR = _path_map["CHAT_DIR"]
+CHAT_DELETED_DIR = _path_map["CHAT_DELETED_DIR"]
 USER_MEMORY_DIR = _path_map["USER_MEMORY_DIR"]
 CHROMA_DIR = _path_map["CHROMA_DIR"]
 STORAGE_DIR = _path_map["STORAGE_DIR"]

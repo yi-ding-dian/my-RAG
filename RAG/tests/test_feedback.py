@@ -116,3 +116,124 @@ def test_feedback_logs_pagination(client, admin_headers, user_headers):
     row = next(x for x in items if x["user_id"] == ghost_id)
     assert row["username"] == "" and row["display_name"] == ""
     assert row["kb_name"] == "g-kb"
+
+
+def test_feedback_logs_filters(client, admin_headers, user_headers,
+                               dept_admin_headers):
+    """筛选：用户名模糊 / 部门 / 关键词搜原因 / 组合 AND / 部门名回填
+
+    数据：dept_admin_test 与 user_test 同属"测试部门"，admin 为超管且无部门。
+    """
+    # admin（超管，无部门）好评（无原因）
+    r = client.post("/api/chat/feedback", json={"rating": "up"},
+                    headers=admin_headers)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # 部门管理员点踩（原因含"数据"）
+    r = client.post("/api/chat/feedback",
+                    json={"rating": "down", "reason": "数据口径不对"},
+                    headers=dept_admin_headers)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # 普通用户点踩（原因含"引用"）
+    r = client.post("/api/chat/feedback",
+                    json={"rating": "down", "reason": "引用来源错误"},
+                    headers=user_headers)
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    base = "/api/stats/chat-feedback/logs"
+    assert client.get(base, headers=admin_headers).json()["total"] == 3
+
+    # 用户名模糊搜索
+    d = client.get(f"{base}?username=dept", headers=admin_headers).json()
+    assert d["total"] == 1 and d["items"][0]["username"] == "dept_admin_test"
+    d = client.get(f"{base}?username=user_test", headers=admin_headers).json()
+    assert d["total"] == 1 and d["items"][0]["username"] == "user_test"
+    d = client.get(f"{base}?username=查无此人", headers=admin_headers).json()
+    assert d["total"] == 0
+
+    # 关键词搜点踩原因（模糊匹配 reason）
+    d = client.get(f"{base}?keyword=数据", headers=admin_headers).json()
+    assert d["total"] == 1 and "数据口径" in d["items"][0]["reason"]
+    d = client.get(f"{base}?keyword=引用", headers=admin_headers).json()
+    assert d["total"] == 1 and d["items"][0]["reason"] == "引用来源错误"
+    # 好评原因为空，不该被关键词命中
+    d = client.get(f"{base}?keyword=乌仁吉", headers=admin_headers).json()
+    assert d["total"] == 0
+
+    # 部门过滤：测试部门 2 条（dept_admin + user），admin 无部门不命中
+    dept_id = next(dd["id"] for dd in
+                   client.get("/api/departments", headers=admin_headers).json()
+                   if dd["name"] == "测试部门")
+    d = client.get(f"{base}?department_id={dept_id}",
+                   headers=admin_headers).json()
+    assert d["total"] == 2
+    assert {x["username"] for x in d["items"]} == {"dept_admin_test", "user_test"}
+    # 部门名/部门 id 回填
+    assert all(x["department_name"] == "测试部门" for x in d["items"])
+    assert all(x["department_id"] == dept_id for x in d["items"])
+
+    # 组合条件为 AND 语义
+    d = client.get(f"{base}?department_id={dept_id}&rating=down&keyword=数据",
+                   headers=admin_headers).json()
+    assert d["total"] == 1 and d["items"][0]["username"] == "dept_admin_test"
+    d = client.get(f"{base}?department_id={dept_id}&rating=up",
+                   headers=admin_headers).json()
+    assert d["total"] == 0
+
+    # 无部门用户：department_id 为 null、department_name 为空串（前端显示 —）
+    # 注：模糊搜 "admin" 会连 dept_admin_test 一起命中（含子串），故按用户名
+    # 精确定位而非用模糊搜索的结果断言
+    d = client.get(f"{base}?page_size=200", headers=admin_headers).json()
+    admin_row = next(x for x in d["items"] if x["username"] == "admin")
+    assert admin_row["department_id"] is None
+    assert admin_row["department_name"] == ""
+
+    # 空串参数按未传处理（前端清空筛选后可能带空串，不应把结果筛成 0）
+    d = client.get(f"{base}?username=&keyword=&department_id=",
+                   headers=admin_headers).json()
+    assert d["total"] == 3
+
+
+def test_feedback_logs_outer_join_keeps_orphan_rows(client, admin_headers,
+                                                    user_headers):
+    """已注销用户的反馈在**非用户名/部门**筛选下不消失（锁 outer join）
+
+    用户名/部门条件需要 join users 表；若用 inner join，"用户已注销"的记录
+    会在任何一次筛选（哪怕只是 rating/日期/关键词）时凭空消失，超管就再也
+    看不到这些反馈了。
+    """
+    r = client.post("/api/users", json={
+        "username": "orphan_fb", "password": "orphan12345",
+        "display_name": "待注销用户", "role": "user",
+    }, headers=admin_headers)
+    assert r.status_code == 201, r.text
+    orphan_id = r.json()["id"]
+    r = client.post("/api/chat/feedback",
+                    json={"rating": "down", "reason": "注销前提交的差评"},
+                    headers=login_headers(client, "orphan_fb", "orphan12345"))
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert client.delete(f"/api/users/{orphan_id}",
+                         headers=admin_headers).status_code == 200
+
+    # 仅按 rating/关键词筛选（不带用户名/部门条件）→ 孤儿记录必须还在
+    d = client.get("/api/stats/chat-feedback/logs?rating=down&page_size=200",
+                   headers=admin_headers).json()
+    row = next((x for x in d["items"] if x["user_id"] == orphan_id), None)
+    assert row is not None, "inner join 会让已注销用户的反馈在筛选后消失"
+    assert row["username"] == "" and row["department_name"] == ""
+
+    d = client.get("/api/stats/chat-feedback/logs?keyword=注销前",
+                   headers=admin_headers).json()
+    assert any(x["user_id"] == orphan_id for x in d["items"])
+
+
+def test_feedback_viewer_scope_rejects_non_admin(client, user_headers,
+                                                 dept_admin_headers):
+    """反馈接口权限口径：仅超管；dept_admin 与普通用户均 404 伪装
+
+    依赖注入点 feedback_viewer_scope 已预留部门管理员接入——放开时只改该
+    函数（返回收窄的 FeedbackScope），本测试与路由签名均不受影响。
+    """
+    for headers in (user_headers, dept_admin_headers):
+        for path in ("/api/stats/chat-feedback",
+                     "/api/stats/chat-feedback/logs"):
+            assert client.get(path, headers=headers).status_code == 404

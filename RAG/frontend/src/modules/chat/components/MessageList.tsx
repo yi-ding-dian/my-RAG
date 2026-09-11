@@ -12,7 +12,6 @@ import {
 import {
   ArrowDownOutlined,
   DislikeOutlined,
-  FileTextOutlined,
   LikeOutlined,
   PaperClipOutlined,
 } from '@ant-design/icons';
@@ -20,6 +19,7 @@ import dayjs from 'dayjs';
 import { avatarUrl, submitFeedback, type ChatMessage, type Source } from '../../../shared/api/client';
 import { useAuth } from '../../../shared/auth/AuthContext';
 import MdImages from '../../../shared/components/common/MdImages';
+import RequestDetailModal from '../../../shared/components/common/RequestDetailModal';
 import SourcePanel from './SourcePanel';
 import { computeHighlightRanges, splitByHighlights } from '../../../shared/utils/sourceHighlight';
 import { cleanAnswerText } from '../../../shared/utils/cleanMarkdown';
@@ -244,77 +244,6 @@ const renderCitationContent = (
 
 /** 回答正文图片最大宽度：气泡内自适应（窄屏 100%），大图不超过 480px */
 const ANSWER_IMAGE_MAX_WIDTH = 'min(480px, 100%)';
-
-/** 毫秒可读化：<1s 显示毫秒，≥1s 同时显示秒（请求详情"总耗时"展示用） */
-const formatMs = (ms: number): string =>
-  ms >= 1000 ? `${(ms / 1000).toFixed(1)} 秒（${Math.round(ms)} ms）` : `${Math.round(ms)} ms`;
-
-/**
- * 完整提示词逐条渲染（请求详情 Modal）：
- * - 第一条 system → "System（系统提示）"
- * - 最后一条 user → "User（当前问题）"
- * - 中间条目按 role 标注"历史 · user / assistant"
- * 内容 pre-wrap 小字展示（body 限高滚动由 Modal styles 控制）
- */
-const renderPromptEntries = (
-  prompt: unknown,
-  token: ReturnType<typeof theme.useToken>['token'],
-): React.ReactNode => {
-  if (!Array.isArray(prompt)) {
-    return <div style={{ fontSize: 12, color: token.colorTextTertiary }}>（无提示词数据）</div>;
-  }
-  return prompt.map((entry, i) => {
-    const msg = entry as { role?: string; content?: string };
-    const role = msg?.role ?? '';
-    const content = msg?.content ?? '';
-    let title: string;
-    if (i === 0 && role === 'system') {
-      title = 'System（系统提示）';
-    } else if (i === prompt.length - 1 && role === 'user') {
-      title = 'User（当前问题）';
-    } else if (role === 'user') {
-      title = '历史 · user';
-    } else if (role === 'assistant') {
-      title = '历史 · assistant';
-    } else {
-      title = `消息 ${i + 1}`;
-    }
-    return (
-      <div key={i} style={{ marginBottom: 10 }}>
-        <div
-          style={{
-            fontSize: 12,
-            fontWeight: 600,
-            color: token.colorTextSecondary,
-            marginBottom: 2,
-          }}
-        >
-          {title}
-        </div>
-        <div
-          style={{
-            fontSize: 12,
-            lineHeight: 1.6,
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            color: token.colorText,
-            background: token.colorFillTertiary,
-            padding: '8px 10px',
-            borderRadius: 6,
-          }}
-        >
-          {/* 内容走 renderContent（清洗 + MdImages 渲染 ![]() 图片）：
-              prompt 是发给 LLM 的原始 messages，其中的图片标记应显示为
-              图片（如引用溯源弹窗正文），而非裸 markdown 文本；无 sources/ha
-              引用标时 renderContent 原样输出，行为安全 */}
-          {content
-            ? renderContent(content, undefined, undefined)
-            : '（空）'}
-        </div>
-      </div>
-    );
-  });
-};
 
 /**
  * 组合渲染管道：先按 [n] 引用标拆分文本（renderCitationContent），每个
@@ -703,83 +632,14 @@ const MessageList: React.FC<MessageListProps> = ({
       </AppModal>
     )}
 
-    {/* 请求详情 Modal：检索问题 / 召回耗时 / 总耗时 / 完整提示词（body 限高滚动） */}
-    {detailMsg && (
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 760, h: 520 }}
-        rememberKey="detail"
-        open
-        width={760}
-        title={
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <FileTextOutlined style={{ color: 'var(--brand-primary, #2563eb)' }} />
-            请求详情
-          </span>
-        }
-        footer={[
-          <Button key="close" onClick={() => setDetailMsg(null)}>
-            关闭
-          </Button>,
-        ]}
-        onCancel={() => setDetailMsg(null)}
-        styles={{ body: { maxHeight: '70vh', overflowY: 'auto', paddingTop: 8 } }}
-        destroyOnClose
-      >
-        {/* 检索问题：该条回答对应的用户原问题（当前链路无查询改写） */}
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>检索问题</div>
-          <div
-            style={{
-              fontSize: 13,
-              color: token.colorTextSecondary,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              background: token.colorFillTertiary,
-              padding: '8px 12px',
-              borderRadius: 6,
-            }}
-          >
-            {detailQuestion || '（无）'}
-          </div>
-        </div>
-        {/* Agentic 检索决策轨迹（改写查询/分档分数/尝试次数；默认关闭时无该区块） */}
-        {/* 旧数据 agentic={}（无 trace）：只展示对象本身，不渲染 trace（防 agentic.trace 为 undefined 报错） */}
-        {detailMsg.agentic && (
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>Agentic 检索决策</div>
-            {detailMsg.agentic.original_query !== detailMsg.agentic.final_query && (
-              <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
-                查询改写：{detailMsg.agentic.original_query} → {detailMsg.agentic.final_query}
-              </div>
-            )}
-            {(detailMsg.agentic.trace ?? []).map(t => (
-              <div key={t.attempt} style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
-                第 {t.attempt} 轮{t.from_rewrite ? '（改写后）' : '（原始查询）'}：相似度{' '}
-                {t.best_score != null ? t.best_score.toFixed(3) : '—'}，命中 {t.sources_count} 条
-                {t.rewrite_failed ? '（改写失败，原查询重试）' : ''}
-              </div>
-            ))}
-          </div>
-        )}
-        {/* 耗时统计（后端统计召回/图谱构建，前端计算提问→首字总耗时） */}
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>耗时</div>
-          <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
-            召回耗时：{detailMsg.retrieval_ms !== undefined ? `${detailMsg.retrieval_ms} ms` : '—'}
-            {detailMsg.kg_ms !== undefined && ` ｜ 图谱构建：${detailMsg.kg_ms} ms`}
-          </div>
-          <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
-            总耗时（提问→首字）：{detailMsg.total_ms !== undefined ? formatMs(detailMsg.total_ms) : '—'}
-          </div>
-        </div>
-        {/* 完整提示词：整块打包发给 AI 的 messages 数组（可读格式逐条展示） */}
-        <div style={{ fontWeight: 600, marginBottom: 4 }}>
-          完整提示词{Array.isArray(detailMsg.prompt) ? `（${detailMsg.prompt.length} 条消息）` : ''}
-        </div>
-        {renderPromptEntries(detailMsg.prompt, token)}
-      </AppModal>
-    )}
+    {/* 请求详情 Modal：检索问题 / 召回耗时 / 总耗时 / 完整提示词
+        （实现已抽到 shared/components/common/RequestDetailModal——「用户反馈」页的
+         会话回溯抽屉复用同一实现，避免两处各自演化） */}
+    <RequestDetailModal
+      message={detailMsg}
+      question={detailQuestion}
+      onClose={() => setDetailMsg(null)}
+    />
     </>
   );
 };
