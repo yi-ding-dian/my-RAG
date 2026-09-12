@@ -76,6 +76,10 @@ class DocumentItem(BaseModel):
     updated_at: str = Field("", description="更新时间")
     deleted: bool = Field(False, description="是否已移入回收站（软删除标记，检索自动排除；缺失视为 false）")
     deleted_at: Optional[str] = Field(None, description="移入回收站时间（恢复后清空）")
+    # 检索开关（与 deleted 相互独立）：False=禁用检索——文档保留、可正常查看/
+    # 下载/重新解析，但向量与 BM25 召回、知识图谱增强都排除它。
+    # 独立的意义：恢复回收站不会把"禁用"一起洗掉（恢复后仍按本字段决定是否活跃）
+    enabled: bool = Field(True, description="是否参与检索（False=禁用；缺失视为 true）")
     graph_status: str = Field("none", description="知识图谱状态: none=未构建/building=构建中/ready=已构建/failed=构建失败")
     graph_error: Optional[str] = Field(None, description="知识图谱构建失败原因（graph_status=failed 时）")
     ingest_trace: List[dict] = Field(

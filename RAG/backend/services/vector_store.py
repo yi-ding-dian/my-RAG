@@ -427,28 +427,29 @@ class MilvusVectorBackend(VectorBackend):
                            kb_id, doc_id, str(e)[:150])
 
     def update_metadata(self, kb_id: str, doc_id: str, **meta) -> bool:
-        """整行覆盖式更新（Milvus 无局部 update）：按 document_id 取回完整
-        行（含 text/vector 动态字段）→ 合并新 metadata → upsert 回写"""
+        """局部更新（partial_update：只提交主键 + 变更字段）
+
+        不能走"整行取回再 upsert"—— query 不返回 vector 字段，而 upsert 是
+        整行替换语义，缺 vector 会报 DataNotMatchException（Insert missed an
+        field `vector`）。partial_update 由服务端按主键合并，只需变更字段，
+        也省掉把大向量读回来再写回去的开销。
+        """
         name = self._collection_name(kb_id)
         try:
             if not self._client.has_collection(name):
                 return True
+            # 只取主键：改写项全在 meta 里，其余字段由服务端保证不动
             rows = self._client.query(
                 collection_name=name,
                 filter=f'document_id == "{doc_id}"',
-                output_fields=["*"],
+                output_fields=["id"],
                 limit=16384,
             )
             if not rows:
                 return True  # 无向量：无操作视为成功
-            new_rows = []
-            for r in rows:
-                nr = dict(r)
-                nr.pop("id", None)
-                nr.pop("vector", None)
-                nr.update(meta)
-                new_rows.append({"id": r["id"], **nr})
-            self._client.upsert(collection_name=name, data=new_rows)
+            new_rows = [{"id": r["id"], **meta} for r in rows]
+            self._client.upsert(collection_name=name, data=new_rows,
+                                partial_update=True)
             logger.info("Milvus 向量 metadata 更新: kb=%s doc=%s blocks=%d",
                         kb_id, doc_id, len(new_rows))
             return True

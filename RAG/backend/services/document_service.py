@@ -316,6 +316,25 @@ class DocumentService:
 
     # ---------- 软删除 / 恢复 ----------
 
+    def set_enabled(self, doc_id: str, enabled: bool) -> Optional[DocumentItem]:
+        """启用/禁用检索（元数据与向量都保留，仅检索与图谱增强排除）
+
+        与 soft_delete 独立：禁用不设 deleted，回收站里的文档也能禁用
+        （恢复时按本字段决定是否重新参与检索）。
+        """
+        with self._lock:
+            doc = self._docs.get(doc_id)
+            if not doc:
+                return None
+            if doc.enabled == enabled:
+                return doc  # 幂等：状态未变不写盘
+            doc.enabled = enabled
+            doc.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._save_meta(doc)
+        logger.info("%s检索: %s (%s)",
+                    "启用" if enabled else "禁用", doc.original_name, doc_id)
+        return doc
+
     def soft_delete(self, doc_id: str) -> Optional[DocumentItem]:
         """软删除：标记 deleted + deleted_at（元数据保留，向量保留，仅检索排除）"""
         with self._lock:

@@ -16,6 +16,10 @@ import {
   cancelDocumentGraphBuild,
   cancelDocumentIngestion,
   deleteDocument,
+  disableDocument,
+  enableDocument,
+  methodLabel,
+  parseMethodLabel,
   downloadDocument,
   getDocumentsStatusCounts,
   getIngestProgress,
@@ -30,7 +34,7 @@ import BatchActionsBar, {
   StatusFilter,
   toBackendStatus,
 } from './components/BatchActionsBar';
-import DocumentTable, { TrashView, parseableStatuses } from './components/DocumentTable';
+import DocumentTable, { TrashView, parseableStatuses, statusMeta } from './components/DocumentTable';
 import DocumentModals, {
   useDetailModal,
   useGraphBuildModal,
@@ -38,6 +42,13 @@ import DocumentModals, {
 } from './components/DocumentModals';
 
 const { Text } = Typography;
+
+/** 文件大小可读化（复制文档信息用；与 DocumentTable.formatSize 同口径） */
+const formatDocSize = (bytes: number): string => {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+};
 
 const DocumentsPage: React.FC = () => {
   const { message, modal } = AntApp.useApp();
@@ -443,6 +454,52 @@ const DocumentsPage: React.FC = () => {
     await reloadFirstPage();
   };
 
+  /** 启用/禁用检索：禁用后文档不再被召回（向量与图谱双侧排除），
+   *  但仍可正常查看/下载/重新解析；重新解析不会把禁用状态洗掉 */
+  const handleToggleEnabled = async (doc: DocumentItem) => {
+    const disabling = doc.enabled !== false;
+    try {
+      if (disabling) {
+        await disableDocument(doc.kb_id, doc.id);
+        message.success('已禁用检索，该文档不再被召回');
+      } else {
+        await enableDocument(doc.kb_id, doc.id);
+        message.success('已启用检索');
+      }
+      await reloadFirstPage();
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail
+        || (disabling ? '禁用失败' : '启用失败'));
+    }
+  };
+
+  /** 复制文档信息（排查用）：把定位字段与配置字段拼成文本进剪贴板——
+   *  含 doc_id/kb_id/内部文件名，便于直接查日志与数据文件 */
+  const handleCopyInfo = async (doc: DocumentItem) => {
+    const kbLabel = kbName ? `${kbName}（${doc.kb_id}）` : doc.kb_id;
+    const text = [
+      '【文档信息】',
+      `文件名：${doc.original_name}`,
+      `文档 ID：${doc.id}`,
+      `知识库：${kbLabel}`,
+      `类型：${doc.file_type || '-'} ｜ 大小：${formatDocSize(doc.size)}`,
+      // 状态给中文 + 原始码：界面看到的是"已入库"，日志/接口里是 ingested，
+      // 排查时两边都要能对上
+      `状态：${statusMeta[doc.status]?.text || doc.status}（${doc.status}） ｜ 切块数：${doc.chunk_count}`,
+      // 解析/切块方式给中文 + 原始码（同状态的做法：界面术语与接口字段都能对上）
+      `解析方式：${parseMethodLabel(doc.parse_method)}（${doc.parse_method || '-'}） ｜ 切块方式：${doc.parser_id ? methodLabel(doc.parser_id) : '-'}（${doc.parser_id || '-'}）`,
+      `上传时间：${doc.created_at || '-'}`,
+      `检索：${doc.enabled === false ? '已禁用' : '启用中'} ｜ 图谱：${doc.graph_status || 'none'}`,
+      `内部文件名：${doc.name}`,
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success('文档信息已复制');
+    } catch {
+      message.error('复制失败，请手动复制');
+    }
+  };
+
   const handleDelete = async (doc: DocumentItem) => {
     try {
       await deleteDocument(kbId!, doc.id);
@@ -563,6 +620,12 @@ const DocumentsPage: React.FC = () => {
           break;
         case 'portrait':
           void portraitModal.openPortrait(row);
+          break;
+        case 'toggle-enabled':
+          void handleToggleEnabled(row);
+          break;
+        case 'copy-info':
+          void handleCopyInfo(row);
           break;
       }
     },

@@ -878,6 +878,10 @@ class IngestionService(_TraceMixin, _ImageMixin):
                 f"Embedding 模型维度不匹配（collection {current_dim} 维 vs "
                 f"模型 {len(embeddings[0])} 维），请更换模型或重建向量")
         await vec.delete_by_document(doc.kb_id, doc_id)
+        # 禁用状态的文档重新解析后必须保持禁用：这里是完全重建（先删后加，
+        # 不继承旧 metadata），而 add 的默认 doc_active=True——不显式带上，
+        # 重新解析一次就把"禁用"洗白了
+        doc_active = getattr(doc, "enabled", True)
         metadatas = []
         for i, c in enumerate(chunk_objects):
             meta = {
@@ -886,6 +890,7 @@ class IngestionService(_TraceMixin, _ImageMixin):
                 "chunk_index": i,
                 "char_start": c.char_start,
                 "char_end": c.char_end,
+                "doc_active": doc_active,
             }
             # 上下文摘要随块入库（截断防 Chroma metadata 单值超限），
             # 检索时透传到 Source.context / 引用拼接

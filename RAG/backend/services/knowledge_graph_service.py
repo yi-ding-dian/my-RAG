@@ -401,6 +401,48 @@ def remove_doc_refs(graph: dict, doc_id: str) -> int:
     return removed
 
 
+def _active_doc_ids(kb_id: str) -> set:
+    """该库参与检索的文档 ID 集合（未在回收站且未禁用）
+
+    图谱实体的引用来源若全部落在集合之外，该实体不该再进回答。
+    """
+    from backend.services.document_service import get_document_service
+    docs = get_document_service().list_by_kb(kb_id)  # 默认排除回收站
+    return {d.id for d in docs if getattr(d, "enabled", True)}
+
+
+def filter_graph_by_active_docs(graph: dict, active_doc_ids: set) -> dict:
+    """只保留引用了活跃文档（未删除且未禁用）的实体与关系（原地修改并返回）
+
+    图谱路径同样要尊重"回收站"与"禁用"：否则禁用只禁了一半——向量与 BM25
+    已排除，被禁文档的实体照样从这里冒进回答。
+    实体同时被活跃与非活跃文档引用时保留该实体、剔掉非活跃引用，避免把已
+    失效的来源当作依据展示（与 remove_doc_refs 同一套清理口径）。
+    """
+    kept_entities: List[dict] = []
+    for e in graph.get("entities", []):
+        refs = [r for r in e.get("chunk_refs", [])
+                if r.get("doc_id") in active_doc_ids]
+        if refs:
+            e["chunk_refs"] = refs
+            e["count"] = len(refs)
+            kept_entities.append(e)
+    graph["entities"] = kept_entities
+    kept_ids = {e["id"] for e in kept_entities}
+    kept_relations: List[dict] = []
+    for r in graph.get("relations", []):
+        if r.get("source") not in kept_ids or r.get("target") not in kept_ids:
+            continue
+        refs = [x for x in r.get("chunk_refs", [])
+                if x.get("doc_id") in active_doc_ids]
+        if refs:
+            r["chunk_refs"] = refs
+            r["weight"] = float(len(refs))
+            kept_relations.append(r)
+    graph["relations"] = kept_relations
+    return graph
+
+
 def merge_into_graph(graph: dict, doc_id: str, chunk_index: int,
                      chunk_text: str, char_start: int, char_end: int,
                      extraction: dict) -> None:
@@ -974,6 +1016,14 @@ async def build_kg_source(kb_id: str, query: str,
         graph = load_graph(kb_id)
         if not graph.get("entities"):
             return None  # 无图谱（未构建/空图谱）自动跳过
+        # 图谱路径同样排除已删除/已禁用文档的实体（否则"禁用"只禁了一半：
+        # 向量与 BM25 排除了，被禁文档的实体照样从这里冒进回答）
+        active_ids = _active_doc_ids(kb_id)
+        if not active_ids:
+            return None  # 该库文档全部删除/禁用：图谱无可信来源
+        graph = filter_graph_by_active_docs(graph, active_ids)
+        if not graph.get("entities"):
+            return None
         query_entities = await extract_query_entities(query)
         if not query_entities:
             return None

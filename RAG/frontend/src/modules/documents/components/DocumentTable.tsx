@@ -17,10 +17,12 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   ApartmentOutlined,
   CheckOutlined,
+  CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
   DownOutlined,
   EditOutlined,
+  EyeInvisibleOutlined,
   EyeOutlined,
   ProfileOutlined,
   RollbackOutlined,
@@ -47,7 +49,8 @@ import { useResizableColumns } from '../../../shared/hooks/useResizableColumns';
 
 const { Text } = Typography;
 
-const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
+/** 状态码 → 展示元数据（页面主组件的"复制文档信息"也要用中文名，故导出） */
+export const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   uploaded: { color: 'default', text: '待解析' },
   parsing: { color: 'processing', text: '解析中' },
   parsed: { color: 'warning', text: '已解析' },
@@ -334,6 +337,14 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       }
       if (canManage) {
         items.push({ key: 'rename', icon: <EditOutlined />, label: '重命名' });
+        // 检索开关：文案取"反向动作"（已禁用时显示"启用检索"）——菜单收起后
+        // 看不到状态，靠这一项的名字判断当前是开是关
+        const docDisabled = row.enabled === false;
+        items.push({
+          key: 'toggle-enabled',
+          icon: docDisabled ? <EyeOutlined /> : <EyeInvisibleOutlined />,
+          label: docDisabled ? '启用检索' : '禁用检索',
+        });
       }
       items.push({ key: 'download', icon: <DownloadOutlined />, label: '下载' });
       if (canManage) {
@@ -343,6 +354,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
           label: '查看文档画像',
         });
       }
+      // 排查用：一键把定位与配置字段复制成文本（不限权限，任何能看列表的人可用）
+      items.push({ key: 'copy-info', icon: <CopyOutlined />, label: '复制文档信息' });
       return items;
     },
     [canManage],

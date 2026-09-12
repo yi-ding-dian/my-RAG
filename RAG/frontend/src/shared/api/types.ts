@@ -157,6 +157,8 @@ export interface DocumentItem {
   deleted?: boolean;
   /** 移入回收站时间（恢复后清空） */
   deleted_at?: string | null;
+  /** 是否参与检索（false=已禁用：向量/BM25 召回与图谱增强都排除；缺失视为 true） */
+  enabled?: boolean;
   /** 知识图谱状态：none=未构建/building=构建中/ready=已构建/failed=构建失败 */
   graph_status?: 'none' | 'building' | 'ready' | 'failed';
   /** 图谱构建失败原因（graph_status=failed 时返回） */
@@ -190,6 +192,24 @@ export const methodLabel = (method: string): string => {
       return '层级聚合切块';
     default:
       return method;
+  }
+};
+
+/** 解析方式（parse_method）友好名：mineru/deepdoc/normative/plain/spreadsheet */
+export const parseMethodLabel = (method: string | null | undefined): string => {
+  switch (method) {
+    case 'mineru':
+      return 'MinerU 版面识别';
+    case 'deepdoc':
+      return 'DeepDoc 版面识别';
+    case 'normative':
+      return '规范条文解析';
+    case 'plain':
+      return '纯文本提取';
+    case 'spreadsheet':
+      return '表格解析';
+    default:
+      return method || '-';
   }
 };
 

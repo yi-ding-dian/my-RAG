@@ -794,15 +794,17 @@ async def delete_document(request: Request, kb_id: str, doc_id: str,
 async def restore_document(request: Request, kb_id: str, doc_id: str,
                            db: AsyncSession = Depends(get_db),
                            user: UserPublic = Depends(get_current_user)):
-    """恢复回收站文档（can_manage_kb）：取消 deleted 标记 + 向量 doc_active=True
+    """恢复回收站文档（can_manage_kb）：取消 deleted 标记 + 按 enabled 决定是否激活
 
-    向量/切块保留，恢复后立即重新进入检索，无需重新解析。
+    向量/切块保留，恢复后立即重新进入检索（**若未被禁用**），无需重新解析。
+    禁用的文档恢复后仍不参与检索——恢复不该把"禁用"一起洗掉。
     """
     await kb_or_404(db, kb_id, user, manage=True)
     doc = _get_doc_or_404(kb_id, doc_id)
     if not doc.deleted:
         raise HTTPException(status_code=409, detail="文档不在回收站")
-    if not await get_vector_store().update_metadata(kb_id, doc_id, doc_active=True):
+    if not await get_vector_store().update_metadata(
+            kb_id, doc_id, doc_active=doc.enabled):
         raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
     restored = get_document_service().restore(doc_id)
     get_retrieval_service().invalidate_bm25(kb_id)
@@ -812,6 +814,59 @@ async def restore_document(request: Request, kb_id: str, doc_id: str,
         target_id=doc_id, target_name=restored.original_name, request=request)
     logger.info("恢复文档: %s (%s)", restored.original_name, doc_id)
     return restored
+
+
+@router.post("/{doc_id}/disable")
+async def disable_document(request: Request, kb_id: str, doc_id: str,
+                           db: AsyncSession = Depends(get_db),
+                           user: UserPublic = Depends(get_current_user)):
+    """禁用检索（can_manage_kb）：文档保留，仍可查看/下载/重新解析
+
+    复用软删除的 doc_active 机制（更新向量 metadata + 失效 BM25 索引），
+    检索层无需改动；知识图谱路径另有过滤（见 knowledge_graph_service）。
+    与回收站相互独立：回收站里的文档也能禁用，恢复时按 enabled 决定是否激活。
+    """
+    await kb_or_404(db, kb_id, user, manage=True)
+    doc = _get_doc_or_404(kb_id, doc_id)
+    # 先更新向量标志再改元数据：失败则中止，保持两侧一致（与删除同口径）
+    if not await get_vector_store().update_metadata(kb_id, doc_id, doc_active=False):
+        raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
+    updated = get_document_service().set_enabled(doc_id, False)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    # 软删/禁用不改变向量 count，BM25 索引不会自动失效，必须显式失效
+    get_retrieval_service().invalidate_bm25(kb_id)
+    await audit_service.record_action(
+        user, action="doc.disable", target_type="doc",
+        target_id=doc_id, target_name=doc.original_name, request=request)
+    logger.info("文档已禁用检索: %s (%s)", doc.original_name, doc_id)
+    return updated
+
+
+@router.post("/{doc_id}/enable")
+async def enable_document(request: Request, kb_id: str, doc_id: str,
+                          db: AsyncSession = Depends(get_db),
+                          user: UserPublic = Depends(get_current_user)):
+    """启用检索（can_manage_kb）：让被禁用的文档重新参与召回
+
+    若文档同时在回收站：只记 enabled=True，向量保持 doc_active=False
+    ——回收站优先级更高，避免"启用"绕过回收站语义；等出回收站时按 enabled
+    自动激活（见 restore_document）。
+    """
+    await kb_or_404(db, kb_id, user, manage=True)
+    doc = _get_doc_or_404(kb_id, doc_id)
+    if not await get_vector_store().update_metadata(
+            kb_id, doc_id, doc_active=not doc.deleted):
+        raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
+    updated = get_document_service().set_enabled(doc_id, True)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    get_retrieval_service().invalidate_bm25(kb_id)
+    await audit_service.record_action(
+        user, action="doc.enable", target_type="doc",
+        target_id=doc_id, target_name=doc.original_name, request=request)
+    logger.info("文档已启用检索: %s (%s)", doc.original_name, doc_id)
+    return updated
 
 
 @router.post("/{doc_id}/purge")

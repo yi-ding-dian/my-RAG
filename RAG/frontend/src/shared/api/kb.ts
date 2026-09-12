@@ -167,6 +167,14 @@ export const restoreDocument = (kbId: string, docId: string) =>
 export const purgeDocument = (kbId: string, docId: string) =>
   api.post<{ message: string }>(`/kbs/${kbId}/documents/${docId}/purge`);
 
+/** 禁用检索（文档保留，仍可查看/下载/重新解析，只是不再被召回） */
+export const disableDocument = (kbId: string, docId: string) =>
+  api.post<DocumentItem>(`/kbs/${kbId}/documents/${docId}/disable`);
+
+/** 启用检索（让被禁用的文档重新参与召回） */
+export const enableDocument = (kbId: string, docId: string) =>
+  api.post<DocumentItem>(`/kbs/${kbId}/documents/${docId}/enable`);
+
 /** 清空回收站：批量彻底删除 */
 export const emptyTrash = (kbId: string) =>
   api.post<{ message: string; count: number }>(`/kbs/${kbId}/documents/trash/empty`);
