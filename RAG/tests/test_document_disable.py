@@ -113,13 +113,14 @@ class TestDocumentDisable:
         assert r.status_code in (403, 404), r.text
 
 
-def test_filter_graph_by_active_docs():
-    """图谱过滤：只保留引用了活跃文档的实体与关系（纯函数，不起图谱链路）
+def test_filter_graph_by_inactive_docs():
+    """图谱过滤：剔除引用了非活跃文档的实体与关系（纯函数，不起图谱链路）
 
     这条兜住"禁用只禁了一半"——向量与 BM25 已排除，图谱若不筛，被禁文档的
     实体照样会以「知识图谱」引用冒进回答。
+    只剔除**确知非活跃**的文档（回收站/禁用），未知 doc_id 保留。
     """
-    from backend.services.knowledge_graph_service import filter_graph_by_active_docs
+    from backend.services.knowledge_graph_service import filter_graph_by_inactive_docs
 
     graph = {
         "entities": [
@@ -138,7 +139,7 @@ def test_filter_graph_by_active_docs():
              "chunk_refs": [{"doc_id": "d2", "chunk_index": 0}]},
         ],
     }
-    out = filter_graph_by_active_docs(graph, {"d1"})  # d2 被禁用/删除
+    out = filter_graph_by_inactive_docs(graph, {"d2"})  # d2 被禁用/删除
 
     assert [e["name"] for e in out["entities"]] == ["只引 d1", "d1d2 都引"], \
         "只引用非活跃文档的实体应被剔除"

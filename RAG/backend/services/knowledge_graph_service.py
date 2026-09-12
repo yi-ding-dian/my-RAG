@@ -401,18 +401,22 @@ def remove_doc_refs(graph: dict, doc_id: str) -> int:
     return removed
 
 
-def _active_doc_ids(kb_id: str) -> set:
-    """该库参与检索的文档 ID 集合（未在回收站且未禁用）
+def _inactive_doc_ids(kb_id: str) -> set:
+    """该库**确知非活跃**的文档 ID 集合（在回收站，或已被禁用）
 
-    图谱实体的引用来源若全部落在集合之外，该实体不该再进回答。
+    过滤时只剔除这些文档的引用；引用里出现未知 doc_id（测试造数、历史脏数据、
+    文档元数据已丢）一律保留——宁可多留，也不能让图谱整体失效。
     """
     from backend.services.document_service import get_document_service
-    docs = get_document_service().list_by_kb(kb_id)  # 默认排除回收站
-    return {d.id for d in docs if getattr(d, "enabled", True)}
+    docs = get_document_service().list_by_kb(kb_id, include_deleted=True)
+    return {
+        d.id for d in docs
+        if d.deleted or not getattr(d, "enabled", True)
+    }
 
 
-def filter_graph_by_active_docs(graph: dict, active_doc_ids: set) -> dict:
-    """只保留引用了活跃文档（未删除且未禁用）的实体与关系（原地修改并返回）
+def filter_graph_by_inactive_docs(graph: dict, inactive_doc_ids: set) -> dict:
+    """剔除引用了非活跃文档（回收站/已禁用）的实体与关系（原地修改并返回）
 
     图谱路径同样要尊重"回收站"与"禁用"：否则禁用只禁了一半——向量与 BM25
     已排除，被禁文档的实体照样从这里冒进回答。
@@ -422,7 +426,7 @@ def filter_graph_by_active_docs(graph: dict, active_doc_ids: set) -> dict:
     kept_entities: List[dict] = []
     for e in graph.get("entities", []):
         refs = [r for r in e.get("chunk_refs", [])
-                if r.get("doc_id") in active_doc_ids]
+                if r.get("doc_id") not in inactive_doc_ids]
         if refs:
             e["chunk_refs"] = refs
             e["count"] = len(refs)
@@ -434,7 +438,7 @@ def filter_graph_by_active_docs(graph: dict, active_doc_ids: set) -> dict:
         if r.get("source") not in kept_ids or r.get("target") not in kept_ids:
             continue
         refs = [x for x in r.get("chunk_refs", [])
-                if x.get("doc_id") in active_doc_ids]
+                if x.get("doc_id") not in inactive_doc_ids]
         if refs:
             r["chunk_refs"] = refs
             r["weight"] = float(len(refs))
@@ -1017,13 +1021,14 @@ async def build_kg_source(kb_id: str, query: str,
         if not graph.get("entities"):
             return None  # 无图谱（未构建/空图谱）自动跳过
         # 图谱路径同样排除已删除/已禁用文档的实体（否则"禁用"只禁了一半：
-        # 向量与 BM25 排除了，被禁文档的实体照样从这里冒进回答）
-        active_ids = _active_doc_ids(kb_id)
-        if not active_ids:
-            return None  # 该库文档全部删除/禁用：图谱无可信来源
-        graph = filter_graph_by_active_docs(graph, active_ids)
-        if not graph.get("entities"):
-            return None
+        # 向量与 BM25 排除了，被禁文档的实体照样从这里冒进回答）。
+        # 只剔除**确知非活跃**的文档引用，未知 doc_id 一律保留——
+        # 避免因文档元数据缺失（测试造数/历史数据）让图谱整体失效
+        inactive = _inactive_doc_ids(kb_id)
+        if inactive:
+            graph = filter_graph_by_inactive_docs(graph, inactive)
+            if not graph.get("entities"):
+                return None
         query_entities = await extract_query_entities(query)
         if not query_entities:
             return None

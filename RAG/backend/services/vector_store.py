@@ -303,7 +303,8 @@ class MilvusVectorBackend(VectorBackend):
     """Milvus 服务化实现（pymilvus 3.x MilvusClient 现代 API）
 
     与 ChromaVectorBackend 行为对齐（同一种"库=集合/语义"契约）：
-    - collection 名 kb_{kb_id}，COSINE 度量，相似度 score = 1 - distance；
+    - collection 名 kb_{kb_id}，COSINE 度量；注意 Milvus 3.x 的 search 返回里
+      distance 字段**就是余弦相似度**（不再是 2.x 时代的"距离"，详见 search）；
     - schema = id(varchar 主键) + vector(FLOAT_VECTOR) + dynamic field：
       text 与全部 metadata（document_id/document_name/chunk_index/
       char_start/parent_text/doc_active…）均走动态 JSON 字段，
@@ -409,8 +410,12 @@ class MilvusVectorBackend(VectorBackend):
             ent = row.get("entity") or {}
             meta = {k: v for k, v in ent.items()
                     if k not in ("id", "text", "vector")}
+            # Milvus 3.x：search 返回的 distance 字段**就是余弦相似度**（实测与
+            # 手算逐位相同），不再是 2.x 时代的"距离"。若沿用 `1 - distance`，
+            # 相似度会被整体反过来——最相关的排最后、最不相关的排最前，语义
+            # 检索全面失效（表现为"答案就在库里却永远召不回"）。
             hits.append((row.get("id") or "", ent.get("text") or "", meta,
-                         1.0 - float(row.get("distance", 1.0))))
+                         float(row.get("distance", 0.0))))
         hits.sort(key=lambda h: h[3], reverse=True)
         return hits
 
