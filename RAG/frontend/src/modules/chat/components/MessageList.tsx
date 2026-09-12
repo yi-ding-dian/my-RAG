@@ -261,8 +261,10 @@ const renderContent = (
   onCitationClick: ((source: Source) => void) | undefined,
 ): React.ReactNode[] => {
   // 先清洗行首 Markdown 结构符号（### 标题 / - 列表等）：
-  // 显示文本与高亮基准（answerText）都用清洗后文本，保证所见即所算
-  const cleaned = cleanAnswerText(content);
+  // 显示文本与高亮基准（answerText）都用清洗后文本，保证所见即所算。
+  // 首尾空白先 trim：模型有时以空行开头（实测 "\n\n知识库中未找到您要的信息！"），
+  // 在气泡里会显示成一块空白（历史脏数据也靠这一步兜住）
+  const cleaned = cleanAnswerText(content.trim());
   // 再识别表格块（管道表格 / HTML <table> 存量兜底，半截自动回退纯文本），
   // 表格之外的文本继续走 [n] 引用标拆分 + MdImages 图片渲染
   const blocks = renderTableBlocks(cleaned);

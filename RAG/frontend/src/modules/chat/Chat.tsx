@@ -10,6 +10,7 @@ import {
   AgenticTrace,
   ChatMessage,
   ChatSession,
+  GenParams,
   KnowledgeBase,
   Source,
   deleteSession,
@@ -297,8 +298,22 @@ const ChatPage: React.FC = () => {
   }, [flushDelta, kbId, loadSessions]);
 
   const handleDone = useCallback(
-    (info: { session_id: string; message_count: number }) => {
+    (info: { session_id: string; message_count: number; gen_params?: GenParams }) => {
       if (info.session_id) setActiveSessionId(info.session_id);
+      // 生成参数随 done 下发（prompt 事件下发时它还没算好）：写进最后一条
+      // assistant 消息，这样刚问完立刻点「详情」也能看到本次实际生效的参数，
+      // 不必等刷新从会话文件重新加载
+      if (info.gen_params && Object.keys(info.gen_params).length > 0) {
+        const gp = info.gen_params;
+        setMessages(prev => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === 'assistant') {
+            next[next.length - 1] = { ...last, gen_params: gp };
+          }
+          return next;
+        });
+      }
       finishStreaming();
     },
     [finishStreaming],

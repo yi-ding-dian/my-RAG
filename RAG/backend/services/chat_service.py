@@ -522,6 +522,10 @@ class ChatService:
                 yield sse_event("done", {
                     "session_id": session.id,
                     "message_count": len(session.messages),
+                    # 生成参数随 done 下发：prompt 事件下发时它还没算好（依赖
+                    # 后组装的请求参数），而"刚问完立刻点详情"看的是前端本地
+                    # 消息——不下发就只能等刷新从会话文件读回
+                    "gen_params": prompt_detail.get("gen_params", {}),
                 })
                 # 对话完成 → 异步触发用户画像提取（不阻塞响应）
                 if user_id:
@@ -683,6 +687,8 @@ class ChatService:
             yield sse_event("done", {
                 "session_id": session.id,
                 "message_count": len(session.messages),
+                # 同无命中路径：生成参数随 done 下发，前端本地消息才有得看
+                "gen_params": prompt_detail.get("gen_params", {}),
             })
             # 对话完成 → 异步触发用户画像提取（不阻塞响应）
             if user_id:
@@ -926,7 +932,9 @@ class ChatService:
                                             created_at=chat_time))
         session.messages.append(ChatMessage(
             role="assistant",
-            content="".join(answer_parts),
+            # 首尾空白 trim：模型常以空行开头（实测 "\n\n知识库中未找到您要的信息！"），
+            # 原样落盘会在聊天气泡里多出一块莫名其妙的空白
+            content="".join(answer_parts).strip(),
             sources=sources,
             agentic=agentic or {},
             prompt=detail.get("prompt", []) if detail else [],

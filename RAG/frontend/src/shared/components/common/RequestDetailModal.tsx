@@ -24,6 +24,40 @@ const formatMs = (ms: number): string =>
   ms >= 1000 ? `${(ms / 1000).toFixed(1)} 秒（${Math.round(ms)} ms）` : `${Math.round(ms)} ms`;
 
 /**
+ * 提示词里的引用块小标题（`[引用 3]（来源：xxx.xlsx）`）染色显示。
+ * 完整提示词动辄上万字，引用块靠这个小标题分隔——染成紫色便于一眼定位到
+ * 第几段引用，与正文的黑/灰拉开区分。
+ */
+const renderPromptText = (text: string): React.ReactNode[] => {
+  const re = /\[引用\s*\d+\]（来源：[^）]*）/g;
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      parts.push(
+        <MdImages key={`t${k}`} text={text.slice(last, m.index)}
+                  maxWidth={ANSWER_IMAGE_MAX_WIDTH} />,
+      );
+    }
+    parts.push(
+      <span key={`r${k++}`} style={{ color: '#722ed1', fontWeight: 600 }}>
+        {m[0]}
+      </span>,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    parts.push(
+      <MdImages key={`t${k}`} text={text.slice(last)}
+                maxWidth={ANSWER_IMAGE_MAX_WIDTH} />,
+    );
+  }
+  return parts;
+};
+
+/**
  * 提示词内容渲染：清洗 markdown 结构符号 → 表格块渲染 → 图片引用转真实图片
  *
  * 等价于聊天页 renderContent(content, undefined, undefined)：无 sources 时
@@ -31,9 +65,9 @@ const formatMs = (ms: number): string =>
  * （那部分与聊天页气泡渲染强耦合，搬过来只会引来重复维护）。
  */
 const renderPromptContent = (content: string): React.ReactNode =>
-  renderTableBlocks(cleanAnswerText(content)).map((b, bi) =>
+  renderTableBlocks(cleanAnswerText(content.trim())).map((b, bi) =>
     typeof b === 'string'
-      ? <MdImages key={`m${bi}`} text={b} maxWidth={ANSWER_IMAGE_MAX_WIDTH} />
+      ? <React.Fragment key={`m${bi}`}>{renderPromptText(b)}</React.Fragment>
       : <React.Fragment key={`t${bi}`}>{b}</React.Fragment>,
   );
 
@@ -221,6 +255,10 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
       styles={{ body: { maxHeight: '70vh', overflowY: 'auto', paddingTop: 8 } }}
       destroyOnClose
     >
+      {/* flexShrink: 0 —— Modal body 内层是 flex column 容器，内容总高超出时
+          子元素会被 flex 压缩（实测「回复」框被压到 16px、正文只剩一线）。
+          整块包一层不可压缩的容器，超出部分交给 body 的 overflow 滚动 */}
+      <div style={{ flexShrink: 0 }}>
       {/* 回答时间（历史数据可能缺失，缺则整行不显示） */}
       {message.created_at && (
         <div style={{ marginBottom: 10, fontSize: 13, color: token.colorTextSecondary }}>
@@ -370,6 +408,7 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
       {/* 生成参数放最末：先看现场（问题/回答/引用），再回头看"当时是怎么跑的" */}
       <div style={{ fontWeight: 600, marginBottom: 4, marginTop: 16 }}>生成参数</div>
       <GenParamsView params={message.gen_params} token={token} />
+      </div>
     </AppModal>
   );
 };

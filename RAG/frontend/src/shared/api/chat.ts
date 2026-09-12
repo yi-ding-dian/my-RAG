@@ -9,6 +9,7 @@ import type {
   AgenticTrace,
   ChatSession,
   ChatSessionDetail,
+  GenParams,
   RetrieveChatParams,
   Source,
   StreamCallbacks,
@@ -91,8 +92,13 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
         const info = (typeof data === 'object' && data !== null ? data : {}) as {
           session_id?: string;
           message_count?: number;
+          gen_params?: GenParams;
         };
-        callbacks.onDone?.({ session_id: info.session_id ?? '', message_count: info.message_count ?? 0 });
+        callbacks.onDone?.({
+          session_id: info.session_id ?? '',
+          message_count: info.message_count ?? 0,
+          gen_params: info.gen_params,
+        });
         break;
       }
       case 'error': {

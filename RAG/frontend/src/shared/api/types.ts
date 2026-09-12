@@ -695,8 +695,12 @@ export interface StreamCallbacks {
   onAgenticStatus?: (info: AgenticStatus) => void;
   /** 收到 event:delta，增量文本 */
   onDelta?: (text: string) => void;
-  /** 收到 event:done */
-  onDone?: (info: { session_id: string; message_count: number }) => void;
+  /** 收到 event:done（gen_params = 本次实际生效的生成参数，供「详情」追溯） */
+  onDone?: (info: {
+    session_id: string;
+    message_count: number;
+    gen_params?: GenParams;
+  }) => void;
   /** 收到 event:error 或网络错误（用户主动停止时 message 为 '已停止'） */
   onError?: (message: string) => void;
 }
