@@ -123,7 +123,11 @@ def _write_session_file(session_id, title="审计测试会话", messages=None):
 
 
 def _mock_conn_tests(monkeypatch, ok_map: dict):
-    """monkeypatch SettingsService 各项连接测试秒回（ok_map: {section: ok}）"""
+    """monkeypatch SettingsService 各项连接测试秒回（ok_map: {section: ok}）
+
+    需覆盖 SettingsService 的**全部** _test_* 方法：漏掉的那个会真实执行，
+    对不可达地址探测必然失败 → 整体非 success（审计仅在全部 ok 时记 success）。
+    """
     from backend.services.settings import service as ss
 
     def _ok(section):
@@ -139,12 +143,17 @@ def _mock_conn_tests(monkeypatch, ok_map: dict):
     def _test_llm(self, llm): return _ok("llm")
     def _test_embedding(self, emb): return _ok("embedding")
     def _test_mineru(self, mineru): return _ok("mineru")
+    def _test_rerank(self, rerank): return _ok("rerank")
+    async def _test_vector_store(self, vs): return _ok("vector_store")
     async def _test_deepdoc(self, deepdoc): return _ok("deepdoc")
     async def _test_mysql(self, mysql): return _ok("mysql")
     async def _test_minio(self, minio): return _ok("minio")
     monkeypatch.setattr(ss.SettingsService, "_test_llm", _test_llm)
     monkeypatch.setattr(ss.SettingsService, "_test_embedding", _test_embedding)
     monkeypatch.setattr(ss.SettingsService, "_test_mineru", _test_mineru)
+    monkeypatch.setattr(ss.SettingsService, "_test_rerank", _test_rerank)
+    monkeypatch.setattr(ss.SettingsService, "_test_vector_store",
+                        _test_vector_store)
     monkeypatch.setattr(ss.SettingsService, "_test_deepdoc", _test_deepdoc)
     monkeypatch.setattr(ss.SettingsService, "_test_mysql", _test_mysql)
     monkeypatch.setattr(ss.SettingsService, "_test_minio", _test_minio)

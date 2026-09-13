@@ -339,10 +339,16 @@ def probe_llm_sdk(cfg=None, *, timeout: Optional[float] = None,
     client_cls = client_cls or OpenAI
     timeout = (float(timeout) if timeout is not None
                else _cfg_timeout(cfg, DEFAULT_LLM_TIMEOUT))
+    base_url = _cfg_str(cfg, "base_url").strip()
+    if not base_url:
+        # 未配置地址：直接给明确原因，不构造客户端——SDK 对空 base_url 抛的是
+        # 晦涩的构造异常，前端"连接测试"提示不友好（历史实现有此校验，迁移
+        # 到 SDK 形态时丢失，此处补回）
+        return {"ok": False, "latency_ms": 0, "reason": "未配置 base_url"}
     t0 = time.monotonic()
     try:
         client = client_cls(
-            base_url=_cfg_str(cfg, "base_url").strip(),
+            base_url=base_url,
             api_key=(_cfg_str(cfg, "api_key") or "lm-studio").strip(),
             timeout=timeout,
         )

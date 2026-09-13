@@ -139,17 +139,32 @@ class RecursiveChunker:
             while pi < len(paras) and paras[pi][1] <= lo:
                 units.append(paras[pi])
                 pi += 1
+            # 与保护区间重叠的段落：只丢弃**落在区间内**的部分。段落可能比
+            # 区间大（图片引用与正文同段，如"![图](…) 图注文字"），整段丢弃
+            # 会把它在区间之外的内容一并静默吞掉——区间左右两侧的残留必须保留。
             while pi < len(paras) and paras[pi][0] < hi:
+                ps, pe = paras[pi]
+                if ps < lo:
+                    units.append((ps, lo))          # 区间左侧残留
+                if pe > hi:
+                    paras[pi] = (hi, pe)            # 区间右侧残留：留待下轮处理
+                    break
                 pi += 1
             units.append((lo, hi))
         while pi < len(paras):
             units.append(paras[pi])
             pi += 1
         units.sort()
-        # 相邻/重叠单元合并（保护区间可能相接）
+        # 相邻/重叠单元合并（保护区间可能相接）——但**不跨过保护区间的边界**
+        # （起点与终点）：否则"区间左侧残留 + 区间"会粘成以残留开头的单元、
+        # "区间 + 右侧残留"会粘成超出区间终点的单元，两者都不再满足
+        # _is_protected_unit（要求完全落在区间内），超长时被当普通内容二次
+        # 切分，把表格/代码块切碎
+        span_bounds = {b for span in spans for b in span}
         merged: List[Tuple[int, int]] = []
         for s, e in units:
-            if merged and s <= merged[-1][1]:
+            if (merged and s <= merged[-1][1]
+                    and merged[-1][1] not in span_bounds):
                 merged[-1] = (merged[-1][0], max(merged[-1][1], e))
             else:
                 merged.append((s, e))

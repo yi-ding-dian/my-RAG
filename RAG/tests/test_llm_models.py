@@ -7,17 +7,16 @@
   校验（name 唯一、base_url/model 必填、active 索引合法、models 必须数组）
 - 激活语义：active 切换 → get_active_config().llm 即时变为新模型
   （问答等所有 LLM 场景用激活模型，通过 chat 流式 llm_cfg 断言）
-- 连接测试：POST /api/settings/llm/test（GET {base_url}/models 成功/失败，
+- 连接测试：POST /api/settings/llm/test（最小 chat 推理探测成功/失败，
   返回 {ok, reason, latency_ms}）；档案级连接测试取激活条目
 - 部门兼容：部门 llm 字段覆盖基于全局**激活模型**；未设置跟随全局激活模型
 - 兼容：/api/settings/chat 超管标量提交 = 修改激活模型条目（多模型场景）
-全部离线（httpx/OpenAI 客户端 mock）。
+全部离线（OpenAI 客户端 mock）。
 """
 from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 from types import SimpleNamespace
 
@@ -317,47 +316,59 @@ class TestActiveSemantics:
 
 # ==================== 4. 连接测试（勾选激活前置探测 + 档案级测试取激活条目） ====================
 
-class _FakeResponse:
-    def __init__(self, status_code=200):
-        self.status_code = status_code
+class _FakeOpenAI:
+    """伪 OpenAI 同步客户端（/llm/test 走 probe_llm_sdk 的**真实推理探测**）
 
-    def json(self):
-        return {}
+    base_url 含 'bad' → 抛连接异常；含 '500' → 抛服务端异常；否则成功返回。
+    与 test_probes._FakeOpenAI 同构，额外记录调用参数供断言"探测打到了什么"。
+    """
 
-
-class _FakeAsyncClient:
-    """mock httpx.AsyncClient：base_url 含 'bad' → 抛连接异常；500 → 失败"""
-
-    def __init__(self, timeout=None):
-        self.timeout = timeout
+    def __init__(self, base_url="", api_key="", timeout=5.0):
+        self._base_url = base_url or ""
         self.calls = []
 
-    async def __aenter__(self):
+    @property
+    def chat(self):
         return self
 
-    async def __aexit__(self, *exc):
-        return False
+    @property
+    def completions(self):
+        return self
 
-    async def get(self, url, **kw):
-        self.calls.append(("get", url, kw))
-        if "bad" in url:
-            raise httpx.ConnectError("mock: 连接失败")
-        if "500" in url:
-            return _FakeResponse(500)
-        return _FakeResponse(200)
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if "bad" in self._base_url:
+            raise ConnectionError("mock: LLM 连接失败")
+        if "500" in self._base_url:
+            raise RuntimeError("mock: 服务异常（HTTP 500）")
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="hi"))])
 
 
-def _patch_llm_http(monkeypatch):
-    fake = _FakeAsyncClient()
-    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout=None: fake)
-    return fake
+def _patch_llm_sdk(monkeypatch):
+    """打桩 probe_llm_sdk 使用的模块级 OpenAI 客户端
+
+    /llm/test 调用 probe_llm_sdk 时不传 client_cls，故 patch probes 模块上的
+    名字；返回每次构造的 fake 列表（记录推理调用参数，供断言）。
+    """
+    import backend.services.parsers.probes as probes
+
+    created = []
+
+    def _factory(**kw):
+        fake = _FakeOpenAI(**kw)
+        created.append(fake)
+        return fake
+
+    monkeypatch.setattr(probes, "OpenAI", _factory)
+    return created
 
 
 class TestLlmConnectionTest:
 
     def test_llm_test_endpoint_ok(self, client, admin_headers, monkeypatch):
-        """POST /api/settings/llm/test：GET {base_url}/models 2xx → ok=True"""
-        fake = _patch_llm_http(monkeypatch)
+        """POST /api/settings/llm/test：最小 chat 推理成功 → ok=True"""
+        created = _patch_llm_sdk(monkeypatch)
         resp = client.post("/api/settings/llm/test",
                            json=_item("A", "m-a"), headers=admin_headers)
         assert resp.status_code == 200, resp.text
@@ -365,14 +376,14 @@ class TestLlmConnectionTest:
         assert data["ok"] is True
         assert "连接成功" in data["reason"]
         assert data["latency_ms"] >= 0
-        # 探测打到 {base_url}/models（OpenAI 兼容端点）并携带认证头
-        assert fake.calls and fake.calls[0][0] == "get"
-        assert fake.calls[0][1].endswith("/models")
+        # 真实推理探测（非仅探 /models）：发的是 chat 补全，model 取条目里的
+        assert created and created[0].calls, "应发起 chat 推理探测"
+        assert created[0].calls[0]["model"] == "m-a"
 
     def test_llm_test_endpoint_http_error(self, client, admin_headers,
                                           monkeypatch):
-        """GET /models 5xx → ok=False + 原因（服务异常）"""
-        _patch_llm_http(monkeypatch)
+        """服务端 5xx → ok=False + 原因（服务异常）"""
+        _patch_llm_sdk(monkeypatch)
         resp = client.post("/api/settings/llm/test",
                            json=_item("A", "m-a",
                                       base_url="http://500.example/v1"),
@@ -385,7 +396,7 @@ class TestLlmConnectionTest:
     def test_llm_test_endpoint_conn_error(self, client, admin_headers,
                                           monkeypatch):
         """连接失败 → ok=False + 原因（供前端勾选激活时提示）"""
-        _patch_llm_http(monkeypatch)
+        _patch_llm_sdk(monkeypatch)
         resp = client.post("/api/settings/llm/test",
                            json=_item("A", "m-a",
                                       base_url="http://bad.example/v1"),
@@ -399,13 +410,13 @@ class TestLlmConnectionTest:
     def test_llm_test_endpoint_missing_base_url(self, client, admin_headers,
                                                 monkeypatch):
         """未配置 base_url → ok=False（不发起网络请求）"""
-        fake = _patch_llm_http(monkeypatch)
+        created = _patch_llm_sdk(monkeypatch)
         resp = client.post("/api/settings/llm/test",
                            json={"model": "m-a"}, headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json()["ok"] is False
         assert "未配置" in resp.json()["reason"]
-        assert not fake.calls, "无 base_url 不应发起请求"
+        assert not created, "无 base_url 不应构造客户端（更不发请求）"
 
     def test_llm_test_requires_admin(self, client, admin_headers,
                                      user_headers):
