@@ -31,6 +31,7 @@ interface ChatSettingsFormValues {
   retrieval_similarity_threshold: number; // 0-1，默认 0（不过滤）
   retrieval_top_k: number; // 1-20，默认 5
   chat_kg_enhance: boolean; // 知识图谱增强，默认 true（有图谱才生效）
+  chat_query_rewrite: boolean; // 查询改写，默认 true（指代消解 + 口语正式化）
   // 对话设置
   chat_enable_multi_turn: boolean; // 多轮对话，默认 true
   chat_history_rounds: number; // 1-20，默认 8
@@ -89,6 +90,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           retrieval_similarity_threshold: retrieval?.similarity_threshold ?? 0,
           retrieval_top_k: retrieval?.top_k ?? 5,
           chat_kg_enhance: chat?.kg_enhance ?? true,
+          chat_query_rewrite: chat?.query_rewrite ?? true,
           chat_enable_multi_turn: chat?.enable_multi_turn ?? true,
           chat_history_rounds: chat?.history_rounds ?? 8,
           use_default_temperature: chat?.temperature == null,
@@ -133,6 +135,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
         },
         chat: {
           kg_enhance: values.chat_kg_enhance,
+          query_rewrite: values.chat_query_rewrite,
           enable_multi_turn: values.chat_enable_multi_turn,
           history_rounds: values.chat_history_rounds,
           // true=用 LLM 配置默认（保存 null）；false=保存滑条值
@@ -224,6 +227,14 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
               label="知识图谱增强"
               valuePropName="checked"
               extra="查询时结合知识图谱实体关系增强回答，需文档构建过知识图谱（无图谱自动跳过）"
+            >
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              name="chat_query_rewrite"
+              label="查询改写"
+              valuePropName="checked"
+              extra="多轮对话时先用 LLM 结合历史把问题改写为独立检索查询（消除「它/上面那个」等指代、口语转书面），提升检索命中率；仅命中触发条件才调用，失败自动回退原问题"
               style={{ marginBottom: 0 }}
             >
               <Switch />

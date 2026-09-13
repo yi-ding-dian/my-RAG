@@ -38,6 +38,7 @@ from backend.models.rag_models import (ChatHistoryItem, ChatMessage,
                                        ChatSession, Source)
 from backend.services.llm_client import get_llm_client, llm_to_dict
 from backend.services.agentic_service import get_agentic_service
+from backend.services.query_rewriter import rewrite_query
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
 from backend.services.settings.service import (merge_chat_config,
@@ -432,6 +433,37 @@ class ChatService:
             agentic_abstain = False
             agentic_trace: list = []
             agentic_final_query = message
+
+            # 0.5) 查询改写（chat.query_rewrite，默认开）：LLM 结合历史把问题
+            #    改写为正式独立检索查询（口语→正式书面化 + 指代消解 + 省略
+            #    补全，见 query_rewriter）。改写结果**仅用于本轮检索**——不
+            #    落盘、不入历史、不出现在对话展示里（prompt 事件附
+            #    rewritten_query 供"请求详情"调试）。触发条件在 query_rewriter
+            #    内部精判（口语词必触发、不依赖历史；指代词需有历史），失败/
+            #    超时一律回退原问题，绝不阻塞问答。
+            #    agentic 开启时**跳过**：决策层内部自带改写循环
+            #    （agentic_service 的 rewrite 节点），叠加会双重改写且多花
+            #    一次 LLM 调用。
+            search_query = message
+            rewritten_query: Optional[str] = None
+            rewrite_ms = 0
+            if merged_chat.get("query_rewrite") and not agentic_enabled:
+                t_rewrite = time.perf_counter()
+                # 与第 4 步同口径：会话消息截最近 N 轮（首轮为空 → 无历史，
+                # 口语正式化仍可触发、指代消解跳过）
+                rounds = int(merged_chat["history_rounds"])
+                history_msgs = [
+                    {"role": m.role, "content": m.content}
+                    for m in session.messages[-(rounds * 2):]
+                ]
+                rewritten_query = await rewrite_query(message, history_msgs)
+                rewrite_ms = int(round((time.perf_counter() - t_rewrite)
+                                       * 1000))
+                if rewritten_query and rewritten_query != message:
+                    logger.info("查询改写: %s -> %s", message[:50],
+                                rewritten_query[:50])
+                    search_query = rewritten_query
+
             # 检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
             t_retrieval = time.perf_counter()
             try:
@@ -456,7 +488,8 @@ class ChatService:
                         sources = []
                 else:
                     sources = await get_retrieval_service().retrieve(
-                        kb_id, message, top_k=eff_top_k, min_score=eff_min_score)
+                        kb_id, search_query, top_k=eff_top_k,
+                        min_score=eff_min_score)
                 retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
                 # 可预期失败（Embedding 服务不可用等）：warning 不透传堆栈，
@@ -598,6 +631,10 @@ class ChatService:
                 "prompt": list(messages),
                 "retrieval_ms": retrieval_ms,
                 "kg_ms": kg_ms,
+                # 查询改写（第 0.5 步）：耗时单独统计（不污染 retrieval_ms），
+                # 改写后的检索词供"请求详情"对照原问题
+                "rewrite_ms": rewrite_ms,
+                "rewritten_query": rewritten_query,
             }
             yield sse_event("prompt", prompt_detail)
 

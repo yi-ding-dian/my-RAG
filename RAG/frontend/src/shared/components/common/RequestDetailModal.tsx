@@ -300,7 +300,7 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           回答时间：{message.created_at}
         </div>
       )}
-      {/* 检索问题：该条回答对应的用户原问题（当前链路无查询改写） */}
+      {/* 检索问题：该条回答对应的用户原问题；查询改写命中时在其下附改写后的检索词 */}
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 4 }}>检索问题</div>
         <div
@@ -316,6 +316,19 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
         >
           {question || '（无）'}
         </div>
+        {message.rewritten_query && (
+          <div
+            style={{
+              fontSize: 12,
+              lineHeight: '18px',
+              marginTop: 4,
+              color: token.colorTextSecondary,
+            }}
+          >
+            <span style={{ color: token.colorTextTertiary }}>改写后检索词：</span>
+            {message.rewritten_query}
+          </div>
+        )}
       </div>
       {/* 用户反馈（仅超管回溯传入；聊天页是自己点的，无展示意义） */}
       {feedback && (
@@ -364,6 +377,8 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
         <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
           召回耗时：{typeof message.retrieval_ms === 'number' ? `${message.retrieval_ms} ms` : '—'}
           {typeof message.kg_ms === 'number' && ` ｜ 图谱构建：${message.kg_ms} ms`}
+          {typeof message.rewrite_ms === 'number' && message.rewrite_ms > 0
+            && ` ｜ 查询改写：${message.rewrite_ms} ms`}
         </div>
         <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
           总耗时（提问→首字）：{typeof message.total_ms === 'number' ? formatMs(message.total_ms) : '—'}

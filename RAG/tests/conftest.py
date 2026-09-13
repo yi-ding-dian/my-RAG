@@ -44,6 +44,9 @@ os.environ["DATA_DIR"] = str(TEST_DATA_DIR)
 os.environ["MYSQL_URL"] = "sqlite+aiosqlite://"
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["JWT_SECRET"] = "test-secret-test-secret"
+# 登录限速关闭：测试同 IP 高频登录（含专门验证 401 的用例）会累积失败计数，
+# 触发 429 锁定误伤后续用例（限流自身的行为由 test_rate_limit.py 显式开启验证）
+os.environ["LOGIN_RATE_LIMIT_ENABLED"] = "false"
 # 测试专用口令/密钥（config.py 出厂默认已清空，此处注入固定测试值，
 # 供配置档案脱敏/回传等断言使用；与 .env 出厂值完全隔离）
 os.environ["LLM_API_KEY"] = "test-llm-api-key"

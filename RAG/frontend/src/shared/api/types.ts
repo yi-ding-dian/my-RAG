@@ -348,6 +348,10 @@ export interface ChatMessage {
   retrieval_ms?: number;
   /** 请求详情：图谱构建耗时（后端统计，毫秒） */
   kg_ms?: number;
+  /** 请求详情：查询改写耗时（后端统计，毫秒；未触发改写为 0） */
+  rewrite_ms?: number;
+  /** 请求详情：改写后的检索查询（原问题未改写时为 null） */
+  rewritten_query?: string | null;
   /** 请求详情：提问 → AI 生成首字总耗时（前端计算，毫秒） */
   total_ms?: number;
   /** 请求详情：Agentic 检索决策轨迹（改写查询/分档分数/尝试次数；未开启时无） */
@@ -687,8 +691,8 @@ export interface AgenticStatus {
 export interface StreamCallbacks {
   /** 收到 event:meta，携带检索来源 */
   onMeta?: (sources: Source[]) => void;
-  /** 收到 event:prompt，携带完整提示词与检索/图谱耗时（请求详情用） */
-  onPrompt?: (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number }) => void;
+  /** 收到 event:prompt，携带完整提示词与检索/图谱/改写耗时（请求详情用） */
+  onPrompt?: (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number; rewrite_ms?: number; rewritten_query?: string | null }) => void;
   /** 收到 event:agentic，携带 Agentic 检索决策轨迹（默认关闭时不收到） */
   onAgentic?: (info: AgenticTrace) => void;
   /** 收到 event:agentic_status，携带检索/改写/重检进度（默认关闭时不收到） */
@@ -1064,6 +1068,8 @@ export interface ChatSettingsPayload {
     system_prompt: string;
     /** 知识图谱增强（默认 true；查询时图谱上下文作为「知识图谱」来源引用注入） */
     kg_enhance?: boolean;
+    /** 查询改写（默认 true；多轮对话时 LLM 结合历史改写检索查询，消除指代） */
+    query_rewrite?: boolean;
     /** 思考模式：disabled=关闭思考（默认）| enabled_low/high/max=开启并指定强度 */
     thinking_mode?: ThinkingMode;
   };
@@ -1096,6 +1102,7 @@ export interface ChatSettingsPayload {
       history_rounds?: number;
       system_prompt?: string;
       kg_enhance?: boolean;
+      query_rewrite?: boolean;
       thinking_mode?: ThinkingMode;
     };
     agentic?: {

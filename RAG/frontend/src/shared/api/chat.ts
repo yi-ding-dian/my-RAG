@@ -54,11 +54,15 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
           prompt?: unknown[];
           retrieval_ms?: number;
           kg_ms?: number;
+          rewrite_ms?: number;
+          rewritten_query?: string | null;
         };
         callbacks.onPrompt?.({
           prompt: info.prompt ?? [],
           retrieval_ms: info.retrieval_ms,
           kg_ms: info.kg_ms,
+          rewrite_ms: info.rewrite_ms,
+          rewritten_query: info.rewritten_query,
         });
         break;
       }

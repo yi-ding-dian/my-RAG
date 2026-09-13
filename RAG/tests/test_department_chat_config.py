@@ -25,7 +25,7 @@ GLOBAL = {
     "chat": {"temperature": 0.7, "top_p": 0.9, "max_tokens": 2048,
              "enable_multi_turn": True, "history_rounds": 8,
              "system_prompt": "全局提示词", "kg_enhance": True,
-             "thinking_mode": "disabled"},
+             "query_rewrite": True, "thinking_mode": "disabled"},
     "retrieval": {"top_k": 5, "similarity_threshold": 0.0},
 }
 
