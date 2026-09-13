@@ -51,3 +51,16 @@ export const getChatSettings = () => api.get<ChatSettingsPayload>('/settings/cha
 
 export const updateChatSettings = (data: ChatSettingsPayload) =>
   api.post<ChatSettingsPayload>('/settings/chat', data);
+
+/**
+ * 查看指定部门的配置（仅 super_admin；「部门配置查询」用，只读）
+ *
+ * 返回该部门**当前生效**的配置（全局 + 部门覆盖的合并值，llm 段密钥脱敏），
+ * 其中 `dept` 段是**部门显式覆盖**的原始字段（供前端标出改过哪些）。
+ */
+export const getDeptConfigView = (deptId: string) =>
+  api.get<ChatSettingsPayload & {
+    dept_id: string;
+    name: string;
+    description?: string | null;
+  }>(`/settings/depts/${deptId}/config`);

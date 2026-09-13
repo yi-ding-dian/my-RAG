@@ -279,6 +279,10 @@ class ChatConfig(BaseModel):
     # 触发、不依赖历史；指代词需有历史，无历史消不掉不白费调用），每轮最多
     # 一次 LLM 调用（短超时 8s，失败自动降级用原问题）；想省调用可手动关闭
     query_rewrite: bool = True
+    # 查询改写用的历史轮数（默认 3，部门可覆盖）：指代消解只需就近上下文，
+    # 与 history_rounds（喂给 LLM 对话的历史，默认 8）解耦——改写输入按
+    # token 计费，轮数越多越贵；范围 1~10 由 settings schema 限制
+    query_rewrite_rounds: int = 3
     # 思考模式（聊天问答 LLM 调用）：disabled=关闭思考（默认，更快更省 token）
     # | enabled_low/enabled_high/enabled_max=开启思考并指定强度。注入方式按
     # 服务商区分（见 thinking_strategy）：在线 API（api.deepseek.com 等）经

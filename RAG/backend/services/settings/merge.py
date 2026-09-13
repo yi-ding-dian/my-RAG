@@ -39,6 +39,8 @@ def chat_payload(profile: dict) -> dict:
             # 查询改写（默认开，旧档案缺字段兜底；LLM 结合历史把问题改写为
             # 独立检索查询——口语→正式 + 指代消解，见 query_rewriter）
             "query_rewrite": chat.get("query_rewrite", True),
+            # 查询改写用的历史轮数（默认 3，旧档案缺字段兜底）
+            "query_rewrite_rounds": chat.get("query_rewrite_rounds", 3),
             # 思考模式（聊天问答）：默认 disabled 关闭思考（缺省/旧档案兜底，
             # 简单延迟敏感任务更快更省 token）
             "thinking_mode": chat.get("thinking_mode", "disabled"),

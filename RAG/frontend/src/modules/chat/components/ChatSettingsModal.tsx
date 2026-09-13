@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import AppModal from '../../../shared/components/common/AppModal';
 import {
-  Alert, 
-  App as AntApp, 
-  Button, 
+  Alert,
+  Button,
   Card, 
   Col, 
   Form, 
@@ -16,7 +15,7 @@ import {
   Spin, 
   Switch} from 'antd';
 import {
-  asApiError, getChatSettings, updateChatSettings } from '../../../shared/api/client';
+  asApiError, getChatSettings } from '../../../shared/api/client';
 import type { ThinkingMode } from '../../../shared/api/client';
 import { useAuth } from '../../../shared/auth/AuthContext';
 
@@ -32,6 +31,7 @@ interface ChatSettingsFormValues {
   retrieval_top_k: number; // 1-20，默认 5
   chat_kg_enhance: boolean; // 知识图谱增强，默认 true（有图谱才生效）
   chat_query_rewrite: boolean; // 查询改写，默认 true（指代消解 + 口语正式化）
+  chat_query_rewrite_rounds: number; // 改写用历史轮数，1-10，默认 3
   // 对话设置
   chat_enable_multi_turn: boolean; // 多轮对话，默认 true
   chat_history_rounds: number; // 1-20，默认 8
@@ -64,14 +64,12 @@ interface ChatSettingsModalProps {
  * 接口错误直接透传后端中文 detail 展示。
  */
 const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel }) => {
-  const { message } = AntApp.useApp();
   const { user } = useAuth();
   const isDeptAdmin = user?.role === 'dept_admin';
   const [form] = Form.useForm<ChatSettingsFormValues>();
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const useDefaultTemperature = Form.useWatch('use_default_temperature', form) ?? true;
   const agenticEnabled = Form.useWatch('agentic_enabled', form) ?? false;
 
@@ -91,6 +89,7 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
           retrieval_top_k: retrieval?.top_k ?? 5,
           chat_kg_enhance: chat?.kg_enhance ?? true,
           chat_query_rewrite: chat?.query_rewrite ?? true,
+          chat_query_rewrite_rounds: chat?.query_rewrite_rounds ?? 3,
           chat_enable_multi_turn: chat?.enable_multi_turn ?? true,
           chat_history_rounds: chat?.history_rounds ?? 8,
           use_default_temperature: chat?.temperature == null,
@@ -118,80 +117,37 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
     };
   }, [open, form]);
 
-  const handleOk = async () => {
-    let values: ChatSettingsFormValues;
-    try {
-      values = await form.validateFields();
-    } catch {
-      return;
-    }
-    setSaving(true);
-    try {
-      // 只提交白名单段：retrieval.top_k/similarity_threshold + chat 段（后端白名单校验）
-      await updateChatSettings({
-        retrieval: {
-          top_k: values.retrieval_top_k,
-          similarity_threshold: values.retrieval_similarity_threshold,
-        },
-        chat: {
-          kg_enhance: values.chat_kg_enhance,
-          query_rewrite: values.chat_query_rewrite,
-          enable_multi_turn: values.chat_enable_multi_turn,
-          history_rounds: values.chat_history_rounds,
-          // true=用 LLM 配置默认（保存 null）；false=保存滑条值
-          temperature: values.use_default_temperature ? null : values.chat_temperature,
-          top_p: values.chat_top_p,
-          max_tokens: values.chat_max_tokens ?? null,
-          // 空串=恢复内置默认模板（后端空串例外路径）
-          system_prompt: values.chat_system_prompt ?? '',
-          thinking_mode: values.chat_thinking_mode,
-        },
-        agentic: {
-          enabled: values.agentic_enabled,
-          max_retries: values.agentic_max_retries,
-          recheck_threshold: values.agentic_recheck_threshold,
-          abstain_threshold: values.agentic_abstain_threshold,
-        },
-      });
-      message.success('聊天设置已保存，即时生效');
-      onCancel();
-    } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || '保存聊天设置失败');
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return (
     <AppModal
       dimension="auto"
       defaultSize={{ w: 780, h: 520 }}
       rememberKey="chat-settings"
-      title={isDeptAdmin ? '本部门聊天配置' : '聊天设置（全局）'}
+      title={isDeptAdmin ? '本部门聊天配置（只读）' : '聊天设置（只读）'}
       open={open}
-      onOk={handleOk}
+      onOk={onCancel}
       onCancel={onCancel}
-      confirmLoading={saving}
-      okText="保存"
-      cancelText="取消"
-      okButtonProps={{ disabled: !loaded }}
+      footer={[
+        <Button key="close" onClick={onCancel}>关闭</Button>,
+      ]}
       width={780}
     >
-      {isDeptAdmin && (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="本部门配置对本部门所有成员生效"
-          description="未修改的字段沿用全局配置；保存后本部门成员聊天即按此配置生效，不影响其他部门。"
-        />
-      )}
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="本页仅展示当前生效的配置，不能修改"
+        description={isDeptAdmin
+          ? '修改请前往左侧菜单「部门配置」——本部门配置对所有成员生效，未设置的项沿用全局。'
+          : '修改请前往左侧菜单「系统配置」——配置收口到那里，避免两处改同一份配置。'}
+      />
       {loading ? (
         <div style={{ textAlign: 'center', padding: 32 }}>
           <Spin />
         </div>
       ) : loaded ? (
-        <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
+        <Form form={form} layout="vertical" disabled style={{ marginTop: 8 }}>
+          {/* 只读展示：配置收口到「部门配置」（dept_admin）或「系统配置」（超管），
+              本弹窗不再提供修改入口，避免两处改同一份配置 */}
           {/* 检索设置 */}
           <Card title="检索设置" size="small" style={{ marginBottom: 16 }}>
             <Row gutter={16}>
@@ -235,9 +191,17 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
               label="查询改写"
               valuePropName="checked"
               extra="多轮对话时先用 LLM 结合历史把问题改写为独立检索查询（消除「它/上面那个」等指代、口语转书面），提升检索命中率；仅命中触发条件才调用，失败自动回退原问题"
-              style={{ marginBottom: 0 }}
             >
               <Switch />
+            </Form.Item>
+            <Form.Item
+              name="chat_query_rewrite_rounds"
+              label="改写用历史轮数"
+              extra="查询改写时携带最近几轮对话（指代消解只需就近上下文）。与上方「历史轮数」独立：那个影响对话本身，这个只影响改写；轮数越多，改写调用越贵"
+              rules={[{ type: 'number', min: 1, max: 10, message: '范围 1-10' }]}
+              style={{ marginBottom: 0 }}
+            >
+              <InputNumber min={1} max={10} style={{ width: '100%' }} />
             </Form.Item>
           </Card>
 

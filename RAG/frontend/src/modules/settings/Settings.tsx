@@ -13,10 +13,12 @@ import {
   asApiError,
   listProfiles, createProfile, updateProfile, deleteProfile,
   activateProfile, testProfileConnection, testLlmConnection, getEmbeddingDim,
-  getChatSettings, updateChatSettings, getLlmModelList,
+  getLlmModelList,
   ServiceProfile, ServiceProfileInput, LLMModelItem,
 } from '../../shared/api/client';
-import type { ParserLlmModelItem } from '../../shared/api/types';
+import type { Department, ParserLlmModelItem } from '../../shared/api/types';
+import { listDepartments } from '../../shared/api/auth';
+import { getDeptConfigView } from '../../shared/api/settings';
 import { useAuth } from '../../shared/auth/AuthContext';
 import PageHeader from '../../shared/components/layout/PageHeader';
 import {
@@ -39,21 +41,37 @@ const { Text } = Typography;
 const { Password } = Input;
 
 /** 系统配置页：配置档案列表 + 域卡快捷导航 + 新建/编辑弹窗（面板见同目录 *Panel.tsx） */
+/** 配置 JSON 展示样式：pre-wrap + break-all 让超长字段（如 system_prompt
+    1200+ 字符）自动折行——比横向截断直观，也比悬浮 Tooltip 好读 */
+const PRE_STYLE: React.CSSProperties = {
+  maxHeight: 380,
+  overflow: 'auto',
+  fontSize: 12,
+  padding: 8,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  background: '#fafafa',
+};
+
 const SettingsPage: React.FC = () => {
   const { message, modal } = AntApp.useApp();
   const { token } = theme.useToken();
   const { user } = useAuth();
   // 档案卡片只读模式：dept_admin 可查看配置与连接测试，修改档案仅 super_admin
   const readOnly = user?.role !== 'super_admin';
-  // 部门管理员：可配置本部门 LLM 段（其余基础设施段仍只读）
+  // 部门管理员不应进入本页（菜单/路由已限 super_admin）；保留判断做防御
   const isDeptAdmin = user?.role === 'dept_admin';
   const [profiles, setProfiles] = useState<ServiceProfile[]>([]);
   const [loading, setLoading] = useState(false);
-
-  // 本部门 LLM 配置表单（dept_admin 专属：GET /api/settings/chat 合并值回填）
-  const [deptLlmForm] = Form.useForm();
-  const [deptLlmLoading, setDeptLlmLoading] = useState(false);
-  const [deptLlmSaving, setDeptLlmSaving] = useState(false);
+  // 部门配置查询（超管只读）：部门列表 + 查看弹窗（null = 关闭）
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [deptView, setDeptView] = useState<{
+    name: string;
+    /** 部门显式覆盖的段（[段名, 字段dict]，只留有内容的） */
+    filled: [string, unknown][];
+    /** 当前生效配置（全局 + 部门覆盖的合并） */
+    effective: Record<string, unknown>;
+  } | null>(null);
 
   // 编辑弹窗
   const [modalOpen, setModalOpen] = useState(false);
@@ -129,55 +147,52 @@ const SettingsPage: React.FC = () => {
     };
   }, [modalOpen]);
 
-  // ---- 本部门 LLM 配置（dept_admin 可编辑；超管/普通成员无此卡片） ----
-  const loadDeptLlm = useCallback(async () => {
-    if (!isDeptAdmin) return;
-    setDeptLlmLoading(true);
+  // ---- 部门配置查询（超管只读；部门管理员在「部门配置」页自行修改） ----
+  const loadDepartments = useCallback(async () => {
+    if (isDeptAdmin) return;
     try {
-      // 合并值回填：未设置字段显示全局值；api_key 为脱敏值（保存时原样回传=不覆盖）
-      const res = await getChatSettings();
-      const llm = res.data.llm ?? {};
-      deptLlmForm.setFieldsValue({
-        llm_base_url: llm.base_url ?? '',
-        llm_api_key: llm.api_key ?? '',
-        llm_model: llm.model ?? '',
-        llm_temperature: llm.temperature ?? undefined,
-        llm_max_tokens: llm.max_tokens ?? undefined,
-        llm_timeout: llm.timeout ?? undefined,
-      });
+      const res = await listDepartments();
+      setDepartments(res.data ?? []);
     } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || '加载本部门 LLM 配置失败');
-    } finally {
-      setDeptLlmLoading(false);
+      message.error(asApiError(e).response?.data?.detail || '加载部门列表失败');
     }
-  }, [isDeptAdmin, deptLlmForm, message]);
+  }, [isDeptAdmin, message]);
 
   useEffect(() => {
-    loadDeptLlm();
-  }, [loadDeptLlm]);
+    void loadDepartments();
+  }, [loadDepartments]);
 
-  const saveDeptLlm = async () => {
-    const vals = await deptLlmForm.validateFields();
-    setDeptLlmSaving(true);
+  /** 复制配置 JSON 到剪贴板（失败提示：非 https 或浏览器未授权剪贴板） */
+  const copyJson = (data: unknown, label: string) => {
+    void navigator.clipboard
+      .writeText(JSON.stringify(data, null, 2))
+      .then(
+        () => message.success(`${label}已复制到剪贴板`),
+        () => message.error('复制失败（浏览器未授权剪贴板）'),
+      );
+  };
+
+  /** 打开某部门配置查看弹窗（只读）：展示**当前生效值**（全局 + 部门覆盖的
+      合并），并列出本部门自行覆盖了哪些字段——超管据此判断"这个部门改过什么"。
+      数据在打开时算好，弹窗只负责渲染（统一走 AppModal，尺寸可记忆/拖拽）。 */
+  const viewDeptConfig = async (deptId: string) => {
     try {
-      // 只提交 llm 段（后端白名单 6 字段）：空串/null = 跟随全局；
-      // api_key 脱敏值原样回传 = 保留部门原值
-      await updateChatSettings({
-        llm: {
-          base_url: vals.llm_base_url ?? '',
-          api_key: vals.llm_api_key ?? '',
-          model: vals.llm_model ?? '',
-          temperature: vals.llm_temperature ?? null,
-          max_tokens: vals.llm_max_tokens ?? null,
-          timeout: vals.llm_timeout ?? null,
+      const res = await getDeptConfigView(deptId);
+      const d = res.data;
+      const dept = (d.dept ?? {}) as Record<string, Record<string, unknown>>;
+      setDeptView({
+        name: d.name,
+        filled: Object.entries(dept).filter(
+          ([, v]) => v && typeof v === 'object' && Object.keys(v).length > 0),
+        effective: {
+          ...(d.chat ? { chat: d.chat } : {}),
+          ...(d.retrieval ? { retrieval: d.retrieval } : {}),
+          ...(d.agentic ? { agentic: d.agentic } : {}),
+          ...(d.llm ? { llm: d.llm } : {}),
         },
       });
-      message.success('本部门 LLM 配置已保存，对本部门成员即时生效');
-      await loadDeptLlm();
     } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || '保存本部门 LLM 配置失败');
-    } finally {
-      setDeptLlmSaving(false);
+      message.error(asApiError(e).response?.data?.detail || '加载部门配置失败');
     }
   };
 
@@ -702,8 +717,8 @@ const SettingsPage: React.FC = () => {
           showIcon
           style={{ marginBottom: 8 }}
           message={isDeptAdmin
-            ? "您正在配置本部门配置（对本部门所有成员生效）；未设置的项使用超级管理员全局配置；其他系统配置仅超管可修改，聊天设置请在聊天页面配置。"
-            : "您正在查看系统配置（只读）。仅超级管理员可修改系统配置；聊天相关配置请在聊天页面设置。"}
+            ? '本页为超级管理员专用；部门管理员请使用左侧菜单的「部门配置」'
+            : '您正在配置全局档案。LLM / 对话 / 检索等可由部门覆盖的配置，由各部门管理员在「部门配置」页自行设置；下方「部门配置查询」可查看各部门覆盖了什么。'}
         />
       )}
       <Alert
@@ -729,68 +744,31 @@ const SettingsPage: React.FC = () => {
         )}
       </Typography.Paragraph>
 
-      {/* 本部门 LLM 配置（dept_admin）：字段留空 = 跟随超管全局配置 */}
-      {isDeptAdmin && (
+      {/* 部门配置查询（仅超管，只读）：看各部门覆盖了什么——配置收口后超管
+          不代改，修改由部门管理员在「部门配置」页自行完成 */}
+      {!isDeptAdmin && (
         <Card
           size="small"
           style={{ marginBottom: 12 }}
           title={
             <Space>
-              <Tag color="blue">本部门配置</Tag>
-              <Text strong>LLM 对话模型（OpenAI 兼容）</Text>
+              <Tag color="purple">部门配置查询</Tag>
+              <Text strong>各部门覆盖的配置（只读）</Text>
             </Space>
           }
-          extra={
-            <Button type="primary" size="small" loading={deptLlmSaving}
-              onClick={saveDeptLlm}>
-              保存
-            </Button>
-          }
         >
-          <Form form={deptLlmForm} layout="vertical" size="small"
-            disabled={deptLlmLoading}>
-            <Row gutter={12}>
-              <Col span={12}>
-                <Form.Item name="llm_base_url" label="API 地址">
-                  <Input placeholder="留空使用全局配置" />
-                </Form.Item>
-              </Col>
-              <Col span={6}>
-                <Form.Item name="llm_model" label="模型名称">
-                  <Input placeholder="留空使用全局配置" />
-                </Form.Item>
-              </Col>
-              <Col span={6}>
-                <Form.Item
-                  name="llm_api_key"
-                  label="API Key"
-                  tooltip="留空使用全局配置；填写后本部门成员使用该密钥（保存后仅显示脱敏值）"
-                >
-                  <Password placeholder="留空使用全局配置" />
-                </Form.Item>
-              </Col>
-            </Row>
-            <Row gutter={12}>
-              <Col span={6}>
-                <Form.Item name="llm_temperature" label="Temperature">
-                  <InputNumber min={0} max={2} step={0.1}
-                    style={{ width: '100%' }} placeholder="跟随全局" />
-                </Form.Item>
-              </Col>
-              <Col span={6}>
-                <Form.Item name="llm_max_tokens" label="Max Tokens">
-                  <InputNumber min={64} max={32768} step={128}
-                    style={{ width: '100%' }} placeholder="跟随全局" />
-                </Form.Item>
-              </Col>
-              <Col span={6}>
-                <Form.Item name="llm_timeout" label="超时（秒）">
-                  <InputNumber min={1} max={600}
-                    style={{ width: '100%' }} placeholder="跟随全局" />
-                </Form.Item>
-              </Col>
-            </Row>
-          </Form>
+          {departments.length === 0 ? (
+            <Text type="secondary">暂无部门</Text>
+          ) : (
+            <Space wrap>
+              {departments.map(d => (
+                <Button key={d.id} size="small"
+                  onClick={() => void viewDeptConfig(d.id)}>
+                  {d.name}
+                </Button>
+              ))}
+            </Space>
+          )}
         </Card>
       )}
 
@@ -964,6 +942,59 @@ const SettingsPage: React.FC = () => {
           </Row>
         </Form>
       </AppModal>
+
+      {/* 部门配置查询（超管只读）：统一走 AppModal——尺寸可记忆/拖拽，
+          pre-wrap 让超长字段自动折行，右上「复制」一键拷走 */}
+      {deptView && (
+        <AppModal
+          dimension="resizable"
+          defaultSize={{ w: 780, h: 560 }}
+          rememberKey="dept-config-view"
+          open
+          width={780}
+          title={`部门配置：${deptView.name}`}
+          footer={[
+            <Button key="close" onClick={() => setDeptView(null)}>关闭</Button>,
+          ]}
+          onCancel={() => setDeptView(null)}
+          styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
+          destroyOnClose
+        >
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 8 }}
+            message={deptView.filled.length > 0
+              ? `该部门自行覆盖了 ${deptView.filled.length} 个段（${deptView.filled.map(([k]) => k).join(' / ')}），其余跟随全局`
+              : '该部门未做任何覆盖，以下全部是全局默认值'}
+          />
+          <div style={{ fontWeight: 600, fontSize: 12, margin: '8px 0 4px' }}>
+            当前生效配置
+            <Button size="small" style={{ marginLeft: 8 }}
+              onClick={() => copyJson(deptView.effective, '当前生效配置')}>
+              复制
+            </Button>
+          </div>
+          <pre style={PRE_STYLE}>
+            {JSON.stringify(deptView.effective, null, 2)}
+          </pre>
+          {deptView.filled.length > 0 && (
+            <>
+              <div style={{ fontWeight: 600, fontSize: 12, margin: '12px 0 4px' }}>
+                本部门覆盖的字段
+                <Button size="small" style={{ marginLeft: 8 }}
+                  onClick={() => copyJson(
+                    Object.fromEntries(deptView.filled), '部门覆盖字段')}>
+                  复制
+                </Button>
+              </div>
+              <pre style={{ ...PRE_STYLE, maxHeight: 240, background: '#fff7e6' }}>
+                {JSON.stringify(Object.fromEntries(deptView.filled), null, 2)}
+              </pre>
+            </>
+          )}
+        </AppModal>
+      )}
     </div>
   );
 };

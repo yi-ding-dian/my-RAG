@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, require_super_admin, require_user_admin
-from backend.models.user_models import UserPublic
+from backend.models.user_models import DepartmentORM, UserPublic
 from backend.services import audit_service, department_service
 from backend.services.settings.service import (LLM_TEST_TIMEOUT,
                                                SECTION_SCHEMA,
@@ -504,6 +504,30 @@ async def get_chat_settings(user: UserPublic = Depends(get_current_user),
     # 普通用户（role=user）视角：LLM base_url 主机打码（防内网地址泄露）
     return _effective_chat_payload(
         p, dept_cfg, mask_base_url=(user.role == "user"))
+
+
+@router.get("/depts/{dept_id}/config")
+async def get_department_config_view(
+        dept_id: str,
+        _: UserPublic = Depends(require_super_admin),
+        db: AsyncSession = Depends(get_db)):
+    """查看指定部门的配置（仅 super_admin；「部门配置查询」用，只读）
+
+    返回该部门**当前生效**的配置（全局活跃档案 + 部门覆盖的合并值；llm
+    段密钥脱敏）与**部门显式覆盖**的字段（dept 段，供前端标出改过哪些）。
+    超管只读——不代改，修改由部门管理员在「部门配置」页自行完成。
+    """
+    p = get_settings_service().get_active()
+    if not p:
+        raise HTTPException(status_code=404, detail="没有激活的配置档案")
+    orm = await db.get(DepartmentORM, dept_id)
+    if orm is None:
+        raise HTTPException(status_code=404, detail="部门不存在")
+    dept_cfg = await department_service.get_department_config(
+        db, dept_id) or None
+    return {"dept_id": dept_id, "name": orm.name,
+            "description": orm.description,
+            **_effective_chat_payload(p, dept_cfg)}
 
 
 @router.post("/chat")

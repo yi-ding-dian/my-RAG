@@ -138,7 +138,7 @@ class TestWhitelistFromSchema:
         assert set(ss.CHAT_FIELD_NAMES) == {
             "temperature", "top_p", "max_tokens", "enable_multi_turn",
             "history_rounds", "system_prompt", "kg_enhance",
-            "query_rewrite", "thinking_mode"}
+            "query_rewrite", "query_rewrite_rounds", "thinking_mode"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
         assert set(ss.LLM_FIELD_NAMES) == {
@@ -196,11 +196,13 @@ class TestCoerceBehavior:
                        "api_key": "", "top_n": 10},
         }
         # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + kg_enhance=True
-        # + thinking_mode="disabled" + query_rewrite=True（历史契约：不补全段）
+        # + thinking_mode="disabled" + query_rewrite=True + query_rewrite_rounds=3
+        # （历史契约：不补全段）
         assert out["chat"] == {"system_prompt": "",
                                "kg_enhance": build_default_config().chat.kg_enhance,
                                "thinking_mode": "disabled",
                                "query_rewrite": True,
+                               "query_rewrite_rounds": 3,
                                "max_query_len": 2000}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()

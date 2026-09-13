@@ -345,6 +345,9 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             # 部门可覆盖（whitelist），旧档案缺字段 coerce 时补默认（fill_missing）
             "query_rewrite": {"condition": "not_none", "whitelist": True,
                               "fill_missing": True},
+            # 查询改写用的历史轮数（1~10 轮；部门可覆盖）
+            "query_rewrite_rounds": {"condition": "not_none", "whitelist": True,
+                                     "fill_missing": True, "range": (1, 10)},
             "max_query_len": {"fill_missing": True, "range": (100, 20000)},
             # 思考模式（聊天问答）：disabled=关闭思考（默认）| enabled_low/
             # enabled_high/enabled_max=开启并指定强度。部门可覆盖（whitelist），

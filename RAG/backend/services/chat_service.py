@@ -449,9 +449,11 @@ class ChatService:
             rewrite_ms = 0
             if merged_chat.get("query_rewrite") and not agentic_enabled:
                 t_rewrite = time.perf_counter()
-                # 与第 4 步同口径：会话消息截最近 N 轮（首轮为空 → 无历史，
-                # 口语正式化仍可触发、指代消解跳过）
-                rounds = int(merged_chat["history_rounds"])
+                # 改写只用最近 query_rewrite_rounds 轮（默认 3，部门可覆盖）——
+                # 与 history_rounds 解耦：指代消解只需就近上下文，而改写输入
+                # 按 token 计费，轮数越多越贵。首轮为空 → 无历史，口语正式化
+                # 仍可触发、指代消解跳过
+                rounds = int(merged_chat.get("query_rewrite_rounds", 3))
                 history_msgs = [
                     {"role": m.role, "content": m.content}
                     for m in session.messages[-(rounds * 2):]

@@ -1070,6 +1070,8 @@ export interface ChatSettingsPayload {
     kg_enhance?: boolean;
     /** 查询改写（默认 true；多轮对话时 LLM 结合历史改写检索查询，消除指代） */
     query_rewrite?: boolean;
+    /** 查询改写用的历史轮数（默认 3，1~10；与 history_rounds 解耦，只影响改写） */
+    query_rewrite_rounds?: number;
     /** 思考模式：disabled=关闭思考（默认）| enabled_low/high/max=开启并指定强度 */
     thinking_mode?: ThinkingMode;
   };
@@ -1103,6 +1105,7 @@ export interface ChatSettingsPayload {
       system_prompt?: string;
       kg_enhance?: boolean;
       query_rewrite?: boolean;
+      query_rewrite_rounds?: number;
       thinking_mode?: ThinkingMode;
     };
     agentic?: {

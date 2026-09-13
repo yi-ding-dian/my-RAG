@@ -46,12 +46,13 @@ const AnalyticsPage = lazy(() => import('./modules/analytics/Analytics'));
 const AnalyticsQualityDetailPage = lazy(() => import('./modules/analytics/AnalyticsQualityDetail'));
 const AnalyticsRagasDetailPage = lazy(() => import('./modules/analytics/AnalyticsRagasDetail'));
 const AnalyticsFeedbackDetailPage = lazy(() => import('./modules/analytics/AnalyticsFeedbackDetail'));
-const SettingsPage = lazy(() => import('./modules/settings'));
+const SettingsPage = lazy(() => import('./modules/settings/Settings'));
+const DeptConfigPage = lazy(() => import('./modules/settings/DeptConfig'));
 const UsersPage = lazy(() => import('./modules/users/Users'));
 const ProfilePage = lazy(() => import('./modules/profile/Profile'));
 const LoginPage = lazy(() => import('./modules/auth/Login'));
 const ExtQueriesPage = lazy(() => import('./modules/ext-queries/ExtQueries'));
-const LogsPage = lazy(() => import('./modules/logs'));
+const LogsPage = lazy(() => import('./modules/logs/Logs'));
 /* 外部查询公开页（无登录，独立于布局） */
 const ExtQueryPage = lazy(() => import('./modules/ext-queries/ExtQueryPage'));
 
@@ -83,6 +84,8 @@ const menuItems = [
   { key: '/analytics', icon: <BarChartOutlined />, label: '统计分析' },
   { key: '/users', icon: <TeamOutlined />, label: '用户管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统配置' },
+  /* 部门配置仅 dept_admin（本部门业务配置：llm/chat 段覆盖；超管看「系统配置」） */
+  { key: '/dept-config', icon: <SettingOutlined />, label: '部门配置' },
   { key: '/ext-queries', icon: <LinkOutlined />, label: '外部查询' },
   /* 超管+部门管理员：全局文档管理（超管跨全部部门 / dept_admin 限本部门，
      与部门内 /documents 文档管理区分；dept_admin 时标签改「文档管理」，见 filterMenu） */
@@ -97,14 +100,20 @@ const roleMeta: Record<User['role'], { color: string; text: string }> = {
   user: { color: 'default', text: '普通用户' },
 };
 
-/** 菜单过滤：/settings 与 /users 对 super_admin 与 dept_admin 开放（普通用户不可见）；
-    /global-documents 与 /logs 对 super_admin 与 dept_admin 开放（dept_admin 数据限本部门）；
-    外部查询仅 super_admin（暴露知识库的敏感配置） */
+/** 菜单过滤：/settings 仅 super_admin、/dept-config 仅 dept_admin（配置收口：
+    超管管基础设施，部门管理员管本部门业务配置）；/users、(全局)文档、日志对
+    两个管理角色开放（dept_admin 数据限本部门）；外部查询仅 super_admin */
 const filterMenu = (user: User | null) => {
   const isAdmin = user?.role === 'super_admin' || user?.role === 'dept_admin';
   return menuItems
     .filter(item => {
-      if (item.key === '/settings' || item.key === '/users'
+      if (item.key === '/settings') {
+        return user?.role === 'super_admin';
+      }
+      if (item.key === '/dept-config') {
+        return user?.role === 'dept_admin';
+      }
+      if (item.key === '/users'
           || item.key === '/global-documents' || item.key === '/logs') {
         return isAdmin;
       }
@@ -432,8 +441,16 @@ const AppLayout: React.FC = () => {
                 <Route
                   path="/settings"
                   element={
-                    <ProtectedRoute roles={['super_admin', 'dept_admin']}>
+                    <ProtectedRoute roles={['super_admin']}>
                       <SettingsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/dept-config"
+                  element={
+                    <ProtectedRoute roles={['dept_admin']}>
+                      <DeptConfigPage />
                     </ProtectedRoute>
                   }
                 />
