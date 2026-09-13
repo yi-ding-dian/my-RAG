@@ -38,6 +38,9 @@ _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _V_NS = "urn:schemas-microsoft-com:vml"
 _R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+# 绘图定位命名空间（wp:anchor 浮动图 / wp:inline 内嵌图的尺寸与位置）
+_WP_NS = ("http://schemas.openxmlformats.org/drawingml/2006/"
+          "wordprocessingDrawing")
 
 _TAG_P = f"{{{_W_NS}}}p"
 _TAG_TBL = f"{{{_W_NS}}}tbl"
@@ -62,6 +65,15 @@ _TAG_SDT = f"{{{_W_NS}}}sdt"
 _TAG_SDT_CONTENT = f"{{{_W_NS}}}sdtContent"
 _TAG_BLIP = f"{{{_A_NS}}}blip"
 _TAG_IMAGEDATA = f"{{{_V_NS}}}imagedata"
+_TAG_ANCHOR = f"{{{_WP_NS}}}anchor"      # 浮动图片（如电子章：浮于文字上方）
+_TAG_INLINE = f"{{{_WP_NS}}}inline"      # 内嵌图片（随文字流，通常是被盖章的扫描件）
+_TAG_EXTENT = f"{{{_WP_NS}}}extent"      # 图片显示尺寸（EMU）
+_TAG_POS_H = f"{{{_WP_NS}}}positionH"
+_TAG_POS_V = f"{{{_WP_NS}}}positionV"
+_TAG_POS_OFFSET = f"{{{_WP_NS}}}posOffset"
+# 盖章合成：浮动图面积须小于底图的该比例才算"盖上去的小图"（避免把并排的
+# 两张大图误叠）；见 DocxParser._stamp_merge_markdown
+_STAMP_MAX_AREA_RATIO = 0.4
 _TAG_VAL = f"{{{_W_NS}}}val"
 _TAG_NAME = f"{{{_W_NS}}}name"
 _TAG_BASED_ON = f"{{{_W_NS}}}basedOn"
@@ -704,6 +716,15 @@ class _DocxParser:
         - 上下标（w:vertAlign）按纯文本输出：落盘前会被 strip_subsup_tags
           洗掉，产出 <sub>/<sup> 标签是白费功夫。
         """
+        # 盖章合成：同段落的「浮动图（电子章）+ 内嵌图（被盖章的扫描件）」先
+        # 尝试合成一张，成功则整段只输出合成图（不再分家成两张）；不满足条件
+        # 或合成失败自动回退到原逐图输出。段落有文字时不合并——避免吞掉文字。
+        if allow_images and not any(
+                t.strip() for run in _iter_runs(p_element)
+                for t in self._run_texts(run)):
+            merged_ref = self._stamp_merge_markdown(p_element)
+            if merged_ref is not None:
+                return merged_ref
         fragments: List[list] = []  # [kind, 文本, bold, italic]
         for run in _iter_runs(p_element):
             bold, italic = self._run_style(run)
@@ -722,6 +743,105 @@ class _DocxParser:
             fragment[1] if fragment[0] == "image"
             else _wrap_emphasis(fragment[1], fragment[2], fragment[3])
             for fragment in fragments)
+
+    # ---- 盖章合成：浮动图 + 同段内嵌图 → 一张 ----
+
+    @staticmethod
+    def _blip_rid(container) -> Optional[str]:
+        """容器内首个图片引用 ID（a:blip 的 r:embed / VML 的 r:id）"""
+        for element in container.iter():
+            if element.tag == _TAG_BLIP:
+                rid = element.get(_R_EMBED)
+            elif element.tag == _TAG_IMAGEDATA:
+                rid = element.get(_R_ID)
+            else:
+                continue
+            if rid:
+                return rid
+        return None
+
+    def _blob_of(self, rid: str) -> Optional[bytes]:
+        """关系 ID → 图片二进制（外链图片无 blob → None）"""
+        part = self.doc.part.related_parts.get(rid)
+        return getattr(part, "blob", None) or None
+
+    def _stamp_merge_markdown(self, p_element) -> Optional[str]:
+        """同段落「浮动图 + 内嵌图」合成一张（还原盖章效果），返回图片引用
+
+        背景：电子章是**浮动图片**（wp:anchor，浮于文字上方），通常与被盖章的
+        扫描件（wp:inline）落在同一段落。逐图输出会让两者分家（章一张、底图
+        一张），这里按 anchor 的 posOffset 把章叠加到底图上，产出**一张**合成图。
+
+        保守边界（任一不满足即返回 None → 走原逐图输出，绝不比现状更差）：
+        - 段落内恰好 1 个 anchor + 1 个 inline；
+        - 参照系为 column/paragraph（可换算为相对图片的坐标；page/margin
+          需要完整页面布局，算不了）；
+        - 章的面积明显小于底图（是"盖上去的小图"，避免把并排大图叠一起）；
+        - 两张图都能被 PIL 解码（WMF/EMF 等矢量格式放弃）。
+        """
+        anchors = [el for el in p_element.iter() if el.tag == _TAG_ANCHOR]
+        inlines = [el for el in p_element.iter() if el.tag == _TAG_INLINE]
+        if len(anchors) != 1 or len(inlines) != 1:
+            return None
+        anchor, inline = anchors[0], inlines[0]
+        ph, pv = anchor.find(_TAG_POS_H), anchor.find(_TAG_POS_V)
+        if ph is None or pv is None:
+            return None
+        if (ph.get("relativeFrom") != "column"
+                or pv.get("relativeFrom") != "paragraph"):
+            return None
+        try:
+            off_h = int(ph.findtext(_TAG_POS_OFFSET) or 0)
+            off_v = int(pv.findtext(_TAG_POS_OFFSET) or 0)
+            a_ext, i_ext = anchor.find(_TAG_EXTENT), inline.find(_TAG_EXTENT)
+            if a_ext is None or i_ext is None:
+                return None
+            a_cx, a_cy = int(a_ext.get("cx")), int(a_ext.get("cy"))
+            i_cx, i_cy = int(i_ext.get("cx")), int(i_ext.get("cy"))
+        except (TypeError, ValueError):
+            return None
+        if min(a_cx, a_cy, i_cx, i_cy) <= 0:
+            return None
+        if a_cx * a_cy > i_cx * i_cy * _STAMP_MAX_AREA_RATIO:
+            return None
+        a_rid, i_rid = self._blip_rid(anchor), self._blip_rid(inline)
+        if not a_rid or not i_rid:
+            return None
+        merged = self._compose_stamp(self._blob_of(i_rid),
+                                     self._blob_of(a_rid),
+                                     a_cx, a_cy, i_cx, i_cy, off_h, off_v)
+        if merged is None:
+            return None
+        name = f"image{len(self.images) + 1}.jpg"
+        self.images.append({"name": name, "data": merged})
+        return f"![]({_IMG_DIR}/{name})"
+
+    @staticmethod
+    def _compose_stamp(base_blob: Optional[bytes], stamp_blob: Optional[bytes],
+                       st_cx: int, st_cy: int, base_cx: int, base_cy: int,
+                       off_h: int, off_v: int) -> Optional[bytes]:
+        """把章按 docx 的显示比例叠加到底图上（EMU 尺寸 → 像素等比换算）
+
+        失败一律返回 None（格式不支持/解码异常等），由调用方回退原输出。
+        """
+        if not base_blob or not stamp_blob:
+            return None
+        try:
+            import io as _io
+
+            from PIL import Image
+            base = Image.open(_io.BytesIO(base_blob)).convert("RGBA")
+            stamp = Image.open(_io.BytesIO(stamp_blob)).convert("RGBA")
+            # EMU → 像素：以底图实际像素 / 其 docx 显示尺寸为比例尺
+            sx, sy = base.width / base_cx, base.height / base_cy
+            stamp = stamp.resize((max(1, int(st_cx * sx)),
+                                  max(1, int(st_cy * sy))), Image.LANCZOS)
+            base.alpha_composite(stamp, (int(off_h * sx), int(off_v * sy)))
+            out = _io.BytesIO()
+            base.convert("RGB").save(out, format="JPEG", quality=88)
+            return out.getvalue()
+        except Exception:
+            return None
 
     @staticmethod
     def _run_texts(run) -> Iterator[str]:
