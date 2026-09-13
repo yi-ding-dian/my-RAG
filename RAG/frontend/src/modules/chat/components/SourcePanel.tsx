@@ -8,6 +8,7 @@ import {
   splitByHighlights,
   type HighlightRange,
 } from '../../../shared/utils/sourceHighlight';
+import { scoreBadge } from '../../../shared/utils/sourceScore';
 
 const { Text } = Typography;
 
@@ -194,7 +195,7 @@ const SourcePanel: React.FC<SourcePanelProps> = ({
               {s.document_name || s.document_id}
             </Tag>
             <Text type="secondary" style={{ fontSize: 12, flex: 1 }}>
-              相似度 {s.score != null ? s.score.toFixed(3) : '-'}
+              {scoreBadge(s)}
             </Text>
             {onViewOriginal && (
               <Button

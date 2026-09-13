@@ -512,44 +512,52 @@ const MessageList: React.FC<MessageListProps> = ({
                 {!isUser && !isStreamingLast && (
                   <FeedbackBar idx={idx} sessionId={sessionId} kbId={kbId} />
                 )}
-                {m.sources && m.sources.length > 0 && !isPendingLast(idx) && (
-                  <div style={{ marginTop: 8 }}>
-                    {/* 默认收起：一行小按钮，点击弹出来源详情 Modal */}
-                    <Button
-                      type="link"
-                      size="small"
-                      className="source-trigger"
-                      icon={<PaperClipOutlined />}
-                      onClick={() => {
-                        setModalSources(m.sources ?? null);
-                        // 高亮基准用清洗后文本（与气泡渲染一致，所见即所算）
-                        setModalAnswerText(cleanAnswerText(m.content));
-                      }}
-                    >
-                      引用来源（{m.sources.length}）
-                    </Button>
-                  </div>
-                )}
-                {/* 消息时间戳（HH:mm 小灰字）：每条消息都显示，流式生成中的最后一条暂不显示 */}
-                {m.created_at && !isStreamingLast && (
+                {/* 元信息行：时间戳 + 引用来源 + 详情。三者并列一行——两个入口挨着
+                    更好点，也省一行高度。各自条件独立保留：时间/详情随 created_at
+                    与流式状态，引用来源随 sources 与 pending 状态（流式中仍可点开看） */}
+                {((m.created_at && !isStreamingLast)
+                  || (m.sources && m.sources.length > 0 && !isPendingLast(idx))) && (
                   <div
                     style={{
                       marginTop: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
                       fontSize: 11,
                       lineHeight: '16px',
                       color: token.colorTextTertiary,
-                      textAlign: isUser ? 'right' : 'left',
+                      justifyContent: isUser ? 'flex-end' : 'flex-start',
                     }}
                   >
-                    {dayjs(m.created_at).format('HH:mm')}
-                    {/* 请求详情入口：仅本次流式生成且带详情数据的 assistant
-                        消息显示（历史会话加载的消息无这些字段，自动不显示） */}
-                    {!isUser && ((!!m.prompt && (m.retrieval_ms !== undefined || m.total_ms !== undefined)) || !!m.agentic) && (
+                    {m.created_at && !isStreamingLast && (
+                      <span>{dayjs(m.created_at).format('HH:mm')}</span>
+                    )}
+                    {/* 默认收起：一行小按钮，点击弹出来源详情 Modal */}
+                    {m.sources && m.sources.length > 0 && !isPendingLast(idx) && (
                       <Button
                         type="link"
                         size="small"
                         className="source-trigger"
-                        style={{ padding: 0, marginLeft: 6, fontSize: 11, height: 'auto', lineHeight: '16px' }}
+                        style={{ padding: 0, fontSize: 12, height: 'auto', lineHeight: '16px' }}
+                        icon={<PaperClipOutlined style={{ fontSize: 12 }} />}
+                        onClick={() => {
+                          setModalSources(m.sources ?? null);
+                          // 高亮基准用清洗后文本（与气泡渲染一致，所见即所算）
+                          setModalAnswerText(cleanAnswerText(m.content));
+                        }}
+                      >
+                        引用来源（{m.sources.length}）
+                      </Button>
+                    )}
+                    {/* 请求详情入口：仅本次流式生成且带详情数据的 assistant
+                        消息显示（历史会话加载的消息无这些字段，自动不显示） */}
+                    {m.created_at && !isStreamingLast && !isUser
+                      && ((!!m.prompt && (m.retrieval_ms !== undefined || m.total_ms !== undefined)) || !!m.agentic) && (
+                      <Button
+                        type="link"
+                        size="small"
+                        className="source-trigger"
+                        style={{ padding: 0, fontSize: 11, height: 'auto', lineHeight: '16px' }}
                         onClick={() => openDetail(m)}
                       >
                         详情

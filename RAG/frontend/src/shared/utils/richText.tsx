@@ -22,7 +22,11 @@ export const renderTextWithTables = (
       const seg = block;
       const offset = cursor;
       cursor += seg.length;
-      return <React.Fragment key={`t${i}`}>{renderText(seg, offset)}</React.Fragment>;
+      // key 前缀 rt（renderText）刻意避开 MarkdownTable 的 `t${i}`：表格块由
+      // renderTableBlocks 直接产出、文本段由本函数产出，两者同处一个数组，
+      // 前缀相同会撞 key（React 警告 two children with the same key，可能导致
+      // 子元素被复制/遗漏）
+      return <React.Fragment key={`rt${i}`}>{renderText(seg, offset)}</React.Fragment>;
     }
     return block;
   });

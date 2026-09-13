@@ -1,9 +1,7 @@
 import React, { useRef, useState } from 'react';
-import { Button, Input, Typography, theme } from 'antd';
+import { Button, Input, theme } from 'antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import { SendOutlined, StopOutlined } from '@ant-design/icons';
-
-const { Text } = Typography;
 
 interface ChatInputProps {
   /** 发送消息（流式生成中为 false） */
@@ -85,13 +83,6 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, onStop, streaming = false
           </Button>
         )}
       </div>
-      {streaming && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}>
-          <Text type="secondary" style={{ fontSize: 11 }}>
-            正在生成…
-          </Text>
-        </div>
-      )}
     </div>
   );
 };

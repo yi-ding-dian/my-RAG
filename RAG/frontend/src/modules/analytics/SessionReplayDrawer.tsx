@@ -12,6 +12,7 @@ import { Button, Drawer, Skeleton, Space, Tag, Tooltip, Typography } from 'antd'
 import { getSession, type ChatMessage, type ChatSessionDetail } from '../../shared/api/client';
 import AppEmpty from '../../shared/components/common/AppEmpty';
 import RequestDetailModal from '../../shared/components/common/RequestDetailModal';
+import { isKgSource, scoreBadge } from '../../shared/utils/sourceScore';
 
 const { Text } = Typography;
 
@@ -184,8 +185,9 @@ const SessionReplayDrawer: React.FC<SessionReplayDrawerProps> = ({
                         placement="topLeft"
                       >
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          [{si + 1}] {s.document_name || s.document_id} · 块 {s.chunk_index} ·
-                          相似度 {(s.score * 100).toFixed(0)}%
+                          {isKgSource(s)
+                            ? `[${si + 1}] 知识图谱`
+                            : `[${si + 1}] ${s.document_name || s.document_id} · 块 ${s.chunk_index} · ${scoreBadge(s)}`}
                         </Text>
                       </Tooltip>
                     ))}

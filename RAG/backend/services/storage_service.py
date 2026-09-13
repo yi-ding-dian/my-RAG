@@ -86,7 +86,8 @@ class MinIOBackend(StorageBackend):
         """配置 key 比对：连接信息变化时重建 client
 
         minio SDK 7.2.x 无 timeout 参数，超时经 http_client
-        （urllib3.PoolManager，timeout 10s）注入。
+        （urllib3.PoolManager）注入：timeout 10s + maxsize 16（连接池保留的
+        空闲连接上限，urllib3 默认 1，见下方注释）。
         """
         cfg = self._cfg()
         key = (cfg.endpoint, cfg.access_key, cfg.secret_key,
@@ -100,7 +101,13 @@ class MinIOBackend(StorageBackend):
                 secret_key=cfg.secret_key,
                 secure=cfg.secure,
                 region=cfg.region or None,
+                # maxsize：池内保留的空闲连接上限，urllib3 默认只有 1。批量入库时
+                # 图片并发上传（各调用走 asyncio.to_thread），池子只放得下 1 个，
+                # 多余的连接归还即被丢弃并刷 "Connection pool is full" WARNING
+                # （实测单日 3900+ 条），且每次都要重建 TCP 连接。给到 16 覆盖
+                # 常见并发，噪音消失、连接可复用。
                 http_client=urllib3.PoolManager(
+                    maxsize=16,
                     timeout=urllib3.Timeout(connect=10.0, read=10.0)),
             )
             self._client_key = key

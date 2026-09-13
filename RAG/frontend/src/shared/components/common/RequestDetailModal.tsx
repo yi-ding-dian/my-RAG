@@ -15,6 +15,7 @@ import AppModal from './AppModal';
 import MdImages from './MdImages';
 import { renderTableBlocks } from './MarkdownTable';
 import { cleanAnswerText } from '../../utils/cleanMarkdown';
+import { isKgSource, scoreBadge } from '../../utils/sourceScore';
 
 /** 回答内图片最大宽度（与聊天页气泡一致） */
 const ANSWER_IMAGE_MAX_WIDTH = 'min(480px, 100%)';
@@ -23,13 +24,23 @@ const ANSWER_IMAGE_MAX_WIDTH = 'min(480px, 100%)';
 const formatMs = (ms: number): string =>
   ms >= 1000 ? `${(ms / 1000).toFixed(1)} 秒（${Math.round(ms)} ms）` : `${Math.round(ms)} ms`;
 
+/** 召回分数口径见 shared/utils/sourceScore（四处复用同一实现） */
+
 /**
  * 提示词里的引用块小标题（`[引用 3]（来源：xxx.xlsx）`）染色显示。
  * 完整提示词动辄上万字，引用块靠这个小标题分隔——染成紫色便于一眼定位到
  * 第几段引用，与正文的黑/灰拉开区分。
+ *
+ * 标题后追加召回分数：编号 N 就是 sources 列表位置（后端 _build_refs 的既定
+ * 约定），直接取 sources[N-1]。分数只在渲染时附加，不改实际发给模型的文本
+ * ——那段是提示词快照，写进去会失真，且给模型看分数纯属噪音。
  */
-const renderPromptText = (text: string): React.ReactNode[] => {
-  const re = /\[引用\s*\d+\]（来源：[^）]*）/g;
+const renderPromptText = (
+  text: string,
+  token: ReturnType<typeof theme.useToken>['token'],
+  sources?: Source[],
+): React.ReactNode[] => {
+  const re = /\[引用\s*(\d+)\]（来源：[^）]*）/g;
   const parts: React.ReactNode[] = [];
   let last = 0;
   let k = 0;
@@ -42,10 +53,21 @@ const renderPromptText = (text: string): React.ReactNode[] => {
       );
     }
     parts.push(
-      <span key={`r${k++}`} style={{ color: '#722ed1', fontWeight: 600 }}>
+      <span key={`r${k}`} style={{ color: '#722ed1', fontWeight: 600 }}>
         {m[0]}
       </span>,
     );
+    // sources 缺失或编号越界（早于该功能的历史消息）时不显示，不影响原渲染
+    const src = sources?.[Number(m[1]) - 1];
+    if (src) {
+      parts.push(
+        <span key={`s${k}`}
+              style={{ color: token.colorTextTertiary, marginLeft: 6 }}>
+          {scoreBadge(src)}
+        </span>,
+      );
+    }
+    k += 1;
     last = m.index + m[0].length;
   }
   if (last < text.length) {
@@ -63,11 +85,21 @@ const renderPromptText = (text: string): React.ReactNode[] => {
  * 等价于聊天页 renderContent(content, undefined, undefined)：无 sources 时
  * 引用标拆分会整段原样返回，故此处只保留清洗/表格/图片三段，不搬引用标逻辑
  * （那部分与聊天页气泡渲染强耦合，搬过来只会引来重复维护）。
+ *
+ * sources 传入时给 `[引用 N]` 补召回分数（仅提示词渲染用；回复正文不传）
  */
-const renderPromptContent = (content: string): React.ReactNode =>
+const renderPromptContent = (
+  content: string,
+  token: ReturnType<typeof theme.useToken>['token'],
+  sources?: Source[],
+): React.ReactNode =>
   renderTableBlocks(cleanAnswerText(content.trim())).map((b, bi) =>
     typeof b === 'string'
-      ? <React.Fragment key={`m${bi}`}>{renderPromptText(b)}</React.Fragment>
+      ? (
+        <React.Fragment key={`m${bi}`}>
+          {renderPromptText(b, token, sources)}
+        </React.Fragment>
+      )
       : <React.Fragment key={`t${bi}`}>{b}</React.Fragment>,
   );
 
@@ -76,10 +108,13 @@ const renderPromptContent = (content: string): React.ReactNode =>
  * - 第一条 system → "System（系统提示）"
  * - 最后一条 user → "User（当前问题）"
  * - 中间条目按 role 标注"历史 · user / assistant"
+ *
+ * sources：该消息的引用快照，用于给 `[引用 N]` 补召回分数（可选）
  */
 const renderPromptEntries = (
   prompt: unknown,
   token: ReturnType<typeof theme.useToken>['token'],
+  sources?: Source[],
 ): React.ReactNode => {
   if (!Array.isArray(prompt)) {
     return <div style={{ fontSize: 12, color: token.colorTextTertiary }}>（无提示词数据）</div>;
@@ -124,7 +159,7 @@ const renderPromptEntries = (
             borderRadius: 6,
           }}
         >
-          {content ? renderPromptContent(content) : '（空）'}
+          {content ? renderPromptContent(content, token, sources) : '（空）'}
         </div>
       </div>
     );
@@ -340,9 +375,12 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           <div style={{ fontWeight: 600, marginBottom: 4 }}>引用片段（{sources.length}）</div>
           {sources.map((s, i) => (
             <div key={i} style={{ marginBottom: 8 }}>
+              {/* 图谱引用没有块号（chunk_index=-1），文档名本身就是「知识图谱」，
+                  再标一次类型纯属重复 → 只显示名字 */}
               <div style={{ fontSize: 12, color: token.colorTextSecondary, marginBottom: 2 }}>
-                [{i + 1}] {s.document_name || s.document_id} · 块 {s.chunk_index} · 相似度{' '}
-                {(s.score * 100).toFixed(0)}%
+                {isKgSource(s)
+                  ? `[${i + 1}] 知识图谱`
+                  : `[${i + 1}] ${s.document_name || s.document_id} · 块 ${s.chunk_index} · ${scoreBadge(s)}`}
               </div>
               <div
                 style={{
@@ -369,7 +407,7 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
         完整提示词{promptEntries.length > 0 ? `（${promptEntries.length} 条消息）` : ''}
       </div>
       {promptEntries.length > 0
-        ? renderPromptEntries(message.prompt, token)
+        ? renderPromptEntries(message.prompt, token, message.sources)
         : (
           <div style={{ fontSize: 12, color: token.colorTextTertiary }}>
             该条未记录提示词——早于该功能上线的历史会话，或未调用模型的回复（如无命中检索）。
@@ -392,7 +430,7 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           overflowY: 'auto',
         }}
       >
-        {message.content ? renderPromptContent(message.content) : '（空回答）'}
+        {message.content ? renderPromptContent(message.content, token) : '（空回答）'}
       </div>
       {/* 回复里引用的文档：只列文档名（去重）。片段正文看上面的「引用片段」 */}
       {citedDocs.length > 0 && (
