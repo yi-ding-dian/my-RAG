@@ -13,10 +13,11 @@ import {
   asApiError,
   listProfiles, createProfile, updateProfile, deleteProfile,
   activateProfile, testProfileConnection, testLlmConnection, getEmbeddingDim,
+  testVisionConnection,
   getLlmModelList,
   ServiceProfile, ServiceProfileInput, LLMModelItem,
 } from '../../shared/api/client';
-import type { Department, ParserLlmModelItem } from '../../shared/api/types';
+import type { Department, ParserLlmModelItem, VisionModelItem } from '../../shared/api/types';
 import { listDepartments } from '../../shared/api/auth';
 import { getDeptConfigView } from '../../shared/api/settings';
 import { useAuth } from '../../shared/auth/AuthContext';
@@ -36,6 +37,7 @@ import DeepdocPanel from './DeepdocPanel';
 import MysqlPanel from './MysqlPanel';
 import MinioPanel from './MinioPanel';
 import VectorStorePanel from './VectorStorePanel';
+import VisionPanel from './VisionPanel';
 
 const { Text } = Typography;
 const { Password } = Input;
@@ -93,6 +95,15 @@ const SettingsPage: React.FC = () => {
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [modelEditIdx, setModelEditIdx] = useState<number | null>(null);
   const [modelForm] = Form.useForm();
+  // ---- 图片解析模型（多模态，用于解析时生成图片摘要）----
+  // 结构与 llm 段一致（models + active）；条目少 temperature/max_tokens
+  // （摘要用固定生成参数），故用独立表单与弹窗
+  const [visionModels, setVisionModels] = useState<VisionModelItem[]>([]);
+  const [visionActive, setVisionActive] = useState(0);
+  const [visionTestingIdx, setVisionTestingIdx] = useState<number | null>(null);
+  const [visionModalOpen, setVisionModalOpen] = useState(false);
+  const [visionEditIdx, setVisionEditIdx] = useState<number | null>(null);
+  const [visionForm] = Form.useForm();
   // 「标题分层模型」下拉数据源（GET /api/settings/llm/models，与解析配置弹窗
   // 的「解析 LLM 模型」同一个接口）：仅名称+model，无敏感字段；失败静默
   // （下拉为空，不影响其余表单项）
@@ -284,12 +295,98 @@ const SettingsPage: React.FC = () => {
     }
   };
 
+  // ---- 图片解析模型操作（与 llm 同构；条目少 temperature/max_tokens）----
+  const openVisionEdit = (idx: number | null) => {
+    setVisionEditIdx(idx);
+    visionForm.resetFields();
+    if (idx !== null && visionModels[idx]) {
+      const m = visionModels[idx];
+      visionForm.setFieldsValue({
+        vision_name: m.name, vision_base_url: m.base_url,
+        vision_api_key: m.api_key, vision_model: m.model,
+        vision_timeout: m.timeout,
+      });
+    } else {
+      visionForm.setFieldsValue({ vision_timeout: 120 });
+    }
+    setVisionModalOpen(true);
+  };
+
+  const saveVisionModel = async () => {
+    const v = await visionForm.validateFields();
+    const item: VisionModelItem = {
+      name: (v.vision_name ?? '').trim(),
+      base_url: (v.vision_base_url ?? '').trim(),
+      api_key: v.vision_api_key || '',
+      model: (v.vision_model ?? '').trim(),
+      timeout: v.vision_timeout ?? 120,
+    };
+    setVisionModels(prev => {
+      const next = [...prev];
+      if (visionEditIdx !== null && next[visionEditIdx]) {
+        // 编辑：api_key 留空 = 保留原值（回填的是脱敏值）
+        next[visionEditIdx] = {
+          ...item, api_key: item.api_key || next[visionEditIdx].api_key,
+        };
+      } else {
+        next.push(item);
+        if (next.length === 1) setVisionActive(0);
+      }
+      return next;
+    });
+    setVisionModalOpen(false);
+  };
+
+  const deleteVisionModel = (idx: number) => {
+    setVisionModels(prev => {
+      if (prev.length <= 1) return prev; // 至少保留 1 个模型
+      const next = prev.filter((_, i) => i !== idx);
+      setVisionActive(a => (idx === a ? 0 : idx < a ? a - 1 : a));
+      return next;
+    });
+  };
+
+  /** 设为默认（部门没选模型时的兜底）：先测连接，失败可确认强制 */
+  const activateVisionModel = async (idx: number) => {
+    if (idx === visionActive || visionTestingIdx !== null) return;
+    const item = visionModels[idx];
+    if (!item) return;
+    setVisionTestingIdx(idx);
+    const confirmForce = (reason: string) => {
+      modal.confirm({
+        title: `连接失败，确认将「${item.name}」设为默认？`,
+        content: reason,
+        okText: '仍要设为默认',
+        cancelText: '取消',
+        onOk: () => {
+          setVisionActive(idx);
+          message.success(`已将「${item.name}」设为默认`);
+        },
+      });
+    };
+    try {
+      const res = await testVisionConnection(item);
+      if (res.data.ok) {
+        setVisionActive(idx);
+        message.success(`已将「${item.name}」设为默认`);
+      } else {
+        confirmForce(res.data.reason);
+      }
+    } catch (e: unknown) {
+      confirmForce(asApiError(e).response?.data?.detail || '网络请求失败，请检查服务是否可达');
+    } finally {
+      setVisionTestingIdx(null);
+    }
+  };
+
   // ---- 新建/编辑 ----
   const openCreate = () => {
     setEditingId(null);
     form.resetFields();
     setLlmModels([]);
     setLlmActive(0);
+    setVisionModels([]);
+    setVisionActive(0);
     form.setFieldsValue({
       embedding_dimension: 1024,
       mineru_timeout: 300,
@@ -329,6 +426,12 @@ const SettingsPage: React.FC = () => {
       ? sec.models : [];
     setLlmModels(models);
     setLlmActive(sec?.active ?? 0);
+    // vision 段回填（同为 {models, active} 结构）
+    const vsec = p.vision as unknown as
+      { models?: VisionModelItem[]; active?: number };
+    setVisionModels(
+      Array.isArray(vsec?.models) && vsec.models.length ? vsec.models : []);
+    setVisionActive(vsec?.active ?? 0);
     setModalOpen(true);
   };
 
@@ -337,7 +440,9 @@ const SettingsPage: React.FC = () => {
     try {
       const llmSection = llmModels.length
         ? { models: llmModels, active: llmActive } : undefined;
-      const data = toProfileInput(vals, llmSection);
+      const visionSection = visionModels.length
+        ? { models: visionModels, active: visionActive } : undefined;
+      const data = toProfileInput(vals, llmSection, visionSection);
       if (editingId) {
         await updateProfile(editingId, data);
         message.success('配置档案已更新');
@@ -847,6 +952,20 @@ const SettingsPage: React.FC = () => {
                 children: <DeepdocPanel />,
               },
               {
+                key: 'vision',
+                label: panelLabel('vision', '图片解析模型（多模态，生成图片摘要）'),
+                children: (
+                  <VisionPanel
+                    visionModels={visionModels}
+                    visionActive={visionActive}
+                    visionTestingIdx={visionTestingIdx}
+                    openModelEdit={openVisionEdit}
+                    deleteModel={deleteVisionModel}
+                    activateModel={activateVisionModel}
+                  />
+                ),
+              },
+              {
                 key: 'mysql',
                 label: panelLabel('mysql', '数据库（SQLite/MySQL/其他）'),
                 children: <MysqlPanel />,
@@ -940,6 +1059,64 @@ const SettingsPage: React.FC = () => {
               </Form.Item>
             </Col>
           </Row>
+        </Form>
+      </AppModal>
+
+      {/* 图片解析模型编辑弹窗（条目比 LLM 少 temperature/max_tokens） */}
+      <AppModal
+        title={visionEditIdx !== null
+          ? `编辑图片模型${visionModels[visionEditIdx] ? `：${visionModels[visionEditIdx].name}` : ''}`
+          : '添加图片解析模型'}
+        open={visionModalOpen}
+        onCancel={() => setVisionModalOpen(false)}
+        onOk={saveVisionModel}
+        okText="保存"
+        width={600}
+      >
+        <Form form={visionForm} layout="vertical" size="small">
+          <Row gutter={12}>
+            <Col span={8}>
+              <Form.Item
+                name="vision_name"
+                label="模型名称（显示名）"
+                rules={[{ required: true, message: '请输入模型名称' }]}
+              >
+                <Input placeholder="如：qwen-vl" />
+              </Form.Item>
+            </Col>
+            <Col span={16}>
+              <Form.Item
+                name="vision_base_url"
+                label="API 地址"
+                rules={[{ required: true, message: '请输入 API 地址' }]}
+              >
+                <Input placeholder="http://127.0.0.1:8000/v1" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={12}>
+            <Col span={8}>
+              <Form.Item name="vision_model" label="模型名"
+                rules={[{ required: true, message: '请输入模型名' }]}>
+                <Input placeholder="Qwen3.5-9B-GPTQ-4bit" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="vision_api_key" label="API Key（可空）">
+                <Input.Password placeholder="本地服务通常留空" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="vision_timeout" label="超时（秒）">
+                <InputNumber min={1} max={600} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Alert
+            type="info"
+            showIcon
+            message="部门管理员从这些模型里选一个用；提示词与输出格式在「部门配置 → 图片摘要」里配。"
+          />
         </Form>
       </AppModal>
 

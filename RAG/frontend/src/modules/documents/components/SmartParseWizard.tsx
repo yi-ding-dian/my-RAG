@@ -24,6 +24,7 @@ import {
   GlobalOutlined,
   BulbOutlined,
   DatabaseOutlined,
+  FileImageOutlined,
 } from '@ant-design/icons';
 import type {
   AnalyzeResult,
@@ -104,6 +105,8 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
   const [contextualRetrieval, setContextualRetrieval] = useState(false);
   const [headingInContent, setHeadingInContent] = useState(false);
   const [knowledgeGraph, setKnowledgeGraph] = useState(false);
+  /** 图片摘要：解析后用多模态模型把图内文字读成描述回填正文（默认关） */
+  const [imageSummary, setImageSummary] = useState(false);
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('disabled');
   const [parseLlmModel, setParseLlmModel] = useState<string | undefined>(undefined);
   // 解析 LLM 模型列表（上下文摘要/图谱抽取/Agentic 专用，登录即可读）
@@ -158,6 +161,7 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
     setContextualRetrieval(false);
     setHeadingInContent(false);
     setKnowledgeGraph(false);
+    setImageSummary(false);
     setThinkingMode('disabled');
     setParseLlmModel(undefined);
     loadAnalyze();
@@ -282,6 +286,9 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
     config.enable_heading_in_content = headingInContent;
     config.contextual_retrieval = contextualRetrieval;
     config.knowledge_graph = knowledgeGraph;
+    // 图片摘要用的是「图片解析模型」（vision 段，多模态），与上面的解析 LLM
+    // 无关——故它不参与下面 parse_llm_model 的判定条件
+    config.image_summary = imageSummary;
     config.thinking_mode = thinkingMode;
     if ((contextualRetrieval || knowledgeGraph || isAgentic) && parseLlmModel) {
       config.parse_llm_model = parseLlmModel;
@@ -454,6 +461,26 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
               message="开启后每次解析将对每个切块调用 LLM 抽取实体与关系，将产生额外 token 费用"
             />
           )}
+          <div className="spw-toggle-card">
+            <span className="spw-p-icon spw-p-icon--violet"><FileImageOutlined /></span>
+            <div className="spw-toggle-body">
+              <div className="spw-toggle-head">
+                <Text strong>图片摘要</Text>
+                <span className="spw-chip spw-chip--opt">可选</span>
+              </div>
+              <div className="spw-toggle-desc">
+                读出图里的文字写进正文，让证照/扫描件能被检索
+              </div>
+            </div>
+            <Switch checked={imageSummary} onChange={setImageSummary} style={{ flexShrink: 0 }} />
+          </div>
+          {imageSummary && (
+            <Alert
+              type="warning"
+              showIcon
+              message="开启后将对每张图片调用「图片解析模型」（多模态）生成摘要，产生额外 token 费用；未配置模型时会被拦下提示管理员"
+            />
+          )}
 
           {(contextualRetrieval || knowledgeGraph || isAgentic) && (
             <>
@@ -542,6 +569,12 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
               <span className="spw-summary-label"><NodeIndexOutlined />知识图谱</span>
               <span className="spw-summary-value">
                 {knowledgeGraph ? <Text type="success" strong>开启</Text> : <Text type="secondary">关闭</Text>}
+              </span>
+            </div>
+            <div className="spw-summary-item">
+              <span className="spw-summary-label"><FileImageOutlined />图片摘要</span>
+              <span className="spw-summary-value">
+                {imageSummary ? <Text type="success" strong>开启</Text> : <Text type="secondary">关闭</Text>}
               </span>
             </div>
             <div className="spw-summary-item">

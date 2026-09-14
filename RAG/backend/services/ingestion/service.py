@@ -361,8 +361,15 @@ class IngestionService(_TraceMixin, _ImageMixin):
             # 2) 解析阶段（下载 → 探测降级 → 解析 → 取消检查点1 →
             #    图片上传 → 落盘）
             self._set_stage(doc_id, "解析文档")
-            text, parse_method = await self._stage_parse(
+            text, images, parse_method = await self._stage_parse(
                 doc, doc_id, parser_config, probe)
+            # 2.5) 图片摘要（可选；**必须在切块前**——摘要要进 markdown 才能
+            #      被切进 chunk、才检索得到。未开启/未配置/单图失败都不阻塞
+            #      入库，见 services/image_summary.py）
+            if params.get("image_summary"):
+                self._set_stage(doc_id, "图片摘要")
+                text = await self._stage_image_summary(
+                    doc, doc_id, text, images)
             # 3) 切块阶段（QA 规范性检测 → 切块 → 父标题前缀）
             self._set_stage(doc_id, "切块")
             stage = await self._stage_chunk(
@@ -564,7 +571,61 @@ class IngestionService(_TraceMixin, _ImageMixin):
         logger.info("解析完成: %s (%s) %d 字符%s", doc.original_name,
                     parse_method, len(text),
                     f"，图片 {len(images)} 张" if images else "")
-        return text, parse_method
+        # images 一并返回：图片摘要阶段要用它的字节（见 _stage_image_summary）
+        return text, images, parse_method
+
+    async def _stage_image_summary(self, doc, doc_id: str, text: str,
+                                   images: list) -> str:
+        """图片摘要：把图内文字读进 markdown（任何失败都不阻塞入库）
+
+        - 配置解析走 image_summary.resolve_config（部门覆盖 → 全局）
+        - 未配置可用模型 → 原样返回（前端预检应已拦截，这里兜底）
+        - 单图失败由该模块内部跳过并计数，这里只记一条汇总日志
+        """
+        from backend.db import get_session
+        from backend.services import image_summary as img_summ
+
+        images = images or []
+        if not images:
+            return text
+        try:
+            async with get_session() as db:
+                # 部门归属在**知识库**上，不在文档上（DocumentItem 无该字段）
+                from backend.services.kb_service import get_kb_service
+                kb = await get_kb_service().get(db, doc.kb_id)
+                cfg = await img_summ.resolve_config(
+                    db, kb.department_id if kb else None)
+        except Exception as e:  # 配置读取异常不该拖垮解析
+            logger.warning("图片摘要配置解析失败，跳过摘要: %s (%s)",
+                           doc_id, e)
+            return text
+        if cfg is None:
+            logger.info("图片摘要已勾选但无可用模型配置，跳过: %s", doc_id)
+            return text
+        try:
+            def _on_progress(done: int, total: int) -> None:
+                """每处理一张就刷新阶段文案（文档列表状态列可见）
+
+                刻意用 _update_stage_text 而非 _set_stage：后者每调一次就往
+                入库轨迹 append 一条，几十上百张图会把 trace 撑爆。
+                """
+                self._update_stage_text(doc_id, f"图片摘要（{done}/{total}）")
+
+            new_text, stats = await img_summ.summarize_images(
+                text, images, model_cfg=cfg["model"],
+                summary_cfg=cfg["summary"], on_progress=_on_progress)
+        except Exception as e:
+            logger.warning("图片摘要阶段失败，按原样继续: %s (%s)", doc_id, e)
+            return text
+        logger.info(
+            "图片摘要完成: %s 模型=%s 成功 %d / 小图跳过 %d / 超限跳过 %d / 失败 %d",
+            doc_id, cfg["model"].name or cfg["model"].model, stats["done"],
+            stats["skipped_small"], stats["skipped_limit"],
+            len(stats["failed"]))
+        # 让入库轨迹记成「图片摘要（8）：耗时」而不是光秃秃的「图片摘要」——
+        # 下一次 _set_stage（切块）结算本阶段时会取这个名字
+        self._update_stage_text(doc_id, f"图片摘要（{stats['total']}）")
+        return new_text
 
     @staticmethod
     def _build_hierarchical_chunker(parser_config: dict,

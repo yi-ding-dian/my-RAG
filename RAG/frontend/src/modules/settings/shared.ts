@@ -3,6 +3,7 @@ import type {
   ProfileTestResult,
   ServiceProfile,
   ServiceProfileInput,
+  VisionModelItem,
 } from '../../shared/api/client';
 
 /** 配置域快捷导航定义（方案 A）：标题 + 当前值摘要 + 对应编辑折叠 key */
@@ -28,9 +29,14 @@ export const DOMAIN_CARDS: Array<{
   {
     key: 'mineru',
     title: '解析服务',
-    sections: ['mineru', 'deepdoc'],
-    summary: p =>
-      `${p.mineru?.url || '-'}${p.deepdoc?.base_url ? ` / ${p.deepdoc.base_url}` : ''}`,
+    sections: ['mineru', 'deepdoc', 'vision'],
+    summary: p => {
+      const vm = p.vision?.models ?? [];
+      const cur = vm[p.vision?.active ?? 0];
+      return `${p.mineru?.url || '-'}`
+        + `${p.deepdoc?.base_url ? ` / ${p.deepdoc.base_url}` : ''}`
+        + `${cur ? ` / 图片模型 ${cur.name}` : ''}`;
+    },
   },
   {
     key: 'retrieval',
@@ -67,7 +73,7 @@ export interface TestItem {
   msg: string;
 }
 
-export type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'mysql' | 'minio' | 'vector_store' | 'rerank';
+export type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'mysql' | 'minio' | 'vector_store' | 'rerank' | 'vision';
 
 export const emptyTest: Record<SectionKey, TestItem> = {
   llm: { status: 'idle', msg: '' },
@@ -78,6 +84,7 @@ export const emptyTest: Record<SectionKey, TestItem> = {
   mysql: { status: 'idle', msg: '' },
   minio: { status: 'idle', msg: '' },
   vector_store: { status: 'idle', msg: '' },
+  vision: { status: 'idle', msg: '' },
 };
 
 // 测试结果 -> 展示项
@@ -90,6 +97,7 @@ export const toTestItems = (res: ProfileTestResult): Record<SectionKey, TestItem
   mysql: { status: res.mysql.ok ? 'success' : 'failed', msg: res.mysql.message },
   minio: { status: res.minio.ok ? 'success' : 'failed', msg: res.minio.message },
   vector_store: { status: res.vector_store.ok ? 'success' : 'failed', msg: res.vector_store.message },
+  vision: { status: res.vision?.ok ? 'success' : 'failed', msg: res.vision?.message ?? '未参与探测' },
 });
 
 /** 编辑弹窗折叠面板 key → 可探测段（点击面板标题右侧"测试"按钮）；
@@ -103,6 +111,7 @@ export const PANEL_TEST_SECTIONS: Record<string, SectionKey[]> = {
   mysql: ['mysql'],
   minio: ['minio'],
   vector_store: ['vector_store'],
+  vision: ['vision'],
 };
 
 export const sectionLabel: Record<SectionKey, string> = {
@@ -114,6 +123,7 @@ export const sectionLabel: Record<SectionKey, string> = {
   mysql: '数据库',
   minio: 'MinIO 对象存储',
   vector_store: '向量存储',
+  vision: '图片解析模型',
 };
 
 // 全部段测试中
@@ -126,6 +136,7 @@ export const allTesting = (): Record<SectionKey, TestItem> => ({
   mysql: { status: 'testing', msg: '' },
   minio: { status: 'testing', msg: '' },
   vector_store: { status: 'testing', msg: '' },
+  vision: { status: 'testing', msg: '' },
 });
 
 // 全部段同一失败信息（接口整体报错时）
@@ -138,6 +149,7 @@ export const allFailed = (msg: string): Record<SectionKey, TestItem> => ({
   mysql: { status: 'failed', msg },
   minio: { status: 'failed', msg },
   vector_store: { status: 'failed', msg },
+  vision: { status: 'failed', msg },
 });
 
 /** 档案编辑表单的扁平字段值（antd Form values；字段名 = 表单项 name，
@@ -185,11 +197,29 @@ export interface ProfileFormValues {
   minio_region: string;
   vector_store_backend: string;
   vector_store_milvus_uri: string;
+  // ---- 图片摘要（全局档案默认值；部门可在「部门配置」里覆盖）----
+  /** 选中的模型 name（空 = 用列表第一个） */
+  image_summary_model: string;
+  /** 提示词（空 = 用内置默认模板） */
+  image_summary_prompt: string;
+  /** fields（固定字段，默认）/ prose（自然段） */
+  image_summary_output_format: string;
+  /** 「文字」字段长度上限 */
+  image_summary_text_max_chars: number;
+  /** 单文档摘要张数上限（0 = 不限） */
+  image_summary_max_images: number;
+  // 结构化选项（勾选后自动生成 prompt；任一改动即重新生成）
+  image_summary_opt_label_type: boolean;
+  image_summary_opt_read_text: boolean;
+  image_summary_opt_describe_scene: boolean;
+  image_summary_opt_describe_layout: boolean;
 }
 
 // 表单扁平字段 <-> 嵌套档案对象互转
 export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
   models: LLMModelItem[]; active: number;
+}, visionSection?: {
+  models: VisionModelItem[]; active: number;
 }): ServiceProfileInput => ({
   name: vals.name,
   // llm 段为模型列表结构：未添加模型时省略（后端用 .env 出厂默认单模型）
@@ -254,6 +284,24 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
     backend: vals.vector_store_backend,
     milvus_uri: vals.vector_store_milvus_uri || '',
   },
+  // 图片解析模型：与 llm 同为模型列表结构，未添加时省略（= 未配置 → 解析时
+  // 勾选图片摘要会被预检拦下并提示管理员配置）
+  vision: visionSection && visionSection.models.length
+    ? { models: visionSection.models, active: visionSection.active }
+    : undefined,
+  image_summary: {
+    model: vals.image_summary_model || '',
+    prompt: vals.image_summary_prompt || '',
+    output_format: vals.image_summary_output_format || 'fields',
+    text_max_chars: vals.image_summary_text_max_chars ?? 200,
+    max_images: vals.image_summary_max_images ?? 50,
+    options: {
+      label_type: vals.image_summary_opt_label_type ?? true,
+      read_text: vals.image_summary_opt_read_text ?? true,
+      describe_scene: vals.image_summary_opt_describe_scene ?? true,
+      describe_layout: vals.image_summary_opt_describe_layout ?? false,
+    },
+  },
 });
 
 export const toFormValues = (p: ServiceProfile) => ({
@@ -299,4 +347,13 @@ export const toFormValues = (p: ServiceProfile) => ({
   minio_region: p.minio?.region,
   vector_store_backend: p.vector_store?.backend ?? 'chroma',
   vector_store_milvus_uri: p.vector_store?.milvus_uri ?? '',
+  image_summary_model: p.image_summary?.model ?? '',
+  image_summary_prompt: p.image_summary?.prompt ?? '',
+  image_summary_output_format: p.image_summary?.output_format ?? 'fields',
+  image_summary_text_max_chars: p.image_summary?.text_max_chars ?? 200,
+  image_summary_max_images: p.image_summary?.max_images ?? 50,
+  image_summary_opt_label_type: p.image_summary?.options?.label_type ?? true,
+  image_summary_opt_read_text: p.image_summary?.options?.read_text ?? true,
+  image_summary_opt_describe_scene: p.image_summary?.options?.describe_scene ?? true,
+  image_summary_opt_describe_layout: p.image_summary?.options?.describe_layout ?? false,
 });

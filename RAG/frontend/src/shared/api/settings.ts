@@ -11,6 +11,7 @@ import type {
   ProfileTestResult,
   ServiceProfile,
   ServiceProfileInput,
+  VisionModelItem,
 } from './types';
 
 export const listProfiles = () => api.get<ServiceProfile[]>('/settings/profiles');
@@ -34,6 +35,11 @@ export const testProfileConnection = (id: string, data?: ServiceProfileInput) =>
 
 export const testLlmConnection = (item: Partial<LLMModelItem>) =>
   api.post<LlmTestResult>('/settings/llm/test', item);
+
+/** 测试图片解析模型（多模态）连接：GET {base_url}/models 探活，≤5s。
+ *  与 LLM 测试的差异：只探活不试推图（推图代价大），也不做脱敏密钥回查。 */
+export const testVisionConnection = (item: Partial<VisionModelItem>) =>
+  api.post<LlmTestResult>('/settings/vision/test', item);
 
 // ========== 解析配置 LLM 模型（GET 模型列表 / POST 按名测连接，登录即可） ==========
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -135,7 +136,8 @@ def _effective_chat_payload(profile: dict,
     dept = None
     if dept_config:
         dept = {}
-        for section in ("llm", "chat", "retrieval", "agentic"):
+        for section in ("llm", "chat", "retrieval", "agentic",
+                        "image_summary"):
             sec = dept_config.get(section)
             if isinstance(sec, dict) and sec:
                 sec = dict(sec)
@@ -145,7 +147,26 @@ def _effective_chat_payload(profile: dict,
                     if mask_base_url and sec.get("base_url"):
                         sec["base_url"] = _mask_base_url(sec["base_url"])
                 dept[section] = sec
-    return {**merged, "llm": llm, "dept": dept}
+    # 图片摘要：全局默认 + 部门覆盖（部门未设/空值的字段跟随全局）；
+    # options 是 dict，整段覆盖（部门勾了就以部门的为准）
+    g_img = profile.get("image_summary")
+    g_img = g_img if isinstance(g_img, dict) else {}
+    d_img = (dept_config or {}).get("image_summary")
+    d_img = d_img if isinstance(d_img, dict) else {}
+    img_summary = dict(g_img)
+    for k, v in d_img.items():
+        if v is None or v == "":
+            continue
+        img_summary[k] = v
+    # 图片解析模型可选列表：**只给名字与模型名**——部门只"选"用哪个，
+    # 连接信息与密钥不下放（脱敏边界与 llm 段一致）
+    vmodels = ((profile.get("vision") or {}).get("models")) or []
+    vision_options = [
+        {"name": m.get("name") or "", "model": m.get("model") or ""}
+        for m in vmodels if isinstance(m, dict)
+    ]
+    return {**merged, "llm": llm, "dept": dept,
+            "image_summary": img_summary, "vision_options": vision_options}
 
 
 def _validate_numeric_field(k: str, v, cast: str) -> None:
@@ -219,9 +240,12 @@ def _validate_chat_payload(body: dict) -> dict:
     _validate_chat_section("retrieval", body, payload, "不允许修改检索字段")
     _validate_chat_section("agentic", body, payload, "不允许修改 Agentic 配置字段")
     _validate_chat_section("llm", body, payload, "不允许修改 LLM 配置字段")
+    _validate_chat_section("image_summary", body, payload,
+                           "不允许修改图片摘要字段")
     if not payload:
         raise HTTPException(
-            status_code=400, detail="请至少提供 chat、retrieval 或 llm 段")
+            status_code=400,
+            detail="请至少提供 chat、retrieval、agentic、llm 或 image_summary 段")
     return payload
 
 
@@ -377,7 +401,10 @@ async def test_profile(request: Request, profile_id: str,
                             merged[fname] = orig
                 profile[section] = merged
     result = await svc.test_connections(profile)
-    ok_map = {k: bool(v.get("ok")) for k, v in result.items()}
+    # skipped 的段（如未配置图片解析模型）不参与"全部就绪"判定——
+    # 未配置可选功能是正常状态，不该把整体结果拖成 failed
+    ok_map = {k: bool(v.get("ok")) for k, v in result.items()
+              if not v.get("skipped")}
     await audit_service.record_action(
         user, action="settings.test-connections", target_type="config",
         target_id=profile_id, target_name=profile.get("name"),
@@ -428,6 +455,40 @@ async def test_llm_connection(body: dict,
     result = await asyncio.to_thread(probe_llm_sdk, body, timeout=timeout)
     return {"ok": result["ok"], "reason": result["reason"],
             "latency_ms": result["latency_ms"]}
+
+
+@router.post("/vision/test")
+async def test_vision_connection(body: dict,
+                                 user: UserPublic = Depends(require_user_admin)):
+    """测试图片解析模型（多模态）连接：GET {base_url}/models 探活，≤5s
+
+    与 /llm/test 的两点差异：
+    - **只探活不试推图** —— 推图要传图片、代价大；真正可用性由解析时兜底
+      （单图失败会跳过、不阻塞入库）；
+    - **不做脱敏密钥回查** —— 连接信息由超管在「图片解析模型」面板直接编辑，
+      不存在"只拿得到脱敏值"的场景。
+    """
+    from backend.config import VisionModelConfig
+    from backend.services.image_summary import probe_model
+
+    try:
+        timeout = min(5.0, float(body.get("timeout") or 5.0))
+    except (TypeError, ValueError):
+        timeout = 5.0
+    cfg = VisionModelConfig(
+        name=str(body.get("name") or ""),
+        base_url=str(body.get("base_url") or ""),
+        api_key=str(body.get("api_key") or ""),
+        model=str(body.get("model") or ""),
+        timeout=timeout,
+    )
+    if not cfg.base_url or not cfg.model:
+        return {"ok": False, "latency_ms": 0,
+                "reason": "请先填写服务地址与模型名"}
+    t0 = time.monotonic()
+    reason = await probe_model(cfg)
+    return {"ok": not reason, "reason": reason or "连接正常",
+            "latency_ms": int((time.monotonic() - t0) * 1000)}
 
 
 @router.get("/llm/models")

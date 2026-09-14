@@ -186,6 +186,24 @@ async def ingest_document(request: Request, kb_id: str, doc_id: str,
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # 图片摘要预检（后端兜底，前端另有预检）：勾选了但模型未配/连不上 → 400，
+    # 别让任务启动了才在后台悄悄跳过。文案面向普通用户（说清找谁处理）。
+    if params.get("image_summary"):
+        from backend.db import get_session
+        from backend.services import image_summary as img_summ
+        from backend.services.kb_service import get_kb_service
+        try:
+            async with get_session() as _db:
+                # 部门归属在知识库上（DocumentItem 无 department_id）
+                _kb = await get_kb_service().get(_db, doc.kb_id)
+                ready, reason = await img_summ.check_ready(
+                    _db, _kb.department_id if _kb else None)
+        except Exception as e:  # 预检本身异常不该挡住入库
+            logger.warning("图片摘要预检异常，放行: %s", e)
+        else:
+            if not ready:
+                raise HTTPException(status_code=400, detail=reason)
+
     # 解析前可用性检测（并行探测 ≤8s，仅 pdf/docx 且引擎可能用外部解析器时）：
     # 所选解析器不可用 → 响应带 degrade 提示（前端 warning），探测结果随任务
     # 传递（_probe），任务内复用不重复探测，按降级链自动切换

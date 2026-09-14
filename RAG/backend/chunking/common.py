@@ -268,18 +268,30 @@ def _find_fence_ranges(text: str) -> List[Tuple[int, int]]:
 # 图片引用：markdown ![alt](src) / HTML <img>（作为原子保护，见 _find_image_ranges）
 _IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 _IMAGE_HTML_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+# 图片摘要回填的图注块（与 services/image_summary.py 的 SUMMARY_PREFIX 对应）：
+# 首行 `> 图片说明：`，其后是连续的 `> ` 引用行
+_IMAGE_NOTE_RE = re.compile(r"\n[ \t]*>[ \t]*图片说明[：:][^\n]*(?:\n[ \t]*>[^\n]*)*")
 
 
 def _find_image_ranges(text: str) -> List[Tuple[int, int]]:
-    """定位图片引用区间（markdown ![alt](src) / HTML <img>）
+    """定位图片引用区间（markdown ![alt](src) / HTML <img>）+ 紧随的图注块
 
     背景（修复前实测 bug）：图片引用含英文感叹号 `!`，被句子感知切分
     （句界集合含 `!`）当作句子分隔符拆碎——块文本变成残缺的 `[](url)`，
     前端不渲染、显示为链接文本。引用作整体保护后与表格同等待遇：
     原子并入某块，不被切分毁坏（alt/src 保持完整）。
+
+    图片摘要（services/image_summary.py）会把模型读出的图内文字回填到图片
+    **下方**的 `> 图片说明：` 引用块。那块文字就是这张图的"可检索化身"，
+    必须与图一起作为原子区间——否则切块边界落在两者之间时图与文字分家，
+    摘要的检索价值就丢了。故此处把「图片引用 + 紧随的图注块」扩成一个区间。
     """
     spans = [(m.start(), m.end()) for m in _IMAGE_MD_RE.finditer(text)]
     spans += [(m.start(), m.end()) for m in _IMAGE_HTML_RE.finditer(text)]
+    for m in _IMAGE_MD_RE.finditer(text):
+        note = _IMAGE_NOTE_RE.match(text, m.end())
+        if note:
+            spans.append((m.start(), note.end()))
     return spans
 
 

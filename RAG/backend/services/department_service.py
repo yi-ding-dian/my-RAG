@@ -133,9 +133,10 @@ def _parse_config(raw: Optional[str]) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    # 段内仅保留对象结构（llm/chat/retrieval/agentic 段必须为 dict）
+    # 段内仅保留对象结构（llm/chat/retrieval/agentic/image_summary 段必须为
+    # dict）；**新增可覆盖段必须同步加到这里**，否则写进去了也读不出来
     out: dict = {}
-    for section in ("llm", "chat", "retrieval", "agentic"):
+    for section in ("llm", "chat", "retrieval", "agentic", "image_summary"):
         if isinstance(data.get(section), dict):
             out[section] = data[section]
     return out
@@ -263,7 +264,9 @@ async def save_department_config(db: AsyncSession, dept_id: str,
                                  payload: dict) -> Optional[dict]:
     """字段级保存部门完整配置到 department_config 列（白名单已在路由层校验）
 
-    - payload 段：llm/chat/retrieval（每段内字段级合并到现有配置）；
+    - payload 段：llm/chat/retrieval/agentic/image_summary（每段内字段级合并到
+      现有配置；**新增段必须同步加到这里**，否则路由放行了也会被静默丢弃）；
+      其中 image_summary.options 是嵌套 dict，按整段覆盖处理
     - 字段值 None 或空串 → 移除该字段（=不覆盖全局，跟随全局配置；
       api_key 空串同语义）；api_key 传回脱敏值（含 ****）→ 保留部门
       原值不覆盖（与全局档案 update_profile 语义一致）；
@@ -275,7 +278,7 @@ async def save_department_config(db: AsyncSession, dept_id: str,
     if orm is None:
         return None
     cur = _parse_config(orm.department_config)
-    for section in ("llm", "chat", "retrieval", "agentic"):
+    for section in ("llm", "chat", "retrieval", "agentic", "image_summary"):
         if not isinstance(payload.get(section), dict):
             continue
         sec = cur.setdefault(section, {})

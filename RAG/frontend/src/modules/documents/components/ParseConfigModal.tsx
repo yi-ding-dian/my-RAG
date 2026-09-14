@@ -63,6 +63,8 @@ interface ParseConfigFormValues {
   enable_heading_in_content: boolean;
   contextual_retrieval: boolean;
   knowledge_graph: boolean;
+  /** 图片摘要：解析后用多模态模型把图内文字读成描述回填正文（默认关） */
+  image_summary: boolean;
   /** 思考模式（DeepSeek thinking 控制）：disabled=关闭（推荐，更快）| enabled_low/high/max=开启+强度 */
   thinking_mode: ThinkingMode;
   /** 解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为模型列表的 name；空=用当前激活模型） */
@@ -303,6 +305,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           typeof cfg.contextual_retrieval === 'boolean' ? cfg.contextual_retrieval : false,
         knowledge_graph:
           typeof cfg.knowledge_graph === 'boolean' ? cfg.knowledge_graph : false,
+        image_summary:
+          typeof cfg.image_summary === 'boolean' ? cfg.image_summary : false,
         // 思考模式：重解析沿用上次持久化值；缺失/非法回退默认"关闭思考"
         thinking_mode: (
           ['disabled', 'enabled_low', 'enabled_high', 'enabled_max'] as const
@@ -362,6 +366,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 上下文检索增强/知识图谱开关状态（开启时显示额外 token 费用提示）
   const contextualRetrieval = Form.useWatch('contextual_retrieval', form);
   const knowledgeGraph = Form.useWatch('knowledge_graph', form);
+  const imageSummary = Form.useWatch('image_summary', form);
 
   // ===== 解析方式联动显隐（设置不了的就不显示；依据后端实际生效范围）=====
   // 前端解析方式直接映射引擎提交（MinerU→mineru / DeepDOC→deepdoc /
@@ -494,6 +499,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     config.enable_heading_in_content = values.enable_heading_in_content;
     config.contextual_retrieval = values.contextual_retrieval;
     config.knowledge_graph = values.knowledge_graph;
+    config.image_summary = values.image_summary;
     config.thinking_mode = values.thinking_mode;
     // 解析 LLM 模型（摘要/图谱抽取/Agentic 分块专用）：仅上下文检索增强/
     // 知识图谱/Agentic 任一开启时提交（B5：三者全关时字段隐藏，不提交，
@@ -951,6 +957,20 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     desc="入库时用 LLM 抽取实体关系构建知识图谱（切块详情可查看实体与关系）"
                     defaultValue={false}
                   />
+                  <SwitchField
+                    name="image_summary"
+                    label="图片摘要"
+                    desc="用多模态模型读出图里的文字（证照/扫描件），写进正文使其可被检索；模型由管理员在「系统配置 → 图片解析模型」里配"
+                    defaultValue={false}
+                  />
+                  {imageSummary && (
+                    <Alert
+                      message="开启后解析时会对每张图片调用多模态模型生成摘要，将产生额外 token 费用；未配置模型时解析会被拦下并提示"
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                    />
+                  )}
                   {knowledgeGraph && (
                     <Alert
                       message="开启后每次解析将对每个切块调用 LLM 抽取实体与关系，将产生额外 token 费用"

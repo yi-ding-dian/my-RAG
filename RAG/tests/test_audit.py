@@ -144,6 +144,7 @@ def _mock_conn_tests(monkeypatch, ok_map: dict):
     def _test_embedding(self, emb): return _ok("embedding")
     def _test_mineru(self, mineru): return _ok("mineru")
     def _test_rerank(self, rerank): return _ok("rerank")
+    def _test_vision(self, item): return _ok("vision")
     async def _test_vector_store(self, vs): return _ok("vector_store")
     async def _test_deepdoc(self, deepdoc): return _ok("deepdoc")
     async def _test_mysql(self, mysql): return _ok("mysql")

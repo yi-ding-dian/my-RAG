@@ -128,6 +128,9 @@ export interface IngestConfig {
   contextual_retrieval?: boolean;
   /** 知识图谱：开启后入库时用 LLM 对每个切块抽取实体与关系，合并构建知识图谱（存储 data/storage/graphs/{kb_id}.json，产生额外 token 费用，失败/超时跳过不阻塞入库，默认关） */
   knowledge_graph?: boolean;
+  /** 图片摘要：解析后用多模态模型读出图内文字（证照/扫描件）写进正文，使其可被检索。
+   *  默认关；未配置模型时后端预检会返回 400（不阻塞其他解析方式）。 */
+  image_summary?: boolean;
   /** 思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要调用共用）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度 */
   thinking_mode?: ThinkingMode;
   /** Agentic 分块超限确认（仅 method=agentic）：文档 1 万~5 万字时后端要求确认，确认后带 true 重新提交（仅本次生效，不持久化） */
@@ -888,6 +891,46 @@ export interface LLMConfig {
   active: number;
 }
 
+/**
+ * 图片解析模型条目（多模态，用于解析时生成图片摘要）。
+ *
+ * 与 LLMModelItem 的区别：不含 temperature/max_tokens——摘要用固定生成参数
+ * （低温、限长），不需要按模型调。
+ */
+export interface VisionModelItem {
+  /** 显示名（唯一）；部门管理员按它选择用哪个模型 */
+  name: string;
+  base_url: string;
+  api_key: string; // 服务端返回脱敏值（sk-****abcd）
+  model: string;
+  timeout: number;
+}
+
+/** vision 段：模型列表 + 激活索引（结构同 llm 段） */
+export interface VisionConfig {
+  models: VisionModelItem[];
+  active: number;
+}
+
+/**
+ * 图片摘要配置。
+ * - 全局档案里是默认值；部门可在「部门配置」里覆盖 model/prompt/选项/上限
+ * - options 键：label_type / read_text / describe_scene / describe_layout
+ */
+export interface ImageSummaryConfig {
+  /** 选中的模型 name（空 = 用列表第一个） */
+  model?: string;
+  /** 提示词（空 = 用内置默认模板） */
+  prompt?: string;
+  /** fields（固定字段，默认）/ prose（自然段） */
+  output_format?: string;
+  /** 「文字」字段长度上限 */
+  text_max_chars?: number;
+  /** 单文档摘要张数上限（0 = 不限） */
+  max_images?: number;
+  options?: Record<string, boolean>;
+}
+
 export interface EmbeddingConfig {
   base_url: string;
   api_key: string; // 服务端返回脱敏值
@@ -989,6 +1032,10 @@ export interface ServiceProfile {
   ingestion?: { concurrency?: number; kb_doc_limit?: number; max_upload_mb?: number };
   /** 节点向量存储段（旧档案可能缺失，前端做可选兼容；backend=chroma|milvus） */
   vector_store?: { backend?: string; milvus_uri?: string };
+  /** 图片解析模型列表段（多模态；超管配置，部门从中选一个用） */
+  vision?: VisionConfig;
+  /** 图片摘要配置（全局默认值；部门可在部门配置里覆盖） */
+  image_summary?: ImageSummaryConfig;
   /** 会话参数段（旧后端可能缺失，前端做可选兼容） */
   chat?: ChatConfig;
   mysql: MySQLConfigProfile;
@@ -1013,6 +1060,8 @@ export interface ProfileTestResult {
   mysql: ConnectionTestResult;
   minio: ConnectionTestResult;
   vector_store: ConnectionTestResult;
+  /** 图片解析模型（多模态）：GET {base_url}/models 探活 */
+  vision?: ConnectionTestResult;
 }
 
 /** 单个 LLM 模型连接测试（GET {base_url}/models，≤5s；勾选激活时先调用） */
@@ -1050,6 +1099,10 @@ export interface DeptLlmConfig {
  * retrieval.top_k/similarity_threshold + llm 段 6 字段）
  */
 export interface ChatSettingsPayload {
+  /** 图片摘要（部门可覆盖段）：选模型 + 提示词 + 输出格式 + 两个上限。
+   *  提交时可选；GET 返回「全局默认 + 本部门覆盖」的合并值，
+   *  并额外返回 vision_options（超管配的模型名列表，不含连接信息）。 */
+  image_summary?: ImageSummaryConfig;
   /** 提交时可选：只提交需要修改的段（如仅 llm）；GET 恒返回全量合并值 */
   retrieval?: {
     top_k: number;

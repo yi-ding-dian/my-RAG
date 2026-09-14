@@ -31,12 +31,14 @@ import {
   Spin,
   Switch,
   Tag,
+  Typography,
 } from 'antd';
 import type { CollapseProps } from 'antd';
 import { asApiError, getChatSettings, updateChatSettings } from '../../shared/api/client';
-import type { ThinkingMode } from '../../shared/api/client';
+import type { ThinkingMode, ImageSummaryConfig } from '../../shared/api/client';
 
 const { TextArea } = Input;
+const { Text } = Typography;
 
 /** 部门 LLM 表单字段 */
 interface DeptLlmValues {
@@ -73,15 +75,94 @@ interface DeptRetrievalValues {
   agentic_abstain_threshold: number;
 }
 
+/** 部门图片摘要表单字段（选模型 + 结构化选项 + 可微调提示词 + 两个上限） */
+interface DeptImageSummaryValues {
+  img_model: string;
+  img_output_format: string;
+  img_text_max_chars: number;
+  img_max_images: number;
+  img_opt_label_type: boolean;
+  img_opt_read_text: boolean;
+  img_opt_describe_scene: boolean;
+  img_opt_describe_layout: boolean;
+  img_prompt: string;
+}
+
+// ---- 默认提示词模板（与后端 backend/services/image_summary.py 的
+//      default_prompt 保持同措辞；前端这份只用于「选项一变就实时显示」，
+//      真正生效的默认值仍由后端兜底——两边不一致时以后端为准）----
+const IMG_OPTION_LINES: Record<string, string> = {
+  label_type: '类型：这是什么（文件类型或场景）',
+  read_text: '文字：图中可见的关键文字（标题、单位名称、编号、日期、金额、规格等）',
+  describe_scene: '画面：画面主要对象与特征（设备、场地、人物、签章等）',
+  describe_layout: '版式：版式结构（表格行列、签章位置、分区布局等）',
+};
+const IMG_OPTION_ORDER = ['label_type', 'read_text', 'describe_scene', 'describe_layout'];
+const IMG_FIXED_TAIL = `
+要求：
+- 只描述你确实看到的内容，不要推测、不要评价、不要补充常识
+- 某个字段确实没有内容时，写"无"
+- 不要开场白，不要总结
+`;
+
+/** 按选项 + 输出格式拼默认提示词（与后端 default_prompt 同逻辑）
+ *  brief 格式不读图中文字——适合"整页全是文字但不需要理解含义"的图，
+ *  代价是图里的字检索不到，故不适合证照类。 */
+function buildDefaultImgPrompt(opts: Record<string, boolean>, fmt: string): string {
+  if (fmt === 'brief') {
+    return '用一句话说明这张图片大致是什么、用来做什么的'
+      + '（如「某公司生产厂房外景照片」「设备接线示意图」）。\n\n'
+      + '要求：\n'
+      + '- 只描述你确实看到的，不要推测、不要评价、不要陈述图中的具体内容与文字\n'
+      + '- 不超过 30 字，写成一句话\n'
+      + '- 直接输出这句话，不要加「这张图片」之类的开场白，不要换行';
+  }
+  const lines = IMG_OPTION_ORDER.filter(k => opts[k]).map(k => IMG_OPTION_LINES[k]);
+  const use = lines.length ? lines : [IMG_OPTION_LINES.read_text];
+  if (fmt === 'prose') {
+    return '请查看这张图片，用中文写一段 2~4 句的客观描述，用于文档检索。\n\n'
+      + '要点：\n' + use.map(l => `- ${l}`).join('\n') + '\n' + IMG_FIXED_TAIL;
+  }
+  return '请查看这张图片，按下面的字段输出中文描述，用于文档检索。\n\n'
+    + '每行一个字段，只输出这几行，不要加其他说明：\n'
+    + use.join('\n') + '\n' + IMG_FIXED_TAIL;
+}
+
 const DeptConfig: React.FC = () => {
   const { message } = AntApp.useApp();
   const [llmForm] = Form.useForm<DeptLlmValues>();
   const [chatForm] = Form.useForm<DeptChatValues>();
   const [retrForm] = Form.useForm<DeptRetrievalValues>();
+  const [imgForm] = Form.useForm<DeptImageSummaryValues>();
   const [loading, setLoading] = useState(true);
   const [savingLlm, setSavingLlm] = useState(false);
   const [savingChat, setSavingChat] = useState(false);
   const [savingRetr, setSavingRetr] = useState(false);
+  const [savingImg, setSavingImg] = useState(false);
+  /** 超管配的图片解析模型（只有名字，不含连接信息与密钥） */
+  const [visionOptions, setVisionOptions] = useState<Array<{ name: string; model: string }>>([]);
+  /** 提示词是否被手动改过：改过就不再被"选项变化"自动覆盖 */
+  const [imgPromptTouched, setImgPromptTouched] = useState(false);
+  // 选项 / 输出格式一变就实时重算默认提示词填进输入框（未手动改过时）——
+  // 让部门管理员看得见"当前选项会生成什么"，而不是面对一个空框
+  const imgFmt = Form.useWatch('img_output_format', imgForm);
+  const imgOptLabel = Form.useWatch('img_opt_label_type', imgForm);
+  const imgOptText = Form.useWatch('img_opt_read_text', imgForm);
+  const imgOptScene = Form.useWatch('img_opt_describe_scene', imgForm);
+  const imgOptLayout = Form.useWatch('img_opt_describe_layout', imgForm);
+
+  useEffect(() => {
+    if (imgPromptTouched) return;
+    imgForm.setFieldsValue({
+      img_prompt: buildDefaultImgPrompt({
+        label_type: imgOptLabel ?? true,
+        read_text: imgOptText ?? true,
+        describe_scene: imgOptScene ?? true,
+        describe_layout: imgOptLayout ?? false,
+      }, imgFmt ?? 'fields'),
+    });
+  }, [imgPromptTouched, imgFmt, imgOptLabel, imgOptText, imgOptScene,
+      imgOptLayout, imgForm]);
 
   /** 合并值回填：未设置字段显示全局值（占位提示），api_key 为脱敏值 */
   const load = useCallback(async () => {
@@ -121,6 +202,27 @@ const DeptConfig: React.FC = () => {
         agentic_recheck_threshold: agentic?.recheck_threshold ?? 0.55,
         agentic_abstain_threshold: agentic?.abstain_threshold ?? 0.25,
       });
+      // 图片摘要（后端返回全局默认 + 本部门覆盖的合并值）
+      const img = (res.data as unknown as {
+        image_summary?: ImageSummaryConfig;
+        vision_options?: Array<{ name: string; model: string }>;
+      });
+      setVisionOptions(img.vision_options ?? []);
+      const is = img.image_summary ?? {};
+      const opts = is.options ?? {};
+      imgForm.setFieldsValue({
+        img_model: is.model ?? '',
+        img_output_format: is.output_format ?? 'fields',
+        img_text_max_chars: is.text_max_chars ?? 200,
+        img_max_images: is.max_images ?? 50,
+        img_opt_label_type: opts.label_type ?? true,
+        img_opt_read_text: opts.read_text ?? true,
+        img_opt_describe_scene: opts.describe_scene ?? true,
+        img_opt_describe_layout: opts.describe_layout ?? false,
+        img_prompt: is.prompt ?? '',
+      });
+      // 部门没配过提示词（空串）→ 交给实时生成填默认模板；配过则视为已自定义
+      setImgPromptTouched(!!(is.prompt ?? ''));
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '加载本部门配置失败');
     } finally {
@@ -185,8 +287,36 @@ const DeptConfig: React.FC = () => {
     }
   };
 
-  const saveRetrieval = async () => {
-    const vals = await retrForm.validateFields();
+  const saveImgSummary = async () => {
+    const vals = await imgForm.validateFields();
+    setSavingImg(true);
+    try {
+      // 图片摘要段（部门可覆盖）：空 model = 用超管的默认模型，
+      // 空 prompt = 用内置默认模板（后端 build_prompt 兜底）
+      await updateChatSettings({
+        image_summary: {
+          model: vals.img_model ?? '',
+          prompt: vals.img_prompt ?? '',
+          output_format: vals.img_output_format ?? 'fields',
+          text_max_chars: vals.img_text_max_chars ?? 200,
+          max_images: vals.img_max_images ?? 50,
+          options: {
+            label_type: vals.img_opt_label_type ?? true,
+            read_text: vals.img_opt_read_text ?? true,
+            describe_scene: vals.img_opt_describe_scene ?? true,
+            describe_layout: vals.img_opt_describe_layout ?? false,
+          },
+        },
+      });
+      message.success('图片摘要配置已保存');
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '保存失败');
+    } finally {
+      setSavingImg(false);
+    }
+  };
+
+  const saveRetrieval = async () => {    const vals = await retrForm.validateFields();
     setSavingRetr(true);
     try {
       // 检索参数 + Agentic 决策层（均为部门可覆盖段，后端白名单校验）
@@ -444,6 +574,126 @@ const DeptConfig: React.FC = () => {
         </Form>
       ),
     },
+    {
+      key: 'image_summary',
+      label: (
+        <Space>
+          <Tag color="purple">图片摘要</Tag>
+          图片摘要生成
+          <span style={{ color: '#8c8c8c', fontSize: 12, fontWeight: 400 }}>
+            解析时勾选才生效：把图里的文字读进正文，让证照/扫描件能被检索
+          </span>
+        </Space>
+      ),
+      extra: saveBtn(savingImg, () => void saveImgSummary()),
+      children: (
+        <Form form={imgForm} layout="vertical">
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="模型由超级管理员在「系统配置 → 图片解析模型」里维护，这里只选用哪个；提示词留空则用内置默认模板。"
+          />
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item name="img_model" label="图片解析模型"
+                extra="留空 = 用超管设的默认模型">
+                <Select allowClear placeholder="跟随默认"
+                  options={visionOptions.map(v => ({
+                    value: v.name,
+                    label: v.model ? `${v.name}（${v.model}）` : v.name,
+                  }))} />
+              </Form.Item>
+            </Col>
+            <Col span={imgFmt === 'brief' ? 8 : 6}>
+              <Form.Item name="img_output_format" label="输出格式"
+                extra="固定字段的检索命中率更高；简介不读图中文字">
+                <Select options={[
+                  { value: 'fields', label: '固定字段（类型/文字/画面）' },
+                  { value: 'prose', label: '自然段' },
+                  { value: 'brief', label: '一句话简介（不读图中文字）' },
+                ]} />
+              </Form.Item>
+            </Col>
+            {/* 「文字字段上限」是 fields 模式专有（截断"文字"字段）——
+                简介模式不读文字、没有该字段，隐藏 */}
+            {imgFmt !== 'brief' && (
+              <Col span={6}>
+                <Form.Item name="img_text_max_chars" label="文字字段上限"
+                  extra="超出截断">
+                  <InputNumber min={0} max={2000} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            )}
+            <Col span={imgFmt === 'brief' ? 8 : 6}>
+              <Form.Item name="img_max_images" label="单文档图数上限"
+                extra="0 = 不限">
+                <InputNumber min={0} max={1000} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          {/* 「摘要内容」选项只服务 fields/prose（按选项拼提示词）；简介模式
+              的输出由固定模板决定，勾选无意义，整块隐藏 */}
+          {imgFmt !== 'brief' && (
+            <Row gutter={16}>
+              <Col span={24}>
+                <Form.Item label="摘要内容（勾选后按选项生成提示词）"
+                  style={{ marginBottom: 8 }}>
+                  <Space size="large" wrap>
+                    <Form.Item name="img_opt_label_type" valuePropName="checked" noStyle>
+                      <Switch size="small" />
+                    </Form.Item>
+                    <span style={{ marginLeft: -14 }}>标注文件类型</span>
+                    <Form.Item name="img_opt_read_text" valuePropName="checked" noStyle>
+                      <Switch size="small" />
+                    </Form.Item>
+                    <span style={{ marginLeft: -14 }}>读出图中文字</span>
+                    <Form.Item name="img_opt_describe_scene" valuePropName="checked" noStyle>
+                      <Switch size="small" />
+                    </Form.Item>
+                    <span style={{ marginLeft: -14 }}>描述主体与场景</span>
+                    <Form.Item name="img_opt_describe_layout" valuePropName="checked" noStyle>
+                      <Switch size="small" />
+                    </Form.Item>
+                    <span style={{ marginLeft: -14 }}>描述布局与结构</span>
+                  </Space>
+                </Form.Item>
+              </Col>
+            </Row>
+          )}
+          <Row gutter={16}>
+            <Col span={24}>
+              {/* 提示词：标题行自己排（不用 Form.Item 的 label）——
+                  label 容器宽度不受控，marginLeft:auto 推不到右边 */}
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                <Space size={8}>
+                  <span style={{ fontWeight: 500 }}>提示词</span>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {imgPromptTouched
+                      ? '已自定义：改选项不再覆盖（点「恢复默认」还原）'
+                      : '由上面的选项实时生成，可直接微调'}
+                  </Text>
+                </Space>
+                <Button size="small" style={{ marginLeft: 'auto' }}
+                  onClick={() => {
+                    setImgPromptTouched(false);
+                    imgForm.setFieldsValue({
+                      img_opt_label_type: true, img_opt_read_text: true,
+                      img_opt_describe_scene: true,
+                      img_opt_describe_layout: false,
+                    });
+                    message.info('已按默认选项重新生成（保存后生效）');
+                  }}>恢复默认</Button>
+              </div>
+              <Form.Item name="img_prompt" style={{ marginBottom: 0 }}>
+                <Input.TextArea rows={6}
+                  onChange={() => setImgPromptTouched(true)} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      ),
+    },
   ];
 
   return (
@@ -462,9 +712,6 @@ const DeptConfig: React.FC = () => {
         message="本页配置对本部门所有成员生效；未设置的项沿用全局配置"
       />
       <Collapse defaultActiveKey={['llm']} items={items} />
-      <div style={{ marginTop: 12 }}>
-        <Button onClick={() => void load()}>重新加载</Button>
-      </div>
     </div>
   );
 };

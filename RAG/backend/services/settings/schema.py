@@ -34,10 +34,12 @@ from typing import Any, Dict, Optional, Tuple
 
 from backend.config import (AgenticConfig, ChatConfig, ChunkingConfig,
                             ContextualRetrievalConfig,
-                            DeepDocConfig, EmbeddingConfig, IngestionConfig,
+                            DeepDocConfig, EmbeddingConfig,
+                            ImageSummaryConfig, IngestionConfig,
                             LLMConfig, MinerUConfig, MinIOConfig, MySQLConfig,
                             RerankConfig, RetrievalConfig, ServiceConfig,
-                            VectorStorageConfig, build_default_config)
+                            VectorStorageConfig, VisionModelConfig,
+                            build_default_config)
 
 # ==================== 密钥与类型辅助（schema 反射依赖，定义于 schema 之前） ====================
 
@@ -394,6 +396,35 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
         overrides={
             "backend": {"strip": True},
             "milvus_uri": {"strip": True},
+        },
+        fill_section=True),
+    # 图片解析模型：多模态模型列表（list_structure，结构同 llm 段 =
+    # {models: [...], active: 索引}）。超管配多个、第一个为默认；部门管理员
+    # 只能"选一个"（按 name 匹配），故条目字段**不标 whitelist**——
+    # 连接信息与密钥不下放到部门。
+    "vision": _reflect_model_list_section(
+        "vision", VisionModelConfig,
+        item_overrides={
+            "name": {"cast": "str", "strip": True},
+            "base_url": {"strip": True},
+            "api_key": {"strip": True, "condition": "secret_truthy"},
+            "model": {"strip": True},
+            "timeout": {"condition": "not_none"},
+        }),
+    # 图片摘要：部门可覆盖"选哪个模型 + 提示词 + 输出格式 + 两个上限"。
+    # 模型连接信息不在这里（在 vision 段，超管专管）；whitelist=True 的字段
+    # 自动进 /api/settings/chat 的部门白名单。
+    "image_summary": _reflect_section(
+        "image_summary", ImageSummaryConfig,
+        overrides={
+            "model": {"strip": True, "whitelist": True},
+            "prompt": {"strip": True, "whitelist": True},
+            "options": {"cast": "raw", "whitelist": True},
+            "output_format": {"strip": True, "whitelist": True},
+            "text_max_chars": {"condition": "not_none", "whitelist": True,
+                               "range": (0, 2000)},
+            "max_images": {"condition": "not_none", "whitelist": True,
+                           "range": (0, 1000)},
         },
         fill_section=True),
 }

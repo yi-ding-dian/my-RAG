@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -373,6 +373,42 @@ class VectorStorageConfig(BaseModel):
     milvus_uri: str = ""
 
 
+class VisionModelConfig(BaseModel):
+    """图片摘要使用的多模态模型条目
+
+    超管在「系统配置 → 图片解析模型」里可配**多个**（复用 llm 段的模型列表
+    结构：{models: [...], active: 索引}，第一个为默认）；部门管理员从列表里
+    **选一个**（按 name 匹配），但看不到也改不了连接信息与密钥。
+
+    - name: 显示名，部门据此选择（同段内应唯一）
+    - 其余字段与 LLMConfig 同构，走 OpenAI 兼容的多模态接口
+    """
+    name: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    timeout: float = 60.0
+
+
+class ImageSummaryConfig(BaseModel):
+    """图片摘要生成配置（部门可覆盖模型选择与提示词）
+
+    - model:  选中的模型 name（空 = 用列表第一个）
+    - prompt: 提示词（空 = 用内置默认模板）
+    - options: 结构化选项，勾选后自动生成 prompt；键为
+      read_text / describe_scene / label_type / describe_layout
+    - output_format: fields（固定字段，默认）/ prose（自然段）
+    - text_max_chars: 「文字」字段长度上限（仅 fields 模式，超出截断）
+    - max_images: 单文档摘要张数上限（0 = 不限）
+    """
+    model: str = ""
+    prompt: str = ""
+    options: Dict[str, bool] = Field(default_factory=dict)
+    output_format: str = "fields"
+    text_max_chars: int = 200
+    max_images: int = 50
+
+
 class ServiceConfig(BaseModel):
     """全部服务配置集合（阶段2 配置档案的完整形态）"""
     llm: LLMConfig
@@ -389,6 +425,8 @@ class ServiceConfig(BaseModel):
     mysql: MySQLConfig
     minio: MinIOConfig
     vector_store: VectorStorageConfig = Field(default_factory=VectorStorageConfig)
+    vision: VisionModelConfig = Field(default_factory=VisionModelConfig)
+    image_summary: ImageSummaryConfig = Field(default_factory=ImageSummaryConfig)
 
 
 settings = Settings()
@@ -465,6 +503,10 @@ def build_default_config() -> ServiceConfig:
             secure=settings.MINIO_SECURE,
             region=settings.MINIO_REGION,
         ),
+        # 图片摘要：出厂不预设模型（由超管在「系统配置 → 图片解析模型」里添加
+        # 多模态模型），部门从列表选一个并配提示词；未配置时解析不生成摘要
+        vision=VisionModelConfig(),
+        image_summary=ImageSummaryConfig(),
     )
 
 

@@ -36,6 +36,17 @@ class _TraceMixin:
         self._stage_since[doc_id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._stage_ms[doc_id] = time.perf_counter()
 
+    def _update_stage_text(self, doc_id: str, stage: str) -> None:
+        """只更新阶段**展示文案**（悬停进度可见），**不结算上一阶段耗时**
+
+        高频进度刷新专用（如"图片摘要（3/87）"）：若走 _set_stage，每刷新一次
+        都会往 trace 里 append 一条记录——几十上百张图会把入库轨迹撑爆。
+        阶段起始时间保持不变（悬停看到的仍是该阶段开始时刻），整个阶段的耗时
+        仍只记一条。
+        """
+        if doc_id in self._running:
+            self._stage[doc_id] = stage
+
     def _finalize_trace(self, doc_id: str) -> tuple[list, int, Optional[dict], str, str]:
         """任务结束生成入库轨迹（成功=当前阶段结掉；失败=当前阶段标记 failed）
 

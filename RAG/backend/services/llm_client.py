@@ -130,7 +130,10 @@ def get_llm_client(llm_cfg=None, timeout: Optional[float] = None) -> AsyncOpenAI
                        else float(cfg_dict.get("timeout") or 60))
         _client_cache[key] = AsyncOpenAI(
             base_url=cfg_dict.get("base_url", ""),
-            api_key=cfg_dict.get("api_key", ""),
+            # 本地服务（vLLM / LM Studio / Ollama）常不校验密钥，而 openai SDK
+            # 要求 api_key 非空（空串直接抛 Missing credentials）：空值兜底为
+            # 占位串，非空配置原样透传，语义不变。
+            api_key=cfg_dict.get("api_key") or "EMPTY",
             timeout=eff_timeout,
         )
     return _client_cache[key]

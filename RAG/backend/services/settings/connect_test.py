@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import time
+
 from backend.services.parsers.probes import (probe_deepdoc_sync, probe_embedding_sdk,
                                      probe_llm_sdk, probe_mineru_sync,
                                      probe_minio, probe_mysql,
@@ -27,6 +29,7 @@ DEEPDOC_TEST_TIMEOUT = 8.0
 MYSQL_TEST_TIMEOUT = 5.0
 MINIO_TEST_TIMEOUT = 5.0
 RERANK_TEST_TIMEOUT = 5.0
+VISION_TEST_TIMEOUT = 5.0
 
 
 class SettingsTester:
@@ -34,9 +37,16 @@ class SettingsTester:
 
     @staticmethod
     def _message(r: dict) -> dict:
-        """parsers.probes 结果 {ok, latency_ms, reason} → 对外 {ok, latency_ms, message}"""
-        return {"ok": r["ok"], "latency_ms": r["latency_ms"],
-                "message": f"{r['reason']}（耗时 {r['latency_ms']}ms）"}
+        """parsers.probes 结果 {ok, latency_ms, reason} → 对外 {ok, latency_ms, message}
+
+        skipped=True 原样透传：调用方据此把"未配置的可选功能"排除在
+        「全部就绪」判定之外（否则新建档案永远测不通过）。
+        """
+        out = {"ok": r["ok"], "latency_ms": r["latency_ms"],
+               "message": f"{r['reason']}（耗时 {r['latency_ms']}ms）"}
+        if r.get("skipped"):
+            out["skipped"] = True
+        return out
 
     @staticmethod
     def _append(r: dict, detail: str) -> dict:
@@ -60,6 +70,9 @@ class SettingsTester:
                 profile.get("vector_store") or {}),
             "rerank": self._test_rerank(
                 (profile.get("retrieval") or {}).get("rerank") or {}),
+            # 图片解析模型（多模态）：取激活条目探活
+            "vision": self._test_vision(
+                active_llm_item(profile.get("vision") or {})),
         }
 
     async def _test_vector_store(self, vs_cfg: dict) -> dict:
@@ -132,6 +145,40 @@ class SettingsTester:
                 RERANK_TEST_TIMEOUT,
                 float(rerank.get("timeout") or RERANK_TEST_TIMEOUT)))
         return self._message(self._append(r, str(rerank.get("base_url") or "")))
+
+    def _test_vision(self, item: dict) -> dict:
+        """图片解析模型探测：GET {base_url}/models 探活
+
+        **不试推图**是刻意的——推图要传图片、代价大；这里只确认服务可达，
+        真正的可用性由解析时的实际结果兜底（单图失败会跳过、不阻塞入库）。
+        未配置 → ok=False + 提示（与 rerank 的"尚未启用"语义一致）。
+        """
+        if not item or not item.get("base_url") or not item.get("model"):
+            # skipped：未配置是**可选功能的正常状态**，不算连接失败——
+            # 调用方的"全部就绪"判定应把它排除（否则新建档案永远测不通过）
+            return self._message({
+                "ok": False, "latency_ms": 0, "skipped": True,
+                "reason": "未配置图片解析模型（需先添加，图片摘要才可用）"})
+        t0 = time.time()
+        try:
+            import httpx
+
+            url = str(item["base_url"]).rstrip("/") + "/models"
+            with httpx.Client(timeout=VISION_TEST_TIMEOUT) as client:
+                resp = client.get(url, headers={
+                    "Authorization":
+                        f"Bearer {item.get('api_key') or 'EMPTY'}"})
+            ms = int((time.time() - t0) * 1000)
+            if resp.status_code >= 400:
+                r = {"ok": False, "latency_ms": ms,
+                     "reason": f"服务返回 HTTP {resp.status_code}"}
+            else:
+                r = {"ok": True, "latency_ms": ms, "reason": "连接正常"}
+        except Exception as e:
+            r = {"ok": False, "latency_ms": int((time.time() - t0) * 1000),
+                 "reason": str(e)[:120]}
+        target = f"{item.get('name') or ''} {item.get('model') or ''}".strip()
+        return self._message(self._append(r, target))
 
     async def _test_deepdoc(self, deepdoc: dict) -> dict:
         """RAGFlow 登录探测（RSA 加密密码 POST /v1/user/login，≤8s）"""

@@ -79,6 +79,7 @@ const buildUniformConfig = (
   regexPattern: string,
   contextualRetrieval: boolean,
   knowledgeGraph: boolean,
+  imageSummary: boolean,
 ): IngestConfig => {
   const config: IngestConfig = { method };
   if (method === 'parent_child') {
@@ -99,6 +100,7 @@ const buildUniformConfig = (
   }
   config.contextual_retrieval = contextualRetrieval;
   config.knowledge_graph = knowledgeGraph;
+  config.image_summary = imageSummary;
   return config;
 };
 
@@ -144,6 +146,8 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   const [regexPattern, setRegexPattern] = useState('');
   const [contextualRetrieval, setContextualRetrieval] = useState(false);
   const [knowledgeGraph, setKnowledgeGraph] = useState(false);
+  /** 图片摘要：解析后用多模态模型把图内文字读成描述回填正文（默认关） */
+  const [imageSummary, setImageSummary] = useState(false);
   // 文件选择（antd Upload 受控：beforeUpload 收集，禁止自动上传）
   const [files, setFiles] = useState<File[]>([]);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
@@ -160,6 +164,7 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
       setRegexPattern('');
       setContextualRetrieval(false);
       setKnowledgeGraph(false);
+      setImageSummary(false);
       setFiles([]);
       setFileList([]);
       setRunning(false);
@@ -242,7 +247,8 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
         }
       } else {
         config = buildUniformConfig(
-          method, regexPattern, contextualRetrieval, knowledgeGraph);
+          method, regexPattern, contextualRetrieval, knowledgeGraph,
+          imageSummary);
       }
       // 3) 触发入库（后台任务：parsing → ingested，列表轮询刷新）
       try {
@@ -383,6 +389,15 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
                   style={{ marginRight: 6 }}
                 />
                 知识图谱
+              </span>
+              <span>
+                <Switch
+                  size="small"
+                  checked={imageSummary}
+                  onChange={setImageSummary}
+                  style={{ marginRight: 6 }}
+                />
+                图片摘要
               </span>
             </Space>
             <Text type="secondary" style={{ fontSize: 12 }}>
