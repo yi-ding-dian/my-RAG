@@ -31,72 +31,23 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 import docx
 from docx.table import Table
 
+from backend.normative.ooxml import (
+    _IMG_DIR, _R_EMBED, _R_ID, _TAG_ABSTRACT_NUM, _TAG_ABSTRACT_NUM_ID,
+    _TAG_B, _TAG_BASED_ON, _TAG_BLIP, _TAG_BR, _TAG_CR, _TAG_FLD_SIMPLE,
+    _TAG_I, _TAG_ILVL, _TAG_IMAGEDATA, _TAG_INSTR_TEXT, _TAG_IS_LGL,
+    _TAG_LVL, _TAG_LVL_OVERRIDE, _TAG_LVL_TEXT, _TAG_NAME, _TAG_NUM,
+    _TAG_NUM_FMT, _TAG_NUM_ID, _TAG_NUM_PR, _TAG_NUM_STYLE_LINK,
+    _TAG_OUTLINE_LVL, _TAG_P, _TAG_PPR, _TAG_PSTYLE, _TAG_R, _TAG_RPR,
+    _TAG_SDT, _TAG_SDT_CONTENT, _TAG_START, _TAG_START_OVERRIDE,
+    _TAG_STYLE, _TAG_STYLE_ID, _TAG_STYLE_LINK, _TAG_T, _TAG_TAB, _TAG_TBL,
+    _TAG_VAL, _W_INSTR, _W_NS, _int_attr,
+    _styles_element as _styles_of,
+)
+from backend.normative.stamp import StampComposer
+
 logger = logging.getLogger(__name__)
 
-# ---- 命名空间标签（python-docx 的 qn() 不含 VML 映射，用字面 URI）----
-_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
-_V_NS = "urn:schemas-microsoft-com:vml"
-_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-# 绘图定位命名空间（wp:anchor 浮动图 / wp:inline 内嵌图的尺寸与位置）
-_WP_NS = ("http://schemas.openxmlformats.org/drawingml/2006/"
-          "wordprocessingDrawing")
-
-_TAG_P = f"{{{_W_NS}}}p"
-_TAG_TBL = f"{{{_W_NS}}}tbl"
-_TAG_R = f"{{{_W_NS}}}r"
-_TAG_T = f"{{{_W_NS}}}t"
-_TAG_TAB = f"{{{_W_NS}}}tab"
-_TAG_BR = f"{{{_W_NS}}}br"
-_TAG_CR = f"{{{_W_NS}}}cr"
-_TAG_PPR = f"{{{_W_NS}}}pPr"
-_TAG_RPR = f"{{{_W_NS}}}rPr"
-_TAG_STYLE = f"{{{_W_NS}}}style"
-_TAG_PSTYLE = f"{{{_W_NS}}}pStyle"
-_TAG_B = f"{{{_W_NS}}}b"
-_TAG_I = f"{{{_W_NS}}}i"
-_TAG_NUM_PR = f"{{{_W_NS}}}numPr"
-_TAG_NUM_ID = f"{{{_W_NS}}}numId"
-_TAG_ILVL = f"{{{_W_NS}}}ilvl"
-_TAG_OUTLINE_LVL = f"{{{_W_NS}}}outlineLvl"
-_TAG_INSTR_TEXT = f"{{{_W_NS}}}instrText"
-_TAG_FLD_SIMPLE = f"{{{_W_NS}}}fldSimple"
-_TAG_SDT = f"{{{_W_NS}}}sdt"
-_TAG_SDT_CONTENT = f"{{{_W_NS}}}sdtContent"
-_TAG_BLIP = f"{{{_A_NS}}}blip"
-_TAG_IMAGEDATA = f"{{{_V_NS}}}imagedata"
-_TAG_ANCHOR = f"{{{_WP_NS}}}anchor"      # 浮动图片（如电子章：浮于文字上方）
-_TAG_INLINE = f"{{{_WP_NS}}}inline"      # 内嵌图片（随文字流，通常是被盖章的扫描件）
-_TAG_EXTENT = f"{{{_WP_NS}}}extent"      # 图片显示尺寸（EMU）
-_TAG_POS_H = f"{{{_WP_NS}}}positionH"
-_TAG_POS_V = f"{{{_WP_NS}}}positionV"
-_TAG_POS_OFFSET = f"{{{_WP_NS}}}posOffset"
-# 盖章合成：浮动图面积须小于底图的该比例才算"盖上去的小图"（避免把并排的
-# 两张大图误叠）；见 DocxParser._stamp_merge_markdown
-_STAMP_MAX_AREA_RATIO = 0.4
-_TAG_VAL = f"{{{_W_NS}}}val"
-_TAG_NAME = f"{{{_W_NS}}}name"
-_TAG_BASED_ON = f"{{{_W_NS}}}basedOn"
-_TAG_STYLE_ID = f"{{{_W_NS}}}styleId"
-_TAG_ABSTRACT_NUM = f"{{{_W_NS}}}abstractNum"
-_TAG_ABSTRACT_NUM_ID = f"{{{_W_NS}}}abstractNumId"
-_TAG_NUM = f"{{{_W_NS}}}num"
-_TAG_LVL = f"{{{_W_NS}}}lvl"
-_TAG_LVL_OVERRIDE = f"{{{_W_NS}}}lvlOverride"
-_TAG_START = f"{{{_W_NS}}}start"
-_TAG_START_OVERRIDE = f"{{{_W_NS}}}startOverride"
-_TAG_NUM_FMT = f"{{{_W_NS}}}numFmt"
-_TAG_LVL_TEXT = f"{{{_W_NS}}}lvlText"
-_TAG_IS_LGL = f"{{{_W_NS}}}isLgl"
-_TAG_NUM_STYLE_LINK = f"{{{_W_NS}}}numStyleLink"
-_TAG_STYLE_LINK = f"{{{_W_NS}}}styleLink"
-
-_R_EMBED = f"{{{_R_NS}}}embed"
-_R_ID = f"{{{_R_NS}}}id"
-_W_INSTR = f"{{{_W_NS}}}instr"
-
-# 图片引用目录：与 MinerU 产物一致（下游按 basename 匹配替换为鉴权 URL）
-_IMG_DIR = "images"
+# OOXML 命名空间与标签常量见 ooxml.py（与 stamp.py 共用）
 
 # 段落内需要递归下钻的行内容器（w:del 等删除修订不在其中：修订删除的内容
 # 按"最终稿"语义不输出，w:delText 不是 w:t 也不会被采到）
@@ -151,19 +102,6 @@ _EXT_BY_CONTENT_TYPE = {
     "image/svg+xml": "svg",
     "image/webp": "webp",
 }
-
-
-def _int_attr(element, attr: str = _TAG_VAL) -> Optional[int]:
-    """取元素属性的整数（元素缺失/非数字 → None，编号属性异常不影响整篇）"""
-    if element is None:
-        return None
-    raw = element.get(attr)
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
 
 
 def _format_chinese(n: int) -> str:
@@ -566,15 +504,13 @@ class _DocxParser:
         # 合并单元格（rowspan）会按矩形网格重复渲染同一个 tc，图片只在其
         # 首次出现的位置输出一次（避免一张图被引用多次，引用数与图片数对齐）
         self._imaged_tcs: set = set()
+        # 盖章合成（含页面/段落度量的换算，见 stamp.py）；共享 images 列表
+        self._stamp = StampComposer(self.doc, self.images)
 
     # ---- 包内部件 ----
 
     def _styles_element(self):
-        try:
-            return self.doc.styles.element
-        except Exception as exc:  # 样式部件缺失（损坏文件）不影响正文解析
-            logger.warning("styles.xml 读取失败: %s", exc)
-            return None
+        return _styles_of(self.doc)
 
     def _numbering_element(self):
         try:
@@ -612,7 +548,10 @@ class _DocxParser:
         return _EXT_BY_CONTENT_TYPE.get(content_type.lower(), "png")
 
     def _image_refs(self, container, allow_images: bool) -> Iterator[str]:
-        """容器（run）内全部图片引用（按 XML 顺序：drawing 的 blip + VML）"""
+        """容器（run）内全部图片引用（按 XML 顺序：drawing 的 blip + VML）
+
+        已被拼进合成画布的底图（StampComposer.consumed）跳过，避免重复输出。
+        """
         if not allow_images:
             return
         for element in container.iter():
@@ -622,7 +561,7 @@ class _DocxParser:
                 rid = element.get(_R_ID)
             else:
                 continue
-            if not rid:
+            if not rid or rid in self._stamp.consumed:
                 continue
             name = self._image_name(rid)
             if name:
@@ -744,104 +683,17 @@ class _DocxParser:
             else _wrap_emphasis(fragment[1], fragment[2], fragment[3])
             for fragment in fragments)
 
-    # ---- 盖章合成：浮动图 + 同段内嵌图 → 一张 ----
-
-    @staticmethod
-    def _blip_rid(container) -> Optional[str]:
-        """容器内首个图片引用 ID（a:blip 的 r:embed / VML 的 r:id）"""
-        for element in container.iter():
-            if element.tag == _TAG_BLIP:
-                rid = element.get(_R_EMBED)
-            elif element.tag == _TAG_IMAGEDATA:
-                rid = element.get(_R_ID)
-            else:
-                continue
-            if rid:
-                return rid
-        return None
-
-    def _blob_of(self, rid: str) -> Optional[bytes]:
-        """关系 ID → 图片二进制（外链图片无 blob → None）"""
-        part = self.doc.part.related_parts.get(rid)
-        return getattr(part, "blob", None) or None
+    # ---- 盖章合成（实现见 stamp.StampComposer）----
 
     def _stamp_merge_markdown(self, p_element) -> Optional[str]:
-        """同段落「浮动图 + 内嵌图」合成一张（还原盖章效果），返回图片引用
+        """盖章合成：把浮动章叠到内嵌底图上，返回图片引用
 
-        背景：电子章是**浮动图片**（wp:anchor，浮于文字上方），通常与被盖章的
-        扫描件（wp:inline）落在同一段落。逐图输出会让两者分家（章一张、底图
-        一张），这里按 anchor 的 posOffset 把章叠加到底图上，产出**一张**合成图。
-
-        保守边界（任一不满足即返回 None → 走原逐图输出，绝不比现状更差）：
-        - 段落内恰好 1 个 anchor + 1 个 inline；
-        - 参照系为 column/paragraph（可换算为相对图片的坐标；page/margin
-          需要完整页面布局，算不了）；
-        - 章的面积明显小于底图（是"盖上去的小图"，避免把并排大图叠一起）；
-        - 两张图都能被 PIL 解码（WMF/EMF 等矢量格式放弃）。
+        单图且章不越出底图走原有实现（与历史版本行为一致）；章越出底图、或
+        同段落多图时改走「拼接画布」——把章覆盖到的底图纵向拼成一张再叠章，
+        还原 Word 浮动图层能连续跨过图间空白的观感。两条路径的保守边界、
+        参照系换算等实现细节见 stamp.StampComposer。
         """
-        anchors = [el for el in p_element.iter() if el.tag == _TAG_ANCHOR]
-        inlines = [el for el in p_element.iter() if el.tag == _TAG_INLINE]
-        if len(anchors) != 1 or len(inlines) != 1:
-            return None
-        anchor, inline = anchors[0], inlines[0]
-        ph, pv = anchor.find(_TAG_POS_H), anchor.find(_TAG_POS_V)
-        if ph is None or pv is None:
-            return None
-        if (ph.get("relativeFrom") != "column"
-                or pv.get("relativeFrom") != "paragraph"):
-            return None
-        try:
-            off_h = int(ph.findtext(_TAG_POS_OFFSET) or 0)
-            off_v = int(pv.findtext(_TAG_POS_OFFSET) or 0)
-            a_ext, i_ext = anchor.find(_TAG_EXTENT), inline.find(_TAG_EXTENT)
-            if a_ext is None or i_ext is None:
-                return None
-            a_cx, a_cy = int(a_ext.get("cx")), int(a_ext.get("cy"))
-            i_cx, i_cy = int(i_ext.get("cx")), int(i_ext.get("cy"))
-        except (TypeError, ValueError):
-            return None
-        if min(a_cx, a_cy, i_cx, i_cy) <= 0:
-            return None
-        if a_cx * a_cy > i_cx * i_cy * _STAMP_MAX_AREA_RATIO:
-            return None
-        a_rid, i_rid = self._blip_rid(anchor), self._blip_rid(inline)
-        if not a_rid or not i_rid:
-            return None
-        merged = self._compose_stamp(self._blob_of(i_rid),
-                                     self._blob_of(a_rid),
-                                     a_cx, a_cy, i_cx, i_cy, off_h, off_v)
-        if merged is None:
-            return None
-        name = f"image{len(self.images) + 1}.jpg"
-        self.images.append({"name": name, "data": merged})
-        return f"![]({_IMG_DIR}/{name})"
-
-    @staticmethod
-    def _compose_stamp(base_blob: Optional[bytes], stamp_blob: Optional[bytes],
-                       st_cx: int, st_cy: int, base_cx: int, base_cy: int,
-                       off_h: int, off_v: int) -> Optional[bytes]:
-        """把章按 docx 的显示比例叠加到底图上（EMU 尺寸 → 像素等比换算）
-
-        失败一律返回 None（格式不支持/解码异常等），由调用方回退原输出。
-        """
-        if not base_blob or not stamp_blob:
-            return None
-        try:
-            import io as _io
-
-            from PIL import Image
-            base = Image.open(_io.BytesIO(base_blob)).convert("RGBA")
-            stamp = Image.open(_io.BytesIO(stamp_blob)).convert("RGBA")
-            # EMU → 像素：以底图实际像素 / 其 docx 显示尺寸为比例尺
-            sx, sy = base.width / base_cx, base.height / base_cy
-            stamp = stamp.resize((max(1, int(st_cx * sx)),
-                                  max(1, int(st_cy * sy))), Image.LANCZOS)
-            base.alpha_composite(stamp, (int(off_h * sx), int(off_v * sy)))
-            out = _io.BytesIO()
-            base.convert("RGB").save(out, format="JPEG", quality=88)
-            return out.getvalue()
-        except Exception:
-            return None
+        return self._stamp.merge_markdown(p_element)
 
     @staticmethod
     def _run_texts(run) -> Iterator[str]:
