@@ -754,8 +754,10 @@ async def get_document(kb_id: str, doc_id: str,
 
     - chunks: 完整切块列表 [{text, index, char_start, char_end}]（来源 chunks_meta，
       偏移相对 full_text；历史数据无 chunks_meta 时用 chunk_preview 兜底，偏移 -1）
-    - full_text: 解析后全文（data/parsed/{doc_id}.md，入库时写的是替换图片引用
-      后的文本，偏移以该文本为基准）；chunk_preview 保留兼容
+    - full_text: 解析后全文（data/parsed/{doc_id}.md，入库时写的是替换图片
+      引用**并插入图片摘要**后的定稿文本——与切块输入是同一份，偏移以该文本
+      为基准；两者一旦不同步，本接口返回的 chunks 就会与 full_text 错位）；
+      chunk_preview 保留兼容
     """
     await kb_or_404(db, kb_id, user)
     doc = _get_doc_or_404(kb_id, doc_id)

@@ -358,8 +358,7 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 0.5) 轨迹起点（准备中：含参数解析/探测/切换，任务初始化耗时）
         self._set_stage(doc_id, "准备中")
         try:
-            # 2) 解析阶段（下载 → 探测降级 → 解析 → 取消检查点1 →
-            #    图片上传 → 落盘）
+            # 2) 解析阶段（下载 → 探测降级 → 解析 → 取消检查点1 → 图片上传）
             self._set_stage(doc_id, "解析文档")
             text, images, parse_method = await self._stage_parse(
                 doc, doc_id, parser_config, probe)
@@ -370,6 +369,13 @@ class IngestionService(_TraceMixin, _ImageMixin):
                 self._set_stage(doc_id, "图片摘要")
                 text = await self._stage_image_summary(
                     doc, doc_id, text, images)
+            # 2.6) 全文定稿落盘 data/parsed/{doc_id}.md
+            # **必须排在所有 text 改写之后、切块之前**：该文件是前端切片详情
+            # 右栏原文的基准，而 chunk 偏移基于切块输入——两者一旦不是同一份
+            # 文本，右栏就会从差异处起逐块漂移（图片摘要曾插在落盘之后，
+            # 见 record.md 2026-09-14 17:25）。新增任何改 text 的步骤，
+            # 只能加在本行之上
+            doc_svc.get_parsed_path(doc).write_text(text, encoding="utf-8")
             # 3) 切块阶段（QA 规范性检测 → 切块 → 父标题前缀）
             self._set_stage(doc_id, "切块")
             stage = await self._stage_chunk(
@@ -443,7 +449,10 @@ class IngestionService(_TraceMixin, _ImageMixin):
     async def _stage_parse(self, doc, doc_id: str, parser_config: dict,
                            probe) -> Tuple[str, str]:
         """解析阶段：下载原始文件 → 探测降级 → 解析 → 取消检查点1 →
-        图片上传 → 落盘；返回 (text, parse_method)。
+        图片上传；返回 (text, images, parse_method)。
+
+        **不落盘**：产物还要经图片摘要改写，全文定稿落盘在 _ingest 2.6 步
+        （所有 text 改写之后、切块之前），保证"落盘文本 == 切块输入"。
 
         parser_config 原地修改（降级说明/实际引擎随文档元数据持久化）；
         解析器调用失败包装 ParserUnavailableError（消息 = 原始异常文本，
@@ -554,23 +563,21 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 表格内 <img> 的 src 已是代理 URL 原样保留）。目的：入库内容
         # token 更省、LLM 可读性更高（不会把 <table><tr><td> 标签流
         # 原样输出给用户）；非表格文本不动，无 HTML 表格时零开销。
-        # 转换后落盘，预览/切块/检索共用干净文本。
+        # 转换结果直接进入切块输入，预览/切块/检索共用干净文本。
         text = html_tables_to_pipe(text)
 
         # 2.9) 上下标标签清洗（MinerU 误识别的 <sub>/<sup> 去标签留文字）：
         # PDF 无上下标语义，MinerU 按字号+基线推断，标题字体/全角引号等
         # 坐标不齐时大量误判（编号判成下标、标题判成上标、引号判成下标）。
-        # 落盘前清洗保证全文/切块/偏移一致
+        # 切块前清洗保证全文/切块/偏移一致
         # （切块偏移契约不允许切块阶段改文本）。
         text = strip_subsup_tags(text)
 
-        # 3) 解析文本落盘 data/parsed/{doc_id}.md
-        # （新流程无 parsed 中间态：解析+入库一步完成，直接到 ingested）
-        parsed_path = doc_svc.get_parsed_path(doc)
-        parsed_path.write_text(text, encoding="utf-8")
         logger.info("解析完成: %s (%s) %d 字符%s", doc.original_name,
                     parse_method, len(text),
                     f"，图片 {len(images)} 张" if images else "")
+        # 本阶段不落盘：产物还要经图片摘要改写（_ingest 2.5 步），全文定稿
+        # 落盘统一排在"所有 text 改写之后、切块之前"（_ingest 2.6 步）
         # images 一并返回：图片摘要阶段要用它的字节（见 _stage_image_summary）
         return text, images, parse_method
 
