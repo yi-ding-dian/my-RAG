@@ -17,7 +17,7 @@ import { Card, Typography } from 'antd';
  *     onClick={...}
  *   />
  *
- * 样式（.gen-card-*）与 kb-card 同构，见 index.css：radius-lg、hover
+ * 样式（.gen-card-*）与 kb-card 同构，见 styles/cards.css：radius-lg、hover
  * 上浮 + 主色边框 + 加深阴影；图标按名称 hash 取 8 组品牌渐变。
  */
 

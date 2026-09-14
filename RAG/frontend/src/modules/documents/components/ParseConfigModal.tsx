@@ -604,7 +604,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   ];
 
   // 固定高度弹窗（内容长 → 88vh 档）：头部/关闭按钮固定，滚动只在内容区
-  // 内部（滚动结构修复见 index.css .parse-config-modal，与
+  // 内部（滚动结构修复见 styles/modals.css .parse-config-modal，与
   // .chunk-detail-modal 同一套规则）
   return (
     <>

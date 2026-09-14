@@ -4,8 +4,8 @@
  * - ThemeProvider + useTheme：暴露 { preset, isDark, setPreset }，业务组件零感知切换
  * - 偏好持久化：localStorage.myrag.theme = preset key 字符串；
  *   旧版存储值 'light'/'dark' 自动映射到 classic-blue / midnight-blue（兼容升级）
- * - 同步 documentElement[data-theme]（index.css 的 [data-theme='dark'] 规则依赖，两个深色预设都生效）
- *   以及 CSS 变量（--brand-primary 等 6 个，供 index.css 自绘区域/组件 inline 取色跟随主题）
+ * - 同步 documentElement[data-theme]（styles/dark.css 的 [data-theme='dark'] 规则依赖，两个深色预设都生效）
+ *   以及 CSS 变量（--brand-primary 等 6 个，供 styles/ 各分区自绘区域与组件 inline 取色跟随主题）
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { theme as antdTheme, type ThemeConfig } from 'antd';
@@ -183,7 +183,7 @@ const hexToRgba = (hex: string, alpha: number): string => `rgba(${hexToRgb(hex)}
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [preset, setPresetState] = useState<ThemePreset>(resolveInitialPreset);
 
-  // 偏好持久化 + 同步 data-theme 与 CSS 变量（index.css 自绘区域与 inline 取色依赖）
+  // 偏好持久化 + 同步 data-theme 与 CSS 变量（styles/ 下自绘区域与 inline 取色依赖）
   useEffect(() => {
     try {
       localStorage.setItem(THEME_KEY, preset.key);

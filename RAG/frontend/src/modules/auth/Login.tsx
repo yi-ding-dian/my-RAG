@@ -5,6 +5,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../shared/auth/AuthContext';
 import { APP_VERSION } from '../../constants';
 import { asApiError } from '../../shared/api/client';
+// 登录页专属样式（含自带的 --login-* 暗色变量），与组件同目录便于对照修改
+import './login.css';
 
 interface LoginFormValues {
   username: string;
@@ -17,7 +19,7 @@ const REMEMBER_KEY = 'myrag.remembered_username';
 /**
  * 登录页书籍装饰数据（纯 CSS 绘制，无图片）。
  * 每本 = 一个完整圆角长条书脊，饱满不透明彩色；h 为书脊高度(px)，
- * fg 为书名前景色（按书脊明度选白/深）。height 总和需 ≤ 书架容器高度（见 index.css）。
+ * fg 为书名前景色（按书脊明度选白/深）。height 总和需 ≤ 书架容器高度（见 styles/login.css）。
  */
 const SPINE_BOOKS_LEFT = [
   { name: '员工手册', color: '#4f46e5', fg: '#ffffff', h: 92 },

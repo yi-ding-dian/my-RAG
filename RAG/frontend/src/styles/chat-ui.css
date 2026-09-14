@@ -1,0 +1,67 @@
+/* ============================================================
+   Chat 输入区容器（波3）：聚焦时主色描边 + 光晕
+   （border 由内联 token 控制，CSS 用 box-shadow 模拟 1px 主色边，避免 !important 覆盖内联）
+   ============================================================ */
+.chat-input-box {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.chat-input-box:focus-within {
+  box-shadow: 0 0 0 1px var(--brand-primary, #2563eb), 0 0 0 4px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+}
+
+/* ============================================================
+   消息列表"最新消息"悬浮按钮：离开底部时淡入，回到底部淡出
+   透明胶囊 + 消息列表底部居中（输入框正上方），不遮挡消息与输入框
+   （常驻 DOM，class 切换 opacity/transform 过渡，避免闪烁）
+   ============================================================ */
+.chat-scroll-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--brand-primary, #2563eb);
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.1);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  transform: translate(-50%, 8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.chat-scroll-bottom--visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+.chat-scroll-bottom:hover {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.6);
+}
+
+/* ============================================================
+   RAGAS 任务行尾"查看报告"（波3）：默认透明，行 hover 时浮现
+   ============================================================ */
+.ragas-row-action {
+  color: var(--brand-primary, #2563eb);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.ant-table-tbody > tr:hover .ragas-row-action {
+  opacity: 1;
+}
+[data-theme='dark'] .ragas-row-action {
+  color: var(--brand-primary-soft, #93c5fd);
+}
+

@@ -1,0 +1,42 @@
+/* my-RAG 全局样式入口：只做汇总，不写规则。
+ *
+ * **顺序即层叠优先级**（后定义覆盖前定义），改动前先想清楚：
+ *   base → 各模块 → dark（覆盖前面各模块的暗色规则）→ 其余模块
+ * 新增分区请插在合适位置，别随手追加到末尾——CSS 没有作用域隔离，
+ * 顺序错了就是"某个页面突然变样"，且很难反查。
+ *
+ * **什么放这里**：
+ *   - 覆盖 antd 或跨模块共享的规则（dark.css 的 [data-theme='dark'] .kb-card
+ *     同时服务多个模块）
+ *   - 多个组件共用的样式 —— 判断依据是**类名有几个组件在用**，不是"看着像
+ *     属于某个页面"：smart-parse.css 挂在"智能引导"名下，但
+ *     .parse-config-modal 被 SmartParseWizard / ParseConfigModal /
+ *     DocumentModals 三个组件共用，挪到其中任何一个旁边都会让另两个在
+ *     特定路径下丢样式；
+ *   - 全局基础与变量（base.css）
+ *
+ * **什么不放这里**：真正只服务一个组件的样式，跟着组件走
+ * （`import './xxx.css'`），改组件时样式就在旁边。判断标准同样是
+ * "类名是否只有它用"——目前符合的是 modules/auth/login.css
+ * （类名全是 .login-*，只有 Login.tsx 用，连暗色变量都是自带的一整套）。
+ *
+ * 分区速览（改哪块就开哪个文件）：
+ *   base         全局基础：滚动条、页面过渡 + 卡片变量 --card-*
+ *   chat         消息气泡 + 文档上传条 + Markdown 表格
+ *   knowledge    知识库卡片网格 + 日志页
+ *   dark         [data-theme='dark'] 跨模块覆盖（位置敏感，见上）
+ *   chat-ui      Chat 输入区 + 「最新消息」悬浮按钮 + RAGAS 任务行
+ *   modals       固定高度弹窗（切块详情/引用溯源/解析配置）+ 图片放大
+ *   animations   RAGAS 魔法注入动画 + 表格列宽拖拽 + 引用高亮
+ *   smart-parse  智能引导弹窗容器 + .spw-*（**三组件共用**，见上）
+ *   cards        通用卡片库 .gen-card + 文档卡片网格
+ */
+@import './base.css';
+@import './chat.css';
+@import './knowledge.css';
+@import './dark.css';
+@import './chat-ui.css';
+@import './modals.css';
+@import './animations.css';
+@import './smart-parse.css';
+@import './cards.css';

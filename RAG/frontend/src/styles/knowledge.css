@@ -1,0 +1,286 @@
+/* ============================================================
+   知识库卡片网格（KnowledgeBases 页：表格 → 卡片）
+   ============================================================ */
+.kb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+/* 知识库卡片：radius-lg、hover 上浮 + 阴影 + 主色边框（参照 KnowFlow） */
+.kb-card.ant-card {
+  border-radius: var(--card-radius);
+  border-color: #e5eaf2;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.05);
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+.kb-card .ant-card-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 160px;
+}
+.kb-card.ant-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 10px 26px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.16);
+}
+.kb-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.kb-card__icon {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 3px 8px rgba(16, 24, 40, 0.18);
+}
+.kb-card__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+}
+/* 操作按钮：hover 卡片时显示（保留占位，避免布局跳动） */
+.kb-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+.kb-card.ant-card:hover .kb-card__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.kb-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  min-height: 22px;
+}
+/* 描述：2 行 clamp，无描述显示灰色占位 */
+.kb-card__desc {
+  flex: 1;
+  margin: 8px 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(15, 23, 42, 0.65);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+.kb-card__desc--empty {
+  color: rgba(15, 23, 42, 0.35);
+}
+.kb-card__footer {
+  padding-top: 10px;
+  border-top: 1px solid #f1f4f9;
+}
+/* 常显「进入文档管理」入口：主色小字 + hover 加深（H5 可发现性，不依赖 hover/触屏） */
+.kb-card__enter.ant-btn-link {
+  padding: 0;
+  height: 20px;
+  line-height: 20px;
+  font-size: 12px;
+  color: var(--brand-primary, #2563eb);
+  margin: 6px 0 2px;
+}
+.kb-card__enter.ant-btn-link:hover {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+/* 触屏设备（无 hover）：卡片顶部操作按钮常显，保证编辑/删除/重建可达 */
+@media (hover: none) {
+  .kb-card__actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.kb-card__footerTop {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.kb-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 14px;
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+/* 新建知识库 addCard：虚线卡片（canManage 可见） */
+.kb-add-card {
+  min-height: 160px;
+  border-radius: var(--card-radius);
+  border: 2px dashed #c3cfe0;
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.02);
+  color: var(--brand-primary, #2563eb);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.22s ease;
+}
+.kb-add-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.06);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+}
+
+/* ---------- 统计卡片（效果展示） ---------- */
+.stat-card {
+  border-radius: var(--card-radius);
+  overflow: hidden;
+  border: none !important;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+  position: relative;
+}
+.stat-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle at 85% 15%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 55%);
+}
+.stat-card--blue {
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+}
+.stat-card--green {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+}
+.stat-card--purple {
+  background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%);
+}
+.stat-card--orange {
+  background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+}
+.stat-card--blue .stat-icon {
+  background: #2563eb;
+}
+.stat-card--green .stat-icon {
+  background: #16a34a;
+}
+.stat-card--purple .stat-icon {
+  background: #7c3aed;
+}
+.stat-card--orange .stat-icon {
+  background: #f59e0b;
+}
+.stat-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(16, 24, 40, 0.16);
+}
+
+/* ---------- 统计分析概览：摘要卡（点击整卡下钻详情页） ---------- */
+.analytics-nav-card.ant-card {
+  cursor: pointer;
+  transition: border-color 0.22s ease, box-shadow 0.22s ease;
+}
+.analytics-nav-card.ant-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 8px 22px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+}
+/* 卡标题旁 hover 提示「查看详情」淡入（占位保留避免布局跳动） */
+.analytics-nav-hint {
+  color: var(--brand-primary, #2563eb) !important;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.analytics-nav-card.ant-card:hover .analytics-nav-hint {
+  opacity: 1;
+}
+/* 触屏设备（无 hover）：提示常显 */
+@media (hover: none) {
+  .analytics-nav-hint {
+    opacity: 1;
+  }
+}
+
+/* ---------- 侧栏主体布局：antd 的 .ant-layout-sider-children 默认是 block（高度虽 100%
+   但内部无 flex 约束），Menu 的 flex:1 不生效、留白出不来。
+   改为 flex column 后：Logo/菜单/底部三块垂直排布，Menu(flex:1 + min-height:0) 撑开
+   中间留白并在菜单多时内部滚动，底部贴底不动（Sider height:100vh 由内联 style 保证） ---------- */
+.ant-layout-sider > .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- 侧边栏用户区 hover ---------- */
+.sider-user {
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition: background 0.18s ease;
+  cursor: default;
+}
+.sider-user:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.05);
+}
+
+/* ---------- 通用微调 ---------- */
+.ant-menu-item {
+  font-weight: 500;
+}
+.ant-typography .anticon {
+  vertical-align: -0.125em;
+}
+
+/* ============================================================
+   日志查看页 Tabs（Logs.tsx）：页面固定撑满视口后，Tabs 链
+   （.ant-tabs → content-holder → content → tabpane）flex 撑满，
+   让 Tab 内容区（筛选栏 flexShrink:0 + 表格/列表 flex:1）有确定
+   高度，滚动条落在内容区内部而非整个页面。
+   注意：只对 .ant-tabs-tabpane-active 生效——非激活 tabpane 的
+   display:none（antd 隐藏逻辑）不能被覆盖，否则两个 Tab 同时渲染
+   ============================================================ */
+.page-tabs.ant-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.page-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.page-tabs .ant-tabs-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.page-tabs .ant-tabs-tabpane-active {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+

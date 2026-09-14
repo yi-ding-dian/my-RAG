@@ -1,0 +1,68 @@
+/* ============================================================
+   固定高度弹窗（切块详情 / 引用溯源 / 解析配置 / 配置档案）：
+   头部不随滚动、滚动条贴在内容区内部的滚动结构修复
+   ============================================================
+   背景：antd v5（rc-dialog）的 Modal DOM 结构为
+     .ant-modal-wrap（fixed 全屏, overflow:auto ← 兜底滚动容器）
+       .ant-modal（style 的 top/height 在这里，overflow:visible）
+         div[tabindex]（rc-dialog 插入的 sentinel 中间层，高度 auto）
+           .ant-modal-content
+             .ant-modal-close / .ant-modal-header / .ant-modal-body
+   问题：content 的 height:100% 相对的不是 .ant-modal（确定高度），
+   而是 sentinel 层（height:auto = 被内容撑开的自然高度），百分比高度
+   因此解析为内容高度，body 的 flex:1 / overflow:auto 整条链失效。
+   内容超高 → .ant-modal 溢出（overflow:visible）→ 全屏 wrap 兜底滚动：
+   滚动条出现在浏览器窗口最右侧、标题/关闭按钮随滚动滚出视野。
+   修复：className（挂在 .ant-modal 上）把它变成 flex column 容器并裁掉
+   溢出（overflow:hidden），sentinel 层 flex:1 填满剩余高度，content 高度
+   随之确定，body 内部滚动恢复。依赖 rc-dialog 的 sentinel 结构
+   （第一个子元素），antd 5.x 系列结构稳定。
+   复用方式：新弹窗若需固定高度 + 头部固定，给 Modal 加 className 并
+   加入下方选择器列表，同时设置 style 的 top/height（参考
+   min(88vh, calc(100vh - 120px)) 模式）与 styles 的 content/header/body
+   flex 链（header flexShrink:0，body flex:1 + overflow:auto）。 */
+.chunk-detail-modal.ant-modal,
+.parse-config-modal.ant-modal,
+.profile-config-modal.ant-modal {
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+/* sentinel 中间层：作为 flex item 填满剩余高度（高度确定后 content 的
+   height:100% / flex:1 才能生效） */
+.chunk-detail-modal.ant-modal > div:first-child,
+.parse-config-modal.ant-modal > div:first-child,
+.profile-config-modal.ant-modal > div:first-child {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+/* content：在 sentinel 确定高度内 flex 撑满，不再依赖 height:100% */
+.chunk-detail-modal.ant-modal > div:first-child > .ant-modal-content,
+.parse-config-modal.ant-modal > div:first-child > .ant-modal-content,
+.profile-config-modal.ant-modal > div:first-child > .ant-modal-content {
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+/* ============================================================
+   图片点击放大（Lightbox）：MdImages 渲染的图片点击全屏查看
+   ============================================================ */
+.lightbox-overlay {
+  animation: lightbox-fade-in 0.2s ease;
+}
+@keyframes lightbox-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+/* 可放大图片：鼠标提示 + hover 轻微提亮（仅视觉，不影响布局/现有图片样式） */
+.md-image-zoom {
+  cursor: zoom-in;
+  transition: filter 0.15s ease;
+}
+.md-image-zoom:hover {
+  filter: brightness(1.08);
+}
+

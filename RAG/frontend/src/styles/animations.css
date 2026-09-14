@@ -1,0 +1,144 @@
+/* ============================================================
+   RAGAS 发起评估成功"魔法注入"动画：测试集飞向任务列表 + 光晕
+   ============================================================ */
+.eval-inject-wrap {
+  position: relative;
+}
+/* 注入动画：缩小 + 渐隐 + 向任务列表方向（右/下）位移，0.6s 轻微弹性 */
+.eval-inject-anim {
+  animation: eval-inject-away 0.6s cubic-bezier(0.4, 1.1, 0.5, 1) forwards;
+  will-change: transform, opacity;
+}
+@keyframes eval-inject-away {
+  0% {
+    transform: scale(1) translate(0, 0);
+    opacity: 1;
+  }
+  55% {
+    transform: scale(0.78) translate(9%, 5%);
+    opacity: 0.92;
+  }
+  100% {
+    transform: scale(0.58) translate(22%, 14%);
+    opacity: 0;
+  }
+}
+/* 魔法光晕：主色径向渐变圆，从测试集上方扩散 1 次（半透明，适配暗色） */
+.eval-glow {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    rgba(var(--brand-primary-rgb, 37, 99, 235), 0.34) 0%,
+    rgba(var(--brand-primary-rgb, 37, 99, 235), 0.15) 45%,
+    rgba(var(--brand-primary-rgb, 37, 99, 235), 0) 72%);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  animation: eval-glow-pulse 0.7s ease-out both;
+  will-change: transform, opacity;
+}
+@keyframes eval-glow-pulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.25);
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.1);
+    opacity: 0;
+  }
+}
+[data-theme='dark'] .eval-glow {
+  background: radial-gradient(circle,
+    rgba(99, 102, 241, 0.3) 0%,
+    rgba(99, 102, 241, 0.13) 45%,
+    rgba(99, 102, 241, 0) 72%);
+}
+
+/* 新任务行高亮：主色淡光呼吸 1.5s 渐退（class 2.6s 后移除） */
+.ragas-row-highlight > td {
+  animation: ragas-row-glow 1.5s ease-out;
+}
+@keyframes ragas-row-glow {
+  0% {
+    background-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.3);
+    box-shadow: inset 0 0 0 1px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.5);
+  }
+  55% {
+    background-color: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+/* 系统偏好减弱动画：禁用全部魔法动画（流程不受影响） */
+@media (prefers-reduced-motion: reduce) {
+  .eval-inject-anim,
+  .eval-glow,
+  .ragas-row-highlight > td {
+    animation: none !important;
+  }
+}
+
+/* 引用面板相关文本高亮：回答与引用文本重叠的部分（引用来源面板/Modal、
+   行内 [n] Tooltip 摘要、原文详情 ChunkCompareView——全局一处生效，三处共用）。
+   样式（用户指定：取消背景色，只保留绿色下划线）：
+   - 无背景（background: transparent，覆盖 <mark> UA 黄底）
+   - color: inherit 覆盖 <mark> UA color:black（不写会继承 UA 黑字，暗色
+     主题下不可读），文字色跟随所在容器正文色，保证可读
+   - 2px 绿色下划线（border-bottom 实现：偏移可控、不与汉字笔画粘连），
+     浅色 #16a34a / 暗色 #22c55e 提亮，两主题均醒目不刺眼
+   - 字重 500：下划线已足够区分，600 加粗在正文中偏重 */
+mark.citation-highlight {
+  background: transparent;
+  color: inherit;
+  font-weight: 500;
+  padding: 0;
+  border-bottom: 2px solid #16a34a;
+}
+[data-theme='dark'] mark.citation-highlight {
+  border-bottom-color: #22c55e;
+}
+
+/* 行内引用上标 [n]：醒目但克制——浅色用品牌深色（正文中可辨识），
+   暗色用品牌提亮色（暗背景上更亮）；字号 12 + 字重 700（原 11/600 偏小偏浅） */
+.citation-mark {
+  color: var(--brand-primary-deep, #1d4ed8);
+}
+[data-theme='dark'] .citation-mark {
+  color: var(--brand-primary-soft, #60a5fa);
+}
+
+/* 兜底防"荧光 mark"：antd Tooltip/任意容器内出现未带 .citation-highlight
+   类的 <mark>（UA 样式黄底黑字，暗色下刺眼）一律还原为普通文本，
+   高亮只能由 .citation-highlight 提供，杜绝第三方/UA 样式串扰 */
+.ant-tooltip mark:not(.citation-highlight),
+mark:not(.citation-highlight) {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+/* ===== 表格列宽拖拽（操作审计，antd 官方示例样式） ===== */
+.react-resizable {
+  position: relative;
+  background-clip: padding-box;
+}
+.react-resizable-handle {
+  position: absolute;
+  right: -5px;
+  bottom: 0;
+  z-index: 1;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+}
+

@@ -1,0 +1,64 @@
+/* ============================================================
+   my-RAG 全局样式（仅视觉装饰，不影响业务逻辑）
+   ============================================================ */
+
+/* ---------- 卡片/面板通用视觉参数 ----------
+   项目里"卡片状容器"很多（.gen-card / .kb-card / .spw-* 面板 / 统计卡 /
+   上传拖拽区…），尺寸参数以前在各处各写一遍 —— 同一个值抄 N 次，改一次
+   要翻 N 个文件。统一在这里定义，改圆角/内边距只改这一处。
+
+   覆盖范围仅**静态外观**；hover 上浮、交互态仍由各类自己写（那些是卡片间
+   真正的差异所在，不该收）。暗色值见 styles/dark.css（同优先级下后定义者
+   生效，故暗色必须在亮色之后）。 */
+:root {
+  --card-radius: 12px;
+  --card-pad: 12px 14px;
+  --card-bg: #f8fafc;
+  --card-border: 1px solid rgba(var(--brand-primary-rgb, 37, 99, 235), 0.10);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---------- 细滚动条（WebKit） ---------- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.32);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.55);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------- 页面切换淡入过渡 ---------- */
+.page-fade {
+  animation: pageFadeIn 0.24s ease both;
+}
+@keyframes pageFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+

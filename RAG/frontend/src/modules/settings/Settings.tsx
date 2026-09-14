@@ -885,7 +885,7 @@ const SettingsPage: React.FC = () => {
 
       {/* 新建/编辑弹窗：固定高度（7 个 Collapse 面板默认全展开，内容超高），
           头部/关闭按钮固定，滚动只在内容区内部（滚动结构修复见
-          index.css .profile-config-modal，与 .chunk-detail-modal 同一套规则） */}
+          styles/modals.css .profile-config-modal，与 .chunk-detail-modal 同一套规则） */}
       <AppModal
         dimension="resizable"
         defaultSize={{ w: 720, h: 560 }}

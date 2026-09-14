@@ -1,0 +1,146 @@
+/* ============================================================
+   暗色模式适配（[data-theme='dark']，覆盖自绘区域硬编码颜色）
+   AntD 组件本身由 darkAlgorithm 自动适配，仅以下自绘样式需要覆盖
+   ============================================================ */
+[data-theme='dark'] {
+  /* 消息气泡：助手白底 → 深色面板 */
+  --bubble-assistant-bg: #1e2430;
+  --bubble-assistant-border: #2e3646;
+  --bubble-assistant-color: rgba(229, 231, 235, 0.92);
+  /* 卡片/面板暗色底（对应 styles/base.css 的 --card-bg）。
+     只覆盖背景：边框的暗色提亮由 smart-parse.css 里针对 .spw-* 的那组规则
+     统一处理，这里若是也定 --card-border，会给未覆盖的卡片偷偷改边框色 */
+  --card-bg: color-mix(in srgb, var(--ant-color-bg-container, #141414) 90%, var(--brand-primary, #3b82f6) 10%);
+}
+[data-theme='dark'] .bubble-assistant {
+  background: var(--bubble-assistant-bg);
+  border-color: var(--bubble-assistant-border);
+  color: var(--bubble-assistant-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+[data-theme='dark'] .thinking-dots span {
+  background: #7c8aa0;
+}
+/* 引用来源入口：暗色下主色提亮保证可读，悬停再亮一档 */
+[data-theme='dark'] .source-trigger.ant-btn-link {
+  color: var(--brand-primary-soft, #60a5fa);
+}
+[data-theme='dark'] .source-trigger.ant-btn-link:hover {
+  color: var(--brand-primary-soft, #93c5fd);
+}
+/* 来源详情弹窗卡片：深色面板 + hover 主色提亮 */
+[data-theme='dark'] .source-card--modal {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: #2e3646;
+}
+[data-theme='dark'] .source-card--modal:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.18);
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+/* 表格斑马纹：浅底 → 半透明白 */
+[data-theme='dark'] .table-zebra tbody > tr:nth-child(even) > td {
+  background: rgba(255, 255, 255, 0.035);
+}
+[data-theme='dark'] .table-zebra tbody > tr:hover > td {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.18) !important;
+}
+/* 知识库卡片：深色面板 + 深阴影，hover 主色边框不变 */
+[data-theme='dark'] .kb-card.ant-card {
+  border-color: #2e3646;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+[data-theme='dark'] .kb-card.ant-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+[data-theme='dark'] .kb-card__desc {
+  color: rgba(229, 231, 235, 0.6);
+}
+[data-theme='dark'] .kb-card__desc--empty {
+  color: rgba(229, 231, 235, 0.3);
+}
+[data-theme='dark'] .kb-card__meta {
+  color: rgba(229, 231, 235, 0.55);
+}
+[data-theme='dark'] .kb-card__footer {
+  border-top-color: #2e3646;
+}
+[data-theme='dark'] .kb-add-card {
+  border-color: #3b4457;
+  background: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .kb-add-card:hover {
+  border-color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+}
+/* 文档上传 Dragger：浅底 → 深底 */
+[data-theme='dark'] .upload-zone .ant-upload-drag {
+  border-color: #2e3646;
+  background: rgba(255, 255, 255, 0.02);
+}
+[data-theme='dark'] .upload-zone .ant-upload-drag:hover {
+  border-color: var(--brand-primary, #2563eb);
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+[data-theme='dark'] .upload-inline__content {
+  color: rgba(229, 231, 235, 0.65);
+}
+[data-theme='dark'] .upload-inline__denied {
+  color: rgba(229, 231, 235, 0.45);
+  border-color: #2e3646;
+  background: rgba(255, 255, 255, 0.02);
+}
+/* 统计卡片（效果展示）：浅色渐变 → 深色渐变，白色光晕减弱 */
+[data-theme='dark'] .stat-card::before {
+  background-image: radial-gradient(circle at 85% 15%, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0) 55%);
+}
+[data-theme='dark'] .stat-card--blue {
+  background: linear-gradient(135deg, #1e3a8a 0%, #172554 100%);
+}
+[data-theme='dark'] .stat-card--green {
+  background: linear-gradient(135deg, #166534 0%, #14532d 100%);
+}
+[data-theme='dark'] .stat-card--purple {
+  background: linear-gradient(135deg, #5b21b6 0%, #4c1d95 100%);
+}
+[data-theme='dark'] .stat-card--orange {
+  background: linear-gradient(135deg, #9a3412 0%, #7c2d12 100%);
+}
+/* 会话列表项：hover/选中加深（浅蓝在深底上不可见） */
+[data-theme='dark'] .session-item:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.16);
+}
+[data-theme='dark'] .session-item--active {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.24) !important;
+}
+[data-theme='dark'] .session-item--active .ant-list-item-meta-title {
+  color: var(--brand-primary-soft, #93c5fd);
+}
+[data-theme='dark'] .sider-user:hover {
+  background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.14);
+}
+/* 侧栏底部主题切换按钮 hover 反馈 */
+[data-theme='dark'] .ant-btn-text:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+/* "最新消息"按钮：暗色下深色透明胶囊，主色提亮保证可读 */
+[data-theme='dark'] .chat-scroll-bottom {
+  background: rgba(30, 30, 30, 0.6);
+  border-color: rgba(var(--brand-primary-soft-rgb, 96, 165, 250), 0.4);
+  color: var(--brand-primary-soft, #93c5fd);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+[data-theme='dark'] .chat-scroll-bottom:hover {
+  background: rgba(30, 30, 30, 0.88);
+  border-color: rgba(var(--brand-primary-soft-rgb, 96, 165, 250), 0.65);
+}
+/* 滚动条：暗色下提亮 */
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+}
+[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+

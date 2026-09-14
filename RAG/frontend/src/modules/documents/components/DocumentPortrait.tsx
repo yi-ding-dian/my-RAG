@@ -42,7 +42,7 @@ const DENSITY_TAG: Record<string, { color: string; label: string }> = {
   high: { color: 'volcano', label: '高' },
 };
 
-/** 画像卡片：图标 + 标签 + 值区（spw-* 样式类在 index.css，向导与画像弹窗共用） */
+/** 画像卡片：图标 + 标签 + 值区（spw-* 样式类在 styles/smart-parse.css，向导与画像弹窗共用） */
 const PortraitCard: React.FC<{
   icon: React.ReactNode;
   label: string;
