@@ -15,6 +15,8 @@ import {
   Upload} from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
+import type { ImgSummaryFormat } from '../../../shared/api/client';
+import ImgSummaryFormatPicker from './ImgSummaryFormatPicker';
 import {
   asApiError,
   AnalyzeResult,
@@ -80,6 +82,7 @@ const buildUniformConfig = (
   contextualRetrieval: boolean,
   knowledgeGraph: boolean,
   imageSummary: boolean,
+  imageFormat: ImgSummaryFormat | '',
 ): IngestConfig => {
   const config: IngestConfig = { method };
   if (method === 'parent_child') {
@@ -101,6 +104,8 @@ const buildUniformConfig = (
   config.contextual_retrieval = contextualRetrieval;
   config.knowledge_graph = knowledgeGraph;
   config.image_summary = imageSummary;
+  // 输出格式：'' = 跟随系统配置（不带该参数）
+  if (imageSummary && imageFormat) config.image_summary_format = imageFormat;
   return config;
 };
 
@@ -148,6 +153,8 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   const [knowledgeGraph, setKnowledgeGraph] = useState(false);
   /** 图片摘要：解析后用多模态模型把图内文字读成描述回填正文（默认关） */
   const [imageSummary, setImageSummary] = useState(false);
+  /** 图片摘要输出格式：''=跟随部门/全局配置（仅本次入库生效，不持久化） */
+  const [imageFormat, setImageFormat] = useState<ImgSummaryFormat | ''>('');
   // 文件选择（antd Upload 受控：beforeUpload 收集，禁止自动上传）
   const [files, setFiles] = useState<File[]>([]);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
@@ -248,7 +255,7 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
       } else {
         config = buildUniformConfig(
           method, regexPattern, contextualRetrieval, knowledgeGraph,
-          imageSummary);
+          imageSummary, imageFormat);
       }
       // 3) 触发入库（后台任务：parsing → ingested，列表轮询刷新）
       try {
@@ -400,6 +407,15 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
                 图片摘要
               </span>
             </Space>
+            {imageSummary && (
+              <ImgSummaryFormatPicker
+                kbId={kbId}
+                value={imageFormat}
+                onChange={setImageFormat}
+                size="small"
+                style={{ marginTop: 10 }}
+              />
+            )}
             <Text type="secondary" style={{ fontSize: 12 }}>
               增强开关开启后将调用 LLM 产生额外 token 费用
             </Text>

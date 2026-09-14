@@ -17,7 +17,7 @@ import {
   Tag, 
   Tooltip} from 'antd';
 import { CheckCircleFilled, CloseCircleFilled, EyeOutlined } from '@ant-design/icons';
-import type { DocumentItem, IngestConfig, MinerUBackend, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../../../shared/api/client';
+import type { DocumentItem, ImgSummaryFormat, IngestConfig, MinerUBackend, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../../../shared/api/client';
 import {
   asApiError, getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../../../shared/api/client';
 /** 通用切块默认分隔符集（与后端 RecursiveChunker.DEFAULT_SEPARATORS 对应，
@@ -34,6 +34,7 @@ import TaskPageSizeField from './parse-fields/TaskPageSizeField';
 import SwitchField from './parse-fields/SwitchField';
 import LangSelectField from './parse-fields/LangSelectField';
 import DocxOutlineModal from './DocxOutlineModal';
+import ImgSummaryFormatPicker from './ImgSummaryFormatPicker';
 
 interface ParseConfigFormValues {
   /** 解析方式（合并解析引擎+版面识别，无自动档）：MinerU/DeepDOC/PlainText，
@@ -65,6 +66,8 @@ interface ParseConfigFormValues {
   knowledge_graph: boolean;
   /** 图片摘要：解析后用多模态模型把图内文字读成描述回填正文（默认关） */
   image_summary: boolean;
+  /** 图片摘要输出格式：''/缺省=跟随部门·全局配置；仅本次入库生效，不持久化 */
+  image_summary_format?: ImgSummaryFormat | '';
   /** 思考模式（DeepSeek thinking 控制）：disabled=关闭（推荐，更快）| enabled_low/high/max=开启+强度 */
   thinking_mode: ThinkingMode;
   /** 解析 LLM 模型（上下文摘要/知识图谱抽取专用，值为模型列表的 name；空=用当前激活模型） */
@@ -500,6 +503,11 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     config.contextual_retrieval = values.contextual_retrieval;
     config.knowledge_graph = values.knowledge_graph;
     config.image_summary = values.image_summary;
+    // 输出格式：仅开启且非「跟随系统配置」（''）时提交，否则不带该参数，
+    // 后端按部门/全局配置的格式走
+    if (values.image_summary && values.image_summary_format) {
+      config.image_summary_format = values.image_summary_format;
+    }
     config.thinking_mode = values.thinking_mode;
     // 解析 LLM 模型（摘要/图谱抽取/Agentic 分块专用）：仅上下文检索增强/
     // 知识图谱/Agentic 任一开启时提交（B5：三者全关时字段隐藏，不提交，
@@ -964,12 +972,18 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     defaultValue={false}
                   />
                   {imageSummary && (
-                    <Alert
-                      message="开启后解析时会对每张图片调用多模态模型生成摘要，将产生额外 token 费用；未配置模型时解析会被拦下并提示"
-                      type="warning"
-                      showIcon
-                      style={{ marginBottom: 8 }}
-                    />
+                    <>
+                      {/* 输出格式：''=跟随系统配置；悬浮图标看本次实际会用的提示词 */}
+                      <Form.Item name="image_summary_format" style={{ marginBottom: 8 }}>
+                        <ImgSummaryFormatPicker kbId={doc?.kb_id || kbId} size="small" />
+                      </Form.Item>
+                      <Alert
+                        message="开启后解析时会对每张图片调用多模态模型生成摘要，将产生额外 token 费用；未配置模型时解析会被拦下并提示"
+                        type="warning"
+                        showIcon
+                        style={{ marginBottom: 8 }}
+                      />
+                    </>
                   )}
                   {knowledgeGraph && (
                     <Alert

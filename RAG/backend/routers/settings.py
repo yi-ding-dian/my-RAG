@@ -491,6 +491,45 @@ async def test_vision_connection(body: dict,
             "latency_ms": int((time.monotonic() - t0) * 1000)}
 
 
+@router.get("/image-summary/prompt")
+async def image_summary_prompt(
+        kb_id: Optional[str] = None,
+        output_format: Optional[str] = None,
+        db: AsyncSession = Depends(get_db),
+        user: UserPublic = Depends(get_current_user)):
+    """图片摘要「本次实际会用的提示词」（解析入口悬浮展示；登录即可读）
+
+    权限与 /llm/models 同级：谁都能打开解析弹窗，提示词不是敏感数据。
+
+    - output_format：本次解析选的输出格式（fields/prose/brief）；缺省 = 跟随
+      部门/全局配置；
+    - 选了与部门配置**不同**的格式 → 返回该格式的内置模板（部门那份自定义
+      提示词是照旧格式写的，不适用），判定与入库时同源
+      （image_summary.effective_prompt）——保证"前端看到的"就是"实际发给
+      模型的"，规则只在后端一处；
+    - kb_id：用于确定生效的部门配置（部门归属在知识库上）；缺省/查不到 →
+      用当前用户所属部门；
+    - source：custom=部门自定义提示词，default=内置模板（前端据此打标签）。
+    """
+    from backend.services import image_summary as img_summ
+
+    dept_id = user.department_id
+    if kb_id:
+        from backend.services.kb_service import get_kb_service
+        kb = await get_kb_service().get(db, kb_id)
+        if kb is not None:
+            dept_id = kb.department_id
+    cfg = await img_summ.resolve_summary_cfg(db, dept_id)
+    prompt, source = img_summ.effective_prompt(cfg, output_format)
+    return {
+        "prompt": prompt,
+        "source": source,
+        "output_format": (img_summ.normalize_format(output_format)
+                          or img_summ.normalize_format(cfg.output_format)
+                          or "fields"),
+    }
+
+
 @router.get("/llm/models")
 async def list_llm_models(user: UserPublic = Depends(get_current_user)):
     """LLM 模型列表（解析配置弹窗数据源，登录即可读）

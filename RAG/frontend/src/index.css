@@ -1666,6 +1666,25 @@ mark:not(.citation-highlight) {
 .spw-toggle-card .ant-switch:hover:not(.ant-switch-disabled) {
   background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.45);
 }
+/* 带展开区的卡片：首行仍是「图标 + 文字 + 开关」，开启后下方追加配置与提示，
+   三者同处一张卡（此前格式选择与提示浮在卡外，看着像三段不相干的元素）。
+   固定用 column：只有 .spw-toggle-row 一个子元素时布局与原来等价 */
+.spw-toggle-card--stack {
+  flex-direction: column;
+  gap: 0;
+}
+.spw-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+/* 展开区左缩进对齐正文（图标 34px + gap 12px），与标题文字同一起点 */
+.spw-toggle-extra {
+  width: 100%;
+  margin-top: 10px;
+  padding-left: 46px;
+}
 /* 小 chip（推荐开启/可选/互斥） */
 .spw-chip {
   display: inline-flex;

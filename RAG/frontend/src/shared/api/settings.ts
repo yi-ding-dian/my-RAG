@@ -5,6 +5,7 @@
 import api from './http';
 import type {
   ChatSettingsPayload,
+  ImageSummaryPromptResult,
   LLMModelItem,
   LlmModelList,
   LlmTestResult,
@@ -50,6 +51,21 @@ export const getLlmModelList = () =>
 /** 按模型名测试连接（切换解析模型前调用；后端按 name 查完整配置后探测，只测不写） */
 export const testLlmModelByName = (name: string) =>
   api.post<LlmTestResult>('/settings/llm/test-model', { name });
+
+/** 图片摘要「本次实际会用的提示词」（解析入口悬浮展示，登录即可读）
+ *
+ *  规则只在后端一处：选了与部门配置不同的格式 → 返回该格式内置模板；
+ *  相同/不传 → 部门自定义提示词优先。前端只展示，不自己拼模板，
+ *  否则部门自定义过提示词时"看到的"和"实际用的"会对不上。
+ *  source：custom=部门自定义 / default=内置模板。 */
+export const getImageSummaryPrompt = (kbId?: string, outputFormat?: string) => {
+  const qs = new URLSearchParams();
+  if (kbId) qs.set('kb_id', kbId);
+  if (outputFormat) qs.set('output_format', outputFormat);
+  const s = qs.toString();
+  return api.get<ImageSummaryPromptResult>(
+    `/settings/image-summary/prompt${s ? `?${s}` : ''}`);
+};
 
 // ========== 聊天设置 + 部门 LLM 配置（GET 登录可读，POST 需 super_admin/dept_admin） ==========
 

@@ -131,6 +131,11 @@ export interface IngestConfig {
   /** 图片摘要：解析后用多模态模型读出图内文字（证照/扫描件）写进正文，使其可被检索。
    *  默认关；未配置模型时后端预检会返回 400（不阻塞其他解析方式）。 */
   image_summary?: boolean;
+  /** 图片摘要输出格式（仅 image_summary=true 时生效）：不传 = 跟随部门/全局配置的格式。
+   *  选了与部门配置**不同**的格式时，提示词改用该格式的内置模板（部门自定义的那份
+   *  是照旧格式写的，硬套会产出解析不了的内容）；部门配置不受影响，本选择也不持久化
+   *  （重跑需重新选）。 */
+  image_summary_format?: ImgSummaryFormat;
   /** 思考模式（DeepSeek thinking 控制，图谱抽取/上下文摘要调用共用）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度 */
   thinking_mode?: ThinkingMode;
   /** Agentic 分块超限确认（仅 method=agentic）：文档 1 万~5 万字时后端要求确认，确认后带 true 重新提交（仅本次生效，不持久化） */
@@ -917,12 +922,25 @@ export interface VisionConfig {
  * - 全局档案里是默认值；部门可在「部门配置」里覆盖 model/prompt/选项/上限
  * - options 键：label_type / read_text / describe_scene / describe_layout
  */
+/** 图片摘要输出格式：fields=固定字段（检索命中率最高）/ prose=段落描述 / brief=一句话简介 */
+export type ImgSummaryFormat = 'fields' | 'prose' | 'brief';
+
+/** 图片摘要提示词预览（GET /settings/image-summary/prompt）
+ *  prompt 是**本次实际会发给模型的那份**（后端算好，前端只展示） */
+export interface ImageSummaryPromptResult {
+  prompt: string;
+  /** custom=部门自定义提示词 / default=内置模板 */
+  source: 'custom' | 'default';
+  /** 本次实际生效的格式（未指定时为部门配置的格式） */
+  output_format: ImgSummaryFormat;
+}
+
 export interface ImageSummaryConfig {
   /** 选中的模型 name（空 = 用列表第一个） */
   model?: string;
   /** 提示词（空 = 用内置默认模板） */
   prompt?: string;
-  /** fields（固定字段，默认）/ prose（自然段） */
+  /** fields（固定字段，默认）/ prose（自然段）/ brief（一句话简介） */
   output_format?: string;
   /** 「文字」字段长度上限 */
   text_max_chars?: number;

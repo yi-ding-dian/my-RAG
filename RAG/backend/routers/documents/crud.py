@@ -192,6 +192,13 @@ async def ingest_document(request: Request, kb_id: str, doc_id: str,
         from backend.db import get_session
         from backend.services import image_summary as img_summ
         from backend.services.kb_service import get_kb_service
+        # 输出格式白名单（前端已限定三选一，这里防绕过前端直接调接口传脏值；
+        # 非法值不入库，任务内 normalize_format 也会兜底按"未指定"处理）
+        _fmt = params.get("image_summary_format")
+        if _fmt and not img_summ.normalize_format(_fmt):
+            raise HTTPException(
+                status_code=400,
+                detail=f"图片摘要输出格式不支持：{_fmt}（仅 fields/prose/brief）")
         try:
             async with get_session() as _db:
                 # 部门归属在知识库上（DocumentItem 无 department_id）

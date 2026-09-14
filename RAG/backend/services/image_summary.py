@@ -248,6 +248,60 @@ async def _describe_one(client, model_cfg: VisionModelConfig, prompt: str,
 
 # ---- 对外主入口 ----
 
+# ---- 输出格式（三种） ----
+
+# 与 default_prompt / _normalize / _render_block 的分支一一对应
+FORMATS = ("fields", "prose", "brief")
+
+
+def normalize_format(fmt: Optional[str]) -> Optional[str]:
+    """输出格式标识归一化：合法返回小写标识，非法/空返回 None（=未指定）"""
+    f = (fmt or "").strip().lower()
+    return f if f in FORMATS else None
+
+
+async def resolve_summary_cfg(db, dept_id: Optional[str]) -> ImageSummaryConfig:
+    """生效的图片摘要配置（部门覆盖 → 全局），**与「模型是否已配」无关**
+
+    提示词预览在没配模型时也要能看（用户先看提示词、再决定要不要找管理员
+    配模型），故这条链路不碰 vision 模型列表——与 resolve_config 分开。
+    """
+    from backend.services.department_service import get_department_config
+    from backend.services.settings.service import get_settings_service
+
+    profile = get_settings_service().get_active() or {}
+    merged = dict(profile.get("image_summary") or {})
+    if dept_id:
+        dept_cfg = await get_department_config(db, dept_id)
+        merged.update(dept_cfg.get("image_summary") or {})
+    return ImageSummaryConfig(**{
+        k: v for k, v in merged.items()
+        if k in ImageSummaryConfig.model_fields})
+
+
+def effective_prompt(cfg: ImageSummaryConfig,
+                     fmt: Optional[str] = None) -> Tuple[str, str]:
+    """本次入库**实际会用**的提示词 + 来源（后端唯一真相源，前端只展示不计算）
+
+    - fmt 未指定 / 与配置的格式一致 → 部门自定义提示词优先，否则内置默认模板
+    - fmt 与配置的格式**不同** → 强制该格式的内置模板：部门那份自定义提示词
+      是照旧格式写的，套到新格式上会让模型按旧格式作答、而代码按新格式解析
+      （字段行被折叠成一行再截断），产出没法用的内容
+
+    返回 (prompt, "custom" | "default")。解析时的覆盖逻辑（见
+    ingestion/service.py 的 _stage_image_summary）与本函数同源，保证
+    "前端看到的" == "实际发给模型的"。
+    """
+    cur = normalize_format(cfg.output_format) or "fields"
+    want = normalize_format(fmt)
+    if want is None or want == cur:
+        custom = (cfg.prompt or "").strip()
+        if custom:
+            return custom, "custom"
+        return default_prompt(cfg.options, cur), "default"
+    return default_prompt(cfg.options, want), "default"
+
+
 async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     """解析生效的图片摘要配置（部门覆盖 → 全局）；不可用 → None
 
@@ -260,7 +314,6 @@ async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     任一环节缺失（没有模型列表 / 模型字段不全）→ None，调用方据此跳过生成、
     或在前端预检处提示"请管理员先配置图片解析模型"。
     """
-    from backend.services.department_service import get_department_config
     from backend.services.settings.service import get_settings_service
 
     profile = get_settings_service().get_active() or {}
@@ -270,12 +323,8 @@ async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
         return None
 
     # 部门配置覆盖全局档案的 image_summary 段（提示词/格式/上限都走这条链）
-    merged = dict(profile.get("image_summary") or {})
-    if dept_id:
-        dept_cfg = await get_department_config(db, dept_id)
-        merged.update(dept_cfg.get("image_summary") or {})
-
-    want = (merged.get("model") or "").strip()
+    summary = await resolve_summary_cfg(db, dept_id)
+    want = (summary.model or "").strip()
     entry = next((m for m in models if (m.get("name") or "") == want),
                  None) if want else None
     if entry is None:
@@ -290,10 +339,7 @@ async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     )
     if not model_cfg.base_url or not model_cfg.model:
         return None  # 条目残缺（地址/模型名没填）→ 视为未配置
-    return {"model": model_cfg,
-            "summary": ImageSummaryConfig(**{
-                k: v for k, v in merged.items()
-                if k in ImageSummaryConfig.model_fields})}
+    return {"model": model_cfg, "summary": summary}
 
 
 async def check_ready(db, dept_id: Optional[str]) -> Tuple[bool, str]:

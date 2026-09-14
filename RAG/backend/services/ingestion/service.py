@@ -365,10 +365,12 @@ class IngestionService(_TraceMixin, _ImageMixin):
             # 2.5) 图片摘要（可选；**必须在切块前**——摘要要进 markdown 才能
             #      被切进 chunk、才检索得到。未开启/未配置/单图失败都不阻塞
             #      入库，见 services/image_summary.py）
+            #      image_summary_format 可覆盖本次输出格式（解析入口选的）
             if params.get("image_summary"):
                 self._set_stage(doc_id, "图片摘要")
                 text = await self._stage_image_summary(
-                    doc, doc_id, text, images)
+                    doc, doc_id, text, images,
+                    params.get("image_summary_format"))
             # 2.6) 全文定稿落盘 data/parsed/{doc_id}.md
             # **必须排在所有 text 改写之后、切块之前**：该文件是前端切片详情
             # 右栏原文的基准，而 chunk 偏移基于切块输入——两者一旦不是同一份
@@ -582,10 +584,17 @@ class IngestionService(_TraceMixin, _ImageMixin):
         return text, images, parse_method
 
     async def _stage_image_summary(self, doc, doc_id: str, text: str,
-                                   images: list) -> str:
+                                   images: list,
+                                   fmt: Optional[str] = None) -> str:
         """图片摘要：把图内文字读进 markdown（任何失败都不阻塞入库）
 
         - 配置解析走 image_summary.resolve_config（部门覆盖 → 全局）
+        - fmt（解析入口选的输出格式）非空且与配置的格式不同 → 本次覆盖输出
+          格式，并清空部门自定义提示词改用该格式内置模板：那份自定义提示词
+          是照旧格式写的，套到新格式上会让模型按旧格式作答、代码按新格式解析
+          （字段行被折叠成一行再截断），产出没法用。判定与
+          image_summary.effective_prompt 同源。**只影响本次入库，部门配置
+          一个字不动**（下次不选格式，用的还是部门那份）
         - 未配置可用模型 → 原样返回（前端预检应已拦截，这里兜底）
         - 单图失败由该模块内部跳过并计数，这里只记一条汇总日志
         """
@@ -609,6 +618,16 @@ class IngestionService(_TraceMixin, _ImageMixin):
         if cfg is None:
             logger.info("图片摘要已勾选但无可用模型配置，跳过: %s", doc_id)
             return text
+        # 本次输出格式覆盖（解析入口选的）：与部门配置的格式不同时，连带清空
+        # 自定义提示词，让它回落到该格式的内置模板（见本函数 docstring）
+        summary_cfg = cfg["summary"]
+        want = img_summ.normalize_format(fmt)
+        if want and want != (img_summ.normalize_format(summary_cfg.output_format)
+                             or "fields"):
+            summary_cfg = summary_cfg.model_copy(
+                update={"output_format": want, "prompt": ""})
+            logger.info("图片摘要输出格式本次覆盖为 %s（提示词改用内置模板）: %s",
+                        want, doc_id)
         try:
             def _on_progress(done: int, total: int) -> None:
                 """每处理一张就刷新阶段文案（文档列表状态列可见）
@@ -620,7 +639,7 @@ class IngestionService(_TraceMixin, _ImageMixin):
 
             new_text, stats = await img_summ.summarize_images(
                 text, images, model_cfg=cfg["model"],
-                summary_cfg=cfg["summary"], on_progress=_on_progress)
+                summary_cfg=summary_cfg, on_progress=_on_progress)
         except Exception as e:
             logger.warning("图片摘要阶段失败，按原样继续: %s (%s)", doc_id, e)
             return text
