@@ -40,6 +40,7 @@ import {
   listTrashDocuments,
   methodColor,
   methodLabel,
+  parseMethodLabel,
   purgeDocument,
   restoreDocument,
 } from '../../../shared/api/client';
@@ -76,6 +77,32 @@ const formatSize = (bytes: number) => {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${bytes} B`;
+};
+
+/**
+ * 拼「文档信息」文本（排查用）：定位字段 + 配置字段，含 doc_id/kb_id/内部文件名，
+ * 便于直接对照日志与数据文件。
+ *
+ * **复制到剪贴板的文本与菜单项悬浮预览共用这一份**——两边各拼一遍迟早会不一致，
+ * 用户看到的和复制到的就不是一回事了。
+ */
+export const buildDocInfoText = (doc: DocumentItem, kbName?: string): string => {
+  const kbLabel = kbName ? `${kbName}（${doc.kb_id}）` : doc.kb_id;
+  return [
+    '【文档信息】',
+    `文件名：${doc.original_name}`,
+    `文档 ID：${doc.id}`,
+    `知识库：${kbLabel}`,
+    `类型：${doc.file_type || '-'} ｜ 大小：${formatSize(doc.size)}`,
+    // 状态给中文 + 原始码：界面看到的是"已入库"，日志/接口里是 ingested，
+    // 排查时两边都要能对上
+    `状态：${statusMeta[doc.status]?.text || doc.status}（${doc.status}） ｜ 切块数：${doc.chunk_count}`,
+    // 解析/切块方式给中文 + 原始码（同状态的做法：界面术语与接口字段都能对上）
+    `解析方式：${parseMethodLabel(doc.parse_method)}（${doc.parse_method || '-'}） ｜ 切块方式：${doc.parser_id ? methodLabel(doc.parser_id) : '-'}（${doc.parser_id || '-'}）`,
+    `上传时间：${doc.created_at || '-'}`,
+    `检索：${doc.enabled === false ? '已禁用' : '启用中'} ｜ 图谱：${doc.graph_status || 'none'}`,
+    `内部文件名：${doc.name}`,
+  ].join('\n');
 };
 
 /** 入库流程轨迹渲染（已入库/失败状态 Tooltip 展示；无 trace 兜底"—"）*/
@@ -239,6 +266,8 @@ interface DocumentTableProps extends DocumentRowCallbacks {
   /** 入库任务阶段进度（doc_id → {stage, since}；解析中 Tooltip 展示用，
    *  页面主组件轮询列表时同步拉取，见 Documents.tsx） */
   ingestProgress?: Record<string, { stage: string; since: string }>;
+  /** 知识库名（「复制文档信息」的悬浮预览用；缺省则只显示 kb_id） */
+  kbName?: string;
 }
 
 /**
@@ -258,6 +287,7 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
   onPageChange,
   totalIsEmpty,
   ingestProgress,
+  kbName,
   onPreview,
   onStartParse,
   onSmartParse,
@@ -355,11 +385,36 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
           label: '查看文档画像',
         });
       }
-      // 排查用：一键把定位与配置字段复制成文本（不限权限，任何能看列表的人可用）
-      items.push({ key: 'copy-info', icon: <CopyOutlined />, label: '复制文档信息' });
+      // 排查用：一键把定位与配置字段复制成文本（不限权限，任何能看列表的人可用）。
+      // 悬浮即预览将复制的内容——与写剪贴板共用 buildDocInfoText，保证"看到的"
+      // 就是"复制到的"（两边各拼一遍迟早会漂移）
+      items.push({
+        key: 'copy-info',
+        icon: <CopyOutlined />,
+        label: (
+          <Tooltip
+            placement="left"
+            overlayStyle={{ maxWidth: 480 }}
+            title={
+              <pre
+                style={{
+                  margin: 0,
+                  whiteSpace: 'pre-wrap',
+                  fontSize: 12,
+                  lineHeight: 1.65,
+                }}
+              >
+                {buildDocInfoText(row, kbName)}
+              </pre>
+            }
+          >
+            <span>复制文档信息</span>
+          </Tooltip>
+        ),
+      });
       return items;
     },
-    [canManage],
+    [canManage, kbName],
   );
 
   const columns: ColumnsType<DocumentItem> = (() => {

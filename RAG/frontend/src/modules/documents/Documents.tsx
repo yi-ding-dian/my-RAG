@@ -18,8 +18,6 @@ import {
   deleteDocument,
   disableDocument,
   enableDocument,
-  methodLabel,
-  parseMethodLabel,
   downloadDocument,
   getDocumentsStatusCounts,
   getIngestProgress,
@@ -34,7 +32,7 @@ import BatchActionsBar, {
   StatusFilter,
   toBackendStatus,
 } from './components/BatchActionsBar';
-import DocumentTable, { TrashView, parseableStatuses, statusMeta } from './components/DocumentTable';
+import DocumentTable, { TrashView, buildDocInfoText, parseableStatuses } from './components/DocumentTable';
 import DocumentModals, {
   useDetailModal,
   useGraphBuildModal,
@@ -42,13 +40,6 @@ import DocumentModals, {
 } from './components/DocumentModals';
 
 const { Text } = Typography;
-
-/** 文件大小可读化（复制文档信息用；与 DocumentTable.formatSize 同口径） */
-const formatDocSize = (bytes: number): string => {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-};
 
 const DocumentsPage: React.FC = () => {
   const { message, modal } = AntApp.useApp();
@@ -473,27 +464,11 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
-  /** 复制文档信息（排查用）：把定位字段与配置字段拼成文本进剪贴板——
-   *  含 doc_id/kb_id/内部文件名，便于直接查日志与数据文件 */
+  /** 复制文档信息（排查用）：文本由 buildDocInfoText 统一拼——
+   *  与菜单项悬浮预览共用同一份，避免"看到的"和"复制到的"不一致 */
   const handleCopyInfo = async (doc: DocumentItem) => {
-    const kbLabel = kbName ? `${kbName}（${doc.kb_id}）` : doc.kb_id;
-    const text = [
-      '【文档信息】',
-      `文件名：${doc.original_name}`,
-      `文档 ID：${doc.id}`,
-      `知识库：${kbLabel}`,
-      `类型：${doc.file_type || '-'} ｜ 大小：${formatDocSize(doc.size)}`,
-      // 状态给中文 + 原始码：界面看到的是"已入库"，日志/接口里是 ingested，
-      // 排查时两边都要能对上
-      `状态：${statusMeta[doc.status]?.text || doc.status}（${doc.status}） ｜ 切块数：${doc.chunk_count}`,
-      // 解析/切块方式给中文 + 原始码（同状态的做法：界面术语与接口字段都能对上）
-      `解析方式：${parseMethodLabel(doc.parse_method)}（${doc.parse_method || '-'}） ｜ 切块方式：${doc.parser_id ? methodLabel(doc.parser_id) : '-'}（${doc.parser_id || '-'}）`,
-      `上传时间：${doc.created_at || '-'}`,
-      `检索：${doc.enabled === false ? '已禁用' : '启用中'} ｜ 图谱：${doc.graph_status || 'none'}`,
-      `内部文件名：${doc.name}`,
-    ].join('\n');
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(buildDocInfoText(doc, kbName));
       message.success('文档信息已复制');
     } catch {
       message.error('复制失败，请手动复制');
@@ -739,6 +714,7 @@ const DocumentsPage: React.FC = () => {
               keyword={keyword}
               canManage={canManage}
               ingestProgress={ingestProgress}
+              kbName={kbName}
               selectedRowKeys={selectedRowKeys}
               onSelectionChange={setSelectedRowKeys}
               onPageChange={handlePageChange}
