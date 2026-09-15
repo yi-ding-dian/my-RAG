@@ -14,7 +14,7 @@
  * 全部条目、改哪张展开哪张。面板按 Form 实例分组（同一 Form 的字段不能拆到
  * 两个面板），故"对话配置"与"检索增强"共用一个面板。
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   App as AntApp,
@@ -151,8 +151,18 @@ const DeptConfig: React.FC = () => {
   const imgOptScene = Form.useWatch('img_opt_describe_scene', imgForm);
   const imgOptLayout = Form.useWatch('img_opt_describe_layout', imgForm);
 
+  /** 上一次的输出格式：用来识别"格式变了"（格式与提示词是配套的，变了必须重算） */
+  const prevImgFmtRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
-    if (imgPromptTouched) return;
+    // **输出格式变了就强制重算**（并解除"已自定义"）：旧提示词是照旧格式写的，
+    // 留着会让模型按旧格式作答、而代码按新格式解析——与解析入口的处理同一道理。
+    // 其余情况（勾选项变化 / 手动微调）仍尊重 touched：用户的微调不该被选项覆盖。
+    // 首次（prev 为 undefined，含加载回填）不算"变化"，避免把存过的提示词冲掉。
+    const fmtChanged = prevImgFmtRef.current !== undefined
+      && prevImgFmtRef.current !== imgFmt;
+    prevImgFmtRef.current = imgFmt;
+    if (!fmtChanged && imgPromptTouched) return;
     imgForm.setFieldsValue({
       img_prompt: buildDefaultImgPrompt({
         label_type: imgOptLabel ?? true,
@@ -161,6 +171,7 @@ const DeptConfig: React.FC = () => {
         describe_layout: imgOptLayout ?? false,
       }, imgFmt ?? 'fields'),
     });
+    if (fmtChanged) setImgPromptTouched(false);
   }, [imgPromptTouched, imgFmt, imgOptLabel, imgOptText, imgOptScene,
       imgOptLayout, imgForm]);
 
