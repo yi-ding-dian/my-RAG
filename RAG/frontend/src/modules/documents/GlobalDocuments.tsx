@@ -20,6 +20,7 @@ import {
 import {
   ApartmentOutlined,
   BookOutlined,
+  ClockCircleOutlined,
   DeleteOutlined,
   EditOutlined,
   EyeOutlined,
@@ -498,6 +499,18 @@ const GlobalDocumentsPage: React.FC = () => {
       onHeaderCell: () => ({ width: colWidths.status ?? 100, onResize: handleResize('status'), title: '状态' }),
       render: (status: DocumentStatus, row) => {
         const meta = statusMeta[status] ?? { color: 'default', text: status };
+        // 排队中：并发已满时任务在信号量等待，文档状态仍是「待解析」——
+        // 不特判用户会以为没点上（与部门文档页同口径）
+        const queuedStage = ingestProgress?.[row.id]?.stage;
+        if (queuedStage?.startsWith('排队中')) {
+          return (
+            <Tooltip title={`${queuedStage}。解析队列繁忙，请稍候`}>
+              <Tag color="warning" icon={<ClockCircleOutlined />}>
+                排队中
+              </Tag>
+            </Tooltip>
+          );
+        }
         // 解析中：状态标签内附已耗时（如「解析中 2:35」），与部门文档页同口径
         const elapsed = status === 'parsing' ? formatElapsed(row.updated_at) : '';
         const tag =

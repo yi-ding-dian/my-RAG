@@ -26,6 +26,7 @@ chunk 文本，就只剩展示价值了。
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import re
@@ -36,6 +37,28 @@ from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,
                                          get_llm_client, llm_completion)
 
 logger = logging.getLogger(__name__)
+
+# ---- 图片摘要的全局并发池（跨文档共享） ----
+
+_sem: Optional[asyncio.Semaphore] = None
+_sem_limit: int = 0
+
+
+def _get_semaphore(limit: int) -> asyncio.Semaphore:
+    """取全局并发信号量（惰性创建；配置改容量后按新值重建）
+
+    **跨文档共享**是这里的关键：多篇文档同时解析时自动分摊、单篇解析时能吃满，
+    在飞请求总数恒定 —— 若改成"每篇文档各建一个信号量"，3 篇 × M 并发会把
+    模型打爆。容量取自系统配置 ingestion.image_summary_concurrency。
+
+    容量变化时直接换新实例（旧实例上排队的请求随旧流程走完，不影响正确性）。
+    """
+    global _sem, _sem_limit
+    limit = max(1, int(limit or 1))
+    if _sem is None or _sem_limit != limit:
+        _sem = asyncio.Semaphore(limit)
+        _sem_limit = limit
+    return _sem
 
 # 图片引用：**两种形态都要认**
 #   1) 解析器原始产物：![](images/xxx.jpg)
@@ -386,25 +409,32 @@ async def summarize_images(
     summary_cfg: ImageSummaryConfig,
     client=None,
     on_progress=None,
+    concurrency: int = 1,
 ) -> Tuple[str, dict]:
-    """逐张生成摘要并回填 markdown
+    """并发生成摘要并回填 markdown
 
     - markdown / images：解析产物（与 MinerU 同构）
     - model_cfg：选定的多模态模型（连接信息，超管配）
     - summary_cfg：部门侧配置（提示词/格式/上限）
     - client：可选注入（测试用）；None 时按 model_cfg 构造并缓存
-    - on_progress：可选同步回调 (已处理张数, 总张数)，每张处理后调一次——
-      调用方据此把进度写进文档状态（如「图片摘要（3/8）」）
+    - on_progress：可选同步回调 (已完成张数, 待处理总张数)，每张**完成后**
+      调一次——调用方据此把进度写进文档状态（如「图片摘要（3/8）」）。
+      并发下这里的语义是"已完成数"（按处理序号会乱跳），单调递增
+    - concurrency：并发上限，走**全局共享池**（见 _get_semaphore）；
+      默认 1 = 串行，即改造前的行为（也是测试里的默认）
 
     返回 (回填后的 markdown, stats)；stats 含 total/done/skipped_small/
     skipped_limit/failed（失败图片名列表），供上层记录"哪些图没摘要成功"。
 
-    单张串行：模型对多图并发的稳定性未知，且"一次多个送"容易对应错位——
-    省下的调用次数不值这个风险。
+    **并发 ≠ 一次多图**：每张图各自一次请求，响应与图片一一对应，结构上不会
+    错位——"一个请求里塞多张图"才会答串，当初把这两件事混为一谈，才有了
+    "不能并发"的误判（见 record 2026-09-14 压测：1→4 吞吐 ×2.8、4→8 仅
+    +11% 且延迟翻倍、16 并发零失败）。回填按 refs 原序（gather 结果顺序与
+    输入一致），与并发无关。
     """
     refs = list(_IMG_REF_RE.finditer(markdown))
-    stats: dict = {"total": len(refs), "done": 0, "skipped_small": 0,
-                   "skipped_limit": 0, "failed": []}
+    stats: dict = {"total": len(refs), "pending": 0, "done": 0,
+                   "skipped_small": 0, "skipped_limit": 0, "failed": []}
     if not refs:
         return markdown, stats
 
@@ -422,13 +452,11 @@ async def summarize_images(
 
     done: Dict[str, str] = {}
     used = 0
-    for idx, m in enumerate(refs, start=1):
+    # 先筛选（小图/超限/缺字节），把真正要送模型的挑出来：筛选是纯 CPU 操作，
+    # 放在并发段外，进度分母才是"实际要处理的张数"（而非引用总数）
+    jobs: List[Tuple[str, bytes]] = []
+    for m in refs:
         name = m.group(1)
-        if on_progress is not None:
-            try:
-                on_progress(idx, len(refs))
-            except Exception:  # 进度回调失败不该影响摘要本身
-                logger.debug("图片摘要进度回调失败", exc_info=True)
         if limit and used >= limit:
             stats["skipped_limit"] += 1
             continue
@@ -440,20 +468,57 @@ async def summarize_images(
             stats["skipped_small"] += 1
             continue
         used += 1
+        jobs.append((name, data))
+
+    total_jobs = len(jobs)
+    # pending = 实际要送模型的张数（进度分母；total 是引用总数，两者差在
+    # 被跳过的装饰图/超限图）。上层结束文案要用 pending，否则进度走
+    # "n/232" 收尾却显示 "483"，数字对不上
+    stats["pending"] = total_jobs
+    sem = _get_semaphore(concurrency)
+    finished = 0
+
+    def _tick() -> None:
+        """进度上报：并发下按**已完成数**（按处理序号会乱跳），单调递增"""
+        nonlocal finished
+        finished += 1
+        if on_progress is None:
+            return
         try:
-            raw = await _describe_one(client, model_cfg, prompt, data, name)
-        except (LLMTimeoutError, LLMRequestError) as e:
-            logger.warning("图片摘要失败 %s: %s", name, e)
-            stats["failed"].append(name)
-            continue
-        except Exception as e:  # 兜底：单图异常绝不冒泡拖垮整篇解析
-            logger.warning("图片摘要异常 %s: %s", name, e)
-            stats["failed"].append(name)
-            continue
-        text = _normalize(raw, summary_cfg)
-        if text:
-            done[name] = text
-            stats["done"] += 1
+            on_progress(finished, total_jobs)
+        except Exception:  # 进度回调失败不该影响摘要本身
+            logger.debug("图片摘要进度回调失败", exc_info=True)
+
+    async def _one(name: str, data: bytes) -> None:
+        """单张：抢全局池 → 调模型 → 归一化；失败只记账、绝不冒泡"""
+        async with sem:
+            try:
+                raw = await _describe_one(client, model_cfg, prompt, data, name)
+            except (LLMTimeoutError, LLMRequestError) as e:
+                logger.warning("图片摘要失败 %s: %s", name, e)
+                stats["failed"].append(name)
+            except Exception as e:  # 兜底：单图异常绝不冒泡拖垮整篇解析
+                logger.warning("图片摘要异常 %s: %s", name, e)
+                stats["failed"].append(name)
+            else:
+                text = _normalize(raw, summary_cfg)
+                if text:
+                    done[name] = text
+                    stats["done"] += 1
+            _tick()
+
+    if total_jobs:
+        # **分批提交**（不是一次性 gather 全部）：asyncio.Semaphore 是 FIFO，
+        # 一次提交 N 个协程会让它们占据队列前段 —— 多篇文档同时解析时变成
+        # "先到的文档做完、才轮到后来者"（实测三篇耗时成 1:2:3 倍，最后一位
+        # 要等 6 分钟）。按池容量分批、批间 await 让出控制权，各文档的批次
+        # 交替进队列：单篇解析仍能吃满池，多篇则公平推进。
+        # 结果按 name 落在 done 里，回填顺序由下面 _sub 按 refs 原序决定，
+        # 故"谁先完成"不影响产物。
+        batch = max(1, concurrency)
+        for i in range(0, total_jobs, batch):
+            await asyncio.gather(
+                *[_one(n, d) for n, d in jobs[i:i + batch]])
 
     if not done:
         return markdown, stats

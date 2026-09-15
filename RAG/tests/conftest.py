@@ -111,6 +111,10 @@ def reset_services():
     ingestion_service._ingest_semaphore_value = 0
     from backend.services import dim_check
     dim_check._rebuild_semaphore = None
+    # 图片摘要的全局并发池同理（跨文档共享，同样懒绑定 loop）
+    from backend.services import image_summary as image_summary_module
+    image_summary_module._sem = None
+    image_summary_module._sem_limit = 0
     retrieval_service._retrieval_service = None
     chat_service._chat_service = None
     ext_query_service._ext_query_service = None

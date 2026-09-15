@@ -310,12 +310,19 @@ class IngestionConfig(BaseModel):
       超出上限的任务在信号量队列等待，避免批量解析打爆 MinerU/embedding；
       运行时由 backend/services/ingestion/service.py 每次 acquire 前实时读取，改动即生效
       （信号量按配置值惰性重建，见 _get_ingest_semaphore）
+    - image_summary_concurrency：图片摘要调多模态模型的**全局**并发上限
+      （默认 4，范围 1~16）。注意这是**跨文档共享**的池子：单篇文档解析时
+      能吃满，多篇同时解析时自动分摊，在飞请求总数恒定——若做成"每篇文档
+      各自并发"，3 篇 × N 会把模型打爆。默认值取自实测（2026-09-14 压测：
+      1→4 吞吐 ×2.8；4→8 仅 +11% 但延迟翻倍；8→16 仅 +15%，吞吐天花板
+      ≈3.4 张/秒是模型侧物理上限）。配 1 等价于改造前的串行行为
     - kb_doc_limit：单知识库最大文档数，0=不限；上传/URL 导入时校验，
       超限返回友好 400（防单库无限膨胀/多用户上传耗尽磁盘）
     - max_upload_mb：单文件上传上限（MB，默认 100）；上传时校验，
       超过返回 413。nginx 反代层上限需 >= 该配置（deploy 文档已提示）
     """
     concurrency: int = 3
+    image_summary_concurrency: int = 4
     kb_doc_limit: int = 0
     max_upload_mb: int = 100
 

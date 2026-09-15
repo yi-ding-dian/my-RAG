@@ -120,6 +120,15 @@ def _ingest_concurrency() -> int:
     return max(1, int(get_active_config().ingestion.concurrency))
 
 
+def _image_summary_concurrency() -> int:
+    """实时读图片摘要的并发上限（默认 4；配 1 等价于改造前的串行）
+
+    注意这是**跨文档共享**的池子容量，不是"每篇文档各开这么多"——池子本身
+    在 image_summary._get_semaphore（全局变量），此处只负责把配置值传进去。
+    """
+    return max(1, int(get_active_config().ingestion.image_summary_concurrency))
+
+
 def _get_ingest_semaphore() -> asyncio.Semaphore:
     """惰性获取全局入库信号量（首次调用绑定当前事件循环）
 
@@ -183,7 +192,7 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 判为"未运行"，同一文档会被重复触发（排队串行各跑一遍完整入库）。
         # 取消逻辑仍只看 _running（排队取消走"不在运行即拨回 failed"的既有路径），
         # 故不复用同一集合
-        self._queued: Set[str] = set()
+        self._queued: List[str] = []  # 有序（FIFO）：前端要显示"前面还有 N 个"
         self._cancel: Set[str] = set()   # 用户取消标记（cancel 接口置位，任务检查点消费）
         # 任务当前阶段（doc_id → 阶段名）：解析中状态悬停进度展示用
         # （阶段名在 _ingest 各 stage 前后更新，任务结束清理）
@@ -207,20 +216,36 @@ class IngestionService(_TraceMixin, _ImageMixin):
         return doc_id in self._queued
 
     def get_progress(self, doc_id: str) -> Optional[dict]:
-        """解析中任务段状态（悬停进度展示）：非运行中返回 None
+        """任务段状态（悬停进度展示）：既非运行也非排队 → None
 
         返回 {stage: 中文阶段名, since: 阶段开始时间 HH:mm:ss}
+
+        **排队中的任务也给状态**（"排队中（前面还有 N 个）"）：并发已满时
+        若什么都不显示，用户会以为没点上，甚至重复点（后端静默忽略）。
         """
-        if doc_id not in self._running:
-            return None
-        stage = self._stage.get(doc_id)
-        if not stage:
-            return {"stage": "准备中", "since": ""}
-        return {"stage": stage, "since": self._stage_since.get(doc_id, "")}
+        if doc_id in self._running:
+            stage = self._stage.get(doc_id)
+            if not stage:
+                return {"stage": "准备中", "since": ""}
+            return {"stage": stage, "since": self._stage_since.get(doc_id, "")}
+        if doc_id in self._queued:
+            # 队列位置 = 排在它前面进队的数量（含正在跑的那些 —— 它们才占着
+            # 槽位、是真正要等的对象）。信号量是 FIFO，位置越前越先轮到
+            try:
+                ahead = self._queued.index(doc_id)
+            except ValueError:  # 竞态：查询瞬间刚好被移出队列
+                return None
+            return {"stage": f"排队中（前面还有 {ahead} 个）", "since": ""}
+        return None
 
     def running_doc_ids(self) -> List[str]:
-        """当前正在入库的 doc_id 列表（进度接口聚合用）"""
-        return list(self._running)
+        """正在入库**或排队中**的 doc_id 列表（进度接口聚合用）
+
+        排队中的也要返回：前端状态列据此显示"排队中"，否则并发满时
+        用户看不到任何反馈。
+        """
+        return list(self._running) + [d for d in self._queued
+                                      if d not in self._running]
 
     def is_cancelled(self, doc_id: str) -> bool:
         return doc_id in self._cancel
@@ -286,13 +311,14 @@ class IngestionService(_TraceMixin, _ImageMixin):
         if doc_id in self._queued or doc_id in self._running:
             logger.info("入库任务: 已在执行或排队中，忽略重复触发 %s", doc_id)
             return
-        self._queued.add(doc_id)
+        self._queued.append(doc_id)
         try:
             # 信号量在整个任务期间持有（含排队等待），并发解析数不会超过上限
             async with _get_ingest_semaphore():
                 await self._run_ingestion_locked(doc_id, method=method, **params)
         finally:
-            self._queued.discard(doc_id)
+            if doc_id in self._queued:
+                self._queued.remove(doc_id)
 
     async def _run_ingestion_locked(self, doc_id: str,
                                     method: str | None = None, **params):
@@ -639,7 +665,8 @@ class IngestionService(_TraceMixin, _ImageMixin):
 
             new_text, stats = await img_summ.summarize_images(
                 text, images, model_cfg=cfg["model"],
-                summary_cfg=summary_cfg, on_progress=_on_progress)
+                summary_cfg=summary_cfg, on_progress=_on_progress,
+                concurrency=_image_summary_concurrency())
         except Exception as e:
             logger.warning("图片摘要阶段失败，按原样继续: %s (%s)", doc_id, e)
             return text
@@ -649,8 +676,11 @@ class IngestionService(_TraceMixin, _ImageMixin):
             stats["skipped_small"], stats["skipped_limit"],
             len(stats["failed"]))
         # 让入库轨迹记成「图片摘要（8）：耗时」而不是光秃秃的「图片摘要」——
-        # 下一次 _set_stage（切块）结算本阶段时会取这个名字
-        self._update_stage_text(doc_id, f"图片摘要（{stats['total']}）")
+        # 下一次 _set_stage（切块）结算本阶段时会取这个名字。
+        # 用 pending（实际送模型的张数）而非 total（引用总数）：进度走的是
+        # "n/pending"，收尾若显示 total 会与过程中的分母对不上
+        self._update_stage_text(
+            doc_id, f"图片摘要（{stats.get('pending', 0)}）")
         return new_text
 
     @staticmethod

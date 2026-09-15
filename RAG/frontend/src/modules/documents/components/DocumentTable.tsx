@@ -24,6 +24,7 @@ import {
   EditOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
+  ClockCircleOutlined,
   ProfileOutlined,
   RollbackOutlined,
   RobotOutlined,
@@ -403,6 +404,20 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       onHeaderCell: () => ({ width: colWidths.status ?? 110, onResize: handleResize('status'), title: '状态' }),
       render: (status: DocumentStatus, row) => {
         const meta = statusMeta[status] ?? { color: 'default', text: status };
+        // 排队中：解析并发已满时任务在信号量上等待，此时文档状态仍是
+        // 「待解析」——不特判的话用户会以为没点上，反复点（后端会静默忽略
+        // 重复触发，更让人以为是坏了）。后端在排队期也返回 stage，
+        // 形如「排队中（前面还有 2 个）」
+        const queuedStage = ingestProgress?.[row.id]?.stage;
+        if (queuedStage?.startsWith('排队中')) {
+          return (
+            <Tooltip title={`${queuedStage}。解析队列繁忙，请稍候`}>
+              <Tag color="warning" icon={<ClockCircleOutlined />}>
+                排队中
+              </Tag>
+            </Tooltip>
+          );
+        }
         // 解析中：状态标签内附已耗时（如「解析中 2:35」），长文档解析时能看出
         // 等了多久；起点取不到（历史数据缺 updated_at）则不显示，不影响标签
         const elapsed = status === 'parsing' ? formatElapsed(row.updated_at) : '';

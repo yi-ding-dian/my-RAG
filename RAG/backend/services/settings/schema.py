@@ -324,6 +324,9 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
         overrides={
             "concurrency": {"condition": "truthy", "fill_missing": True,
                             "range": (1, 10)},
+            "image_summary_concurrency": {"condition": "truthy",
+                                          "fill_missing": True,
+                                          "range": (1, 16)},
             "kb_doc_limit": {"fill_missing": True, "range": (0, 50000)},
             "max_upload_mb": {"fill_missing": True, "range": (1, 2048)},
         },
