@@ -66,3 +66,12 @@
   filter: brightness(1.08);
 }
 
+/* ---------- 「文档解析相关」面板：收紧字段间距 ----------
+   MinerU / DeepDoc / Gotenberg 三段纵向排布，antd Form.Item 默认 24px 下边距
+   逐行叠加后，每段字段下方会留出大片空白（用户反馈"留白太多"）。这里压到
+   12px——字段之间的关系靠同组内紧凑、组与组之间靠 Divider 区分来体现，
+   而不是靠均一的大留白。 */
+.parse-services-panel .ant-form-item {
+  margin-bottom: 12px;
+}
+

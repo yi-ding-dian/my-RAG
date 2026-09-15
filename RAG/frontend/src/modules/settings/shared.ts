@@ -29,12 +29,13 @@ export const DOMAIN_CARDS: Array<{
   {
     key: 'mineru',
     title: '解析服务',
-    sections: ['mineru', 'deepdoc', 'vision'],
+    sections: ['mineru', 'deepdoc', 'gotenberg', 'vision'],
     summary: p => {
       const vm = p.vision?.models ?? [];
       const cur = vm[p.vision?.active ?? 0];
       return `${p.mineru?.url || '-'}`
         + `${p.deepdoc?.base_url ? ` / ${p.deepdoc.base_url}` : ''}`
+        + `${p.gotenberg?.base_url ? ` / 转换 ${p.gotenberg.base_url}` : ''}`
         + `${cur ? ` / 图片模型 ${cur.name}` : ''}`;
     },
   },
@@ -73,13 +74,14 @@ export interface TestItem {
   msg: string;
 }
 
-export type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'mysql' | 'minio' | 'vector_store' | 'rerank' | 'vision';
+export type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'gotenberg' | 'mysql' | 'minio' | 'vector_store' | 'rerank' | 'vision';
 
 export const emptyTest: Record<SectionKey, TestItem> = {
   llm: { status: 'idle', msg: '' },
   embedding: { status: 'idle', msg: '' },
   mineru: { status: 'idle', msg: '' },
   deepdoc: { status: 'idle', msg: '' },
+  gotenberg: { status: 'idle', msg: '' },
   rerank: { status: 'idle', msg: '' },
   mysql: { status: 'idle', msg: '' },
   minio: { status: 'idle', msg: '' },
@@ -93,6 +95,7 @@ export const toTestItems = (res: ProfileTestResult): Record<SectionKey, TestItem
   embedding: { status: res.embedding.ok ? 'success' : 'failed', msg: res.embedding.message },
   mineru: { status: res.mineru.ok ? 'success' : 'failed', msg: res.mineru.message },
   deepdoc: { status: res.deepdoc.ok ? 'success' : 'failed', msg: res.deepdoc.message },
+  gotenberg: { status: res.gotenberg?.ok ? 'success' : 'failed', msg: res.gotenberg?.message ?? '未参与探测' },
   rerank: { status: res.rerank.ok ? 'success' : 'failed', msg: res.rerank.message },
   mysql: { status: res.mysql.ok ? 'success' : 'failed', msg: res.mysql.message },
   minio: { status: res.minio.ok ? 'success' : 'failed', msg: res.minio.message },
@@ -105,8 +108,9 @@ export const toTestItems = (res: ProfileTestResult): Record<SectionKey, TestItem
 export const PANEL_TEST_SECTIONS: Record<string, SectionKey[]> = {
   llm: ['llm'],
   embedding: ['embedding'],
-  mineru: ['mineru'],
-  deepdoc: ['deepdoc'],
+  // 文档解析相关：MinerU / DeepDoc / Gotenberg 三段合并在一个面板里，
+  // 面板头的 ⚡ 一次测这三项
+  parse: ['mineru', 'deepdoc', 'gotenberg'],
   retrieval: ['rerank'],
   mysql: ['mysql'],
   minio: ['minio'],
@@ -119,6 +123,7 @@ export const sectionLabel: Record<SectionKey, string> = {
   embedding: 'Embedding 模型',
   mineru: 'MinerU 文档解析',
   deepdoc: 'DeepDoc 解析（RAGFlow）',
+  gotenberg: '文档转换（Gotenberg）',
   rerank: 'Rerank 重排序',
   mysql: '数据库',
   minio: 'MinIO 对象存储',
@@ -132,6 +137,7 @@ export const allTesting = (): Record<SectionKey, TestItem> => ({
   embedding: { status: 'testing', msg: '' },
   mineru: { status: 'testing', msg: '' },
   deepdoc: { status: 'testing', msg: '' },
+  gotenberg: { status: 'testing', msg: '' },
   rerank: { status: 'testing', msg: '' },
   mysql: { status: 'testing', msg: '' },
   minio: { status: 'testing', msg: '' },
@@ -145,6 +151,7 @@ export const allFailed = (msg: string): Record<SectionKey, TestItem> => ({
   embedding: { status: 'failed', msg },
   mineru: { status: 'failed', msg },
   deepdoc: { status: 'failed', msg },
+  gotenberg: { status: 'failed', msg },
   rerank: { status: 'failed', msg },
   mysql: { status: 'failed', msg },
   minio: { status: 'failed', msg },
@@ -167,6 +174,9 @@ export interface ProfileFormValues {
   deepdoc_password: string;
   deepdoc_timeout: number;
   deepdoc_dataset_prefix: string;
+  /** 文档转换（Gotenberg，Office → PDF）：地址留空 = 不做转换 */
+  gotenberg_base_url: string;
+  gotenberg_timeout: number;
   retrieval_top_k: number;
   retrieval_enable_hybrid: boolean;
   rerank_enabled: boolean;
@@ -239,6 +249,11 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
     password: vals.deepdoc_password,
     timeout: vals.deepdoc_timeout,
     dataset_prefix: vals.deepdoc_dataset_prefix,
+  },
+  // 文档转换（Gotenberg）：地址留空 = 不做转换，.doc 走原有路径
+  gotenberg: {
+    base_url: vals.gotenberg_base_url,
+    timeout: vals.gotenberg_timeout,
   },
   retrieval: {
     top_k: vals.retrieval_top_k,
@@ -317,6 +332,8 @@ export const toFormValues = (p: ServiceProfile) => ({
   deepdoc_password: p.deepdoc?.password,
   deepdoc_timeout: p.deepdoc?.timeout,
   deepdoc_dataset_prefix: p.deepdoc?.dataset_prefix,
+  gotenberg_base_url: p.gotenberg?.base_url,
+  gotenberg_timeout: p.gotenberg?.timeout,
   retrieval_top_k: p.retrieval?.top_k,
   retrieval_enable_hybrid: p.retrieval?.enable_hybrid ?? true,
   rerank_enabled: p.retrieval?.rerank?.enabled ?? false,

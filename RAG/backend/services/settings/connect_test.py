@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 
 from backend.services.parsers.probes import (probe_deepdoc_sync, probe_embedding_sdk,
+                                     probe_gotenberg_sync,
                                      probe_llm_sdk, probe_mineru_sync,
                                      probe_minio, probe_mysql,
                                      probe_rerank_sync)
@@ -25,6 +26,7 @@ from backend.services.settings.merge import active_llm_item
 LLM_TEST_TIMEOUT = 5.0
 EMBEDDING_TEST_TIMEOUT = 5.0
 MINERU_TEST_TIMEOUT = 3.0
+GOTENBERG_TEST_TIMEOUT = 5.0
 DEEPDOC_TEST_TIMEOUT = 8.0
 MYSQL_TEST_TIMEOUT = 5.0
 MINIO_TEST_TIMEOUT = 5.0
@@ -63,6 +65,7 @@ class SettingsTester:
             "llm": self._test_llm(profile.get("llm") or {}),
             "embedding": self._test_embedding(profile.get("embedding") or {}),
             "mineru": self._test_mineru(profile.get("mineru") or {}),
+            "gotenberg": self._test_gotenberg(profile.get("gotenberg") or {}),
             "deepdoc": await self._test_deepdoc(profile.get("deepdoc") or {}),
             "mysql": await self._test_mysql(profile.get("mysql") or {}),
             "minio": await self._test_minio(profile.get("minio") or {}),
@@ -129,6 +132,20 @@ class SettingsTester:
                 float(mineru.get("timeout") or MINERU_TEST_TIMEOUT)),
             ok_under=400)
         return self._message(self._append(r, str(mineru.get("url") or "")))
+
+    def _test_gotenberg(self, gotenberg: dict) -> dict:
+        """Gotenberg 文档转换（Office → PDF）：GET {base_url}/health 探活（≤5s）
+
+        只探活不试转换——转换要传实际文件、代价大；真正可用性由调用时兜底。
+        地址未配置时返回 ok=False 提示（与 Rerank/图片解析模型同款语义）。
+        """
+        r = probe_gotenberg_sync(
+            gotenberg,
+            timeout=min(GOTENBERG_TEST_TIMEOUT,
+                        float(gotenberg.get("timeout") or GOTENBERG_TEST_TIMEOUT)))
+        # 成败都带地址：失败时最需要看清"连的是哪个地址"（_append 的约定）
+        return self._message(
+            self._append(r, str(gotenberg.get("base_url") or "")))
 
     def _test_rerank(self, rerank: dict) -> dict:
         """Rerank 探测（POST {base_url}/rerank 最小请求，≤5s；

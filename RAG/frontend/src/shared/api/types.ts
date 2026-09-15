@@ -1045,6 +1045,15 @@ export interface DeepDocConfigProfile {
   dataset_prefix: string;
 }
 
+/** Gotenberg 文档转换服务配置（Office → PDF）
+ *
+ *  用途：老版 .doc/.docx 先转 PDF 再交 MinerU——MinerU 的主场是 PDF（按版面
+ *  还原标题层级），直接给 docx 时标题会全丢。地址留空 = 不做转换。 */
+export interface GotenbergConfigProfile {
+  base_url: string;
+  timeout: number;
+}
+
 export interface RetrievalConfig {
   top_k: number;
   /** 相似度阈值（0-1，默认 0=不过滤） */
@@ -1117,6 +1126,8 @@ export interface ServiceProfile {
   mineru: MinerUConfig;
   /** DeepDoc 段（旧档案可能缺失，前端做可选兼容） */
   deepdoc?: DeepDocConfigProfile;
+  /** 文档转换段（Gotenberg，Office → PDF；旧档案可能缺失，前端做可选兼容） */
+  gotenberg?: GotenbergConfigProfile;
   retrieval: RetrievalConfig;
   chunking: ChunkingConfig;
   /** 上下文检索增强配置（完整文档视角阈值，字；旧后端可能缺失，前端做可选兼容） */
@@ -1149,6 +1160,8 @@ export interface ProfileTestResult {
   embedding: ConnectionTestResult;
   mineru: ConnectionTestResult;
   deepdoc: ConnectionTestResult;
+  /** 文档转换（Gotenberg，Office → PDF）：GET {base_url}/health 探活 */
+  gotenberg?: ConnectionTestResult;
   rerank: ConnectionTestResult;
   mysql: ConnectionTestResult;
   minio: ConnectionTestResult;

@@ -67,6 +67,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import tempfile
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -555,10 +558,29 @@ class IngestionService(_TraceMixin, _ImageMixin):
                     f"MinerU 服务不可用（{reason}），已切换纯文本提取")
         if parse_degrade:
             parser_config["degrade"] = parse_degrade
+        # 2.4) doc/docx 走 MinerU 时先转 PDF（需在系统配置配 Gotenberg 地址，
+        # 未配置则跳过、走原有路径）。原因：MinerU 的主场是 PDF——它按字号/
+        # 字体/位置做版面分析，能还原标题层级；而处理 docx 时只提取文本、
+        # **标题会全丢**（实测同一份文档：直接给 docx → 0 个标题；经
+        # Gotenberg 转成 PDF 再给 → 94 个标题、层级正确）。
+        # 转换失败不阻塞入库：回退到原文件按原类型解析。
+        parse_target, parse_type = upload_path, doc.file_type
+        pdf_tmp_dir: Optional[Path] = None
+        if engine == "mineru" and (doc.file_type or "").lower() in ("doc", "docx"):
+            g_cfg = get_active_config().gotenberg
+            if (g_cfg.base_url or "").strip():
+                from backend.services.parsers.gotenberg import convert_to_pdf
+                pdf_tmp_dir = Path(tempfile.mkdtemp(prefix="doc2pdf_"))
+                pdf_path = await convert_to_pdf(upload_path, g_cfg, pdf_tmp_dir)
+                if pdf_path is not None:
+                    parse_target, parse_type = pdf_path, "pdf"
+                else:  # 转换失败：清掉临时目录，按原文件走
+                    shutil.rmtree(pdf_tmp_dir, ignore_errors=True)
+                    pdf_tmp_dir = None
         try:
             text, images, parse_method = await self._await_with_cancel(
                 doc_id,
-                parser.parse(upload_path, doc.file_type,
+                parser.parse(parse_target, parse_type,
                              engine=engine,
                              **parse_opts))
         except ParserUnavailableError:
@@ -569,6 +591,10 @@ class IngestionService(_TraceMixin, _ImageMixin):
             # 可预期失败（解析器不可用/网络错误）：类型化异常（消息 =
             # 原始异常文本），外层捕获记 warning + 写回 failed
             raise ParserUnavailableError(str(e)) from e
+        finally:
+            # 转换产物是本次解析的临时件，解析完即清（含 PDF 与 Gotenberg 输出）
+            if pdf_tmp_dir is not None:
+                shutil.rmtree(pdf_tmp_dir, ignore_errors=True)
         if not text or not text.strip():
             raise RuntimeError(
                 "解析结果为空（扫描版 PDF 或无文本内容），请检查解析服务后重试")

@@ -32,8 +32,7 @@ import RetrievalPanel from './RetrievalPanel';
 import IngestPanel from './IngestPanel';
 import LlmPanel from './LlmPanel';
 import EmbeddingPanel from './EmbeddingPanel';
-import MineruPanel from './MineruPanel';
-import DeepdocPanel from './DeepdocPanel';
+import ParseServicesPanel from './ParseServicesPanel';
 import MysqlPanel from './MysqlPanel';
 import MinioPanel from './MinioPanel';
 import VectorStorePanel from './VectorStorePanel';
@@ -395,6 +394,9 @@ const SettingsPage: React.FC = () => {
       deepdoc_email: '',
       deepdoc_timeout: 300,
       deepdoc_dataset_prefix: 'myrag-tmp-',
+      // 文档转换（Gotenberg）：预填后端默认值，实际地址按部署环境改
+      gotenberg_base_url: 'http://127.0.0.1:3000',
+      gotenberg_timeout: 120,
       retrieval_top_k: 5,
       retrieval_enable_hybrid: true,
       rerank_enabled: false,
@@ -540,9 +542,22 @@ const SettingsPage: React.FC = () => {
       message.warning('请先选择档案再测试');
       return;
     }
+    const pid = editingId;
     setDomainTesting(`panel:${panelKey}`);
+    // 面板测试除了 toast，还要驱动标题旁的状态灯（与卡片级测试同源）：
+    // 先置"测试中"，拿到结果后落回；**只覆盖本次被测的段**，其他段的灯不动
+    const patchKeys = (fn: (k: SectionKey) => TestItem) =>
+      setTestStates(prev => {
+        const cur = prev[pid] ?? emptyTest;
+        const next = { ...cur };
+        for (const k of sections) next[k] = fn(k);
+        return { ...prev, [pid]: next };
+      });
+    patchKeys(() => ({ status: 'testing', msg: '' }));
     try {
-      const res = await testProfileConnection(editingId);
+      const res = await testProfileConnection(pid);
+      const items = toTestItems(res.data);
+      patchKeys(k => items[k]);
       const fail = sections
         .map(k => ({ key: k, r: (res.data as unknown as Record<string, { ok: boolean; message: string }>)[k] }))
         .filter(x => x.r)
@@ -553,7 +568,9 @@ const SettingsPage: React.FC = () => {
         message.error(`${sectionLabel[fail.key] ?? fail.key}：${fail.r.message}`);
       }
     } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || '测试失败');
+      const msg = asApiError(e).response?.data?.detail || '测试失败';
+      patchKeys(() => ({ status: 'failed', msg }));
+      message.error(msg);
     } finally {
       setDomainTesting('');
     }
@@ -942,14 +959,13 @@ const SettingsPage: React.FC = () => {
                 children: <EmbeddingPanel />,
               },
               {
-                key: 'mineru',
-                label: panelLabel('mineru', 'MinerU 文档解析'),
-                children: <MineruPanel />,
-              },
-              {
-                key: 'deepdoc',
-                label: panelLabel('deepdoc', 'DeepDoc 解析（RAGFlow）'),
-                children: <DeepdocPanel />,
+                key: 'parse',
+                label: panelLabel('parse', '文档解析相关（MinerU / DeepDoc / 文档转换）'),
+                children: (
+                  <ParseServicesPanel
+                    testItems={editingId ? testStates[editingId] : undefined}
+                  />
+                ),
               },
               {
                 key: 'vision',

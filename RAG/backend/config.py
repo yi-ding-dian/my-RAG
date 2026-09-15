@@ -416,12 +416,31 @@ class ImageSummaryConfig(BaseModel):
     max_images: int = 50
 
 
+class GotenbergConfig(BaseModel):
+    """Gotenberg 文档转换服务配置（Office → PDF）
+
+    用途：老版 .doc / .docx 等先转成 PDF，再交 MinerU 做版面识别——MinerU 的
+    主场是 PDF（按字号/字体/位置还原标题层级），而它处理 docx 时只提取文本、
+    不做版面分析，**标题层级会全丢**（实测同一份文档：直接给 docx → 0 个标题；
+    转成 PDF 再给 → 94 个标题）。
+
+    为什么用容器版而非宿主机直接跑 LibreOffice：容器可以加内存硬上限，转换
+    大文档内存暴涨时**只有容器被杀**，不拖垮整机（实测裸跑 soffice 在
+    105MB / 795 张扫描图的 .doc 上吃到 27.9GB，把机器拖到 OOM 卡死数分钟）。
+
+    未配置（base_url 为空）→ 不做转换，.doc 走原有路径。
+    """
+    base_url: str = "http://127.0.0.1:3000"
+    timeout: float = 120.0
+
+
 class ServiceConfig(BaseModel):
     """全部服务配置集合（阶段2 配置档案的完整形态）"""
     llm: LLMConfig
     embedding: EmbeddingConfig
     mineru: MinerUConfig
     deepdoc: DeepDocConfig = Field(default_factory=DeepDocConfig)
+    gotenberg: GotenbergConfig = Field(default_factory=GotenbergConfig)
     retrieval: RetrievalConfig
     chunking: ChunkingConfig
     chat: ChatConfig
@@ -485,6 +504,9 @@ def build_default_config() -> ServiceConfig:
             timeout=settings.DEEPDOC_TIMEOUT,
             dataset_prefix=settings.DEEPDOC_DATASET_PREFIX,
         ),
+        # Gotenberg 无 .env 出厂项：默认本机 3000，实际地址在系统配置页填
+        # （它通常与 MinerU 同机部署，地址因环境而异）
+        gotenberg=GotenbergConfig(),
         retrieval=RetrievalConfig(top_k=settings.RETRIEVAL_TOP_K),
         chunking=ChunkingConfig(
             chunk_size=settings.CHUNK_SIZE,

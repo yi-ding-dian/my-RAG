@@ -1,0 +1,54 @@
+# ============================================================
+# docker/Gotenberg/docker-compose.yml — 文档转换服务（Office → PDF）
+#
+# 用途：把老版 .doc / .docx / .xlsx 等转成 PDF，交给 MinerU 做版面识别。
+#
+# 为什么要绕这一圈：MinerU 的主场是 PDF——它按字号/字体/位置做**版面分析**，
+# 能还原标题层级；而处理 docx 时只提取文本、不做版面分析，**标题会全丢**
+# （实测：同一个「劳动法」docx 经 MinerU 解析出 0 个标题，转成 PDF 再过
+# MinerU 就能认出章节）。
+#
+# **为什么用容器而不是宿主机直接跑 soffice**（这是关键收益）：
+#   宿主机跑 LibreOffice 没有任何内存上限——实测一个 105MB / 795 张扫描图的
+#   .doc，转换时内存涨到 27.9GB，把整机拖到 OOM 卡死数分钟（最后是内核杀掉
+#   soffice.bin 才恢复）。放进容器后用 mem_limit 给硬上限：超限时**只有容器
+#   被杀**，本次转换快速失败，宿主机毫发无伤。
+#
+# 用法:
+#   docker compose -f docker/Gotenberg/docker-compose.yml up -d
+#   curl http://127.0.0.1:3001/health                              # 验证
+#   docker compose -f docker/Gotenberg/docker-compose.yml down     # 停止
+#
+# 端口: 宿主机 3001 → 容器 3000（避开前端 3002 与常见 3000 占用）
+# ============================================================
+
+services:
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: my-rag-gotenberg
+    restart: unless-stopped
+    # 内存硬上限：转换大文档必然会超，超了就让容器自己 OOM——宁可这次转换
+    # 失败，也不能拖垮整机。memswap_limit 与 mem_limit 取同值 = 容器内禁用
+    # swap（否则超限时它会去挤宿主机 swap，照样把系统拖慢）
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2
+    command:
+      - "gotenberg"
+      # 每完成 5 次转换重启一次 LibreOffice：它的内存会随转换次数累积不释放，
+      # 定期重启是最省事的兜底（宿主机那次 OOM 正是长时间运行中只涨不落）
+      - "--libreoffice-restart-after=5"
+      # 单次转换超时（默认 30s），大文档给宽一点
+      - "--api-timeout=120s"
+    ports:
+      - "3001:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  default:
+    name: gotenberg

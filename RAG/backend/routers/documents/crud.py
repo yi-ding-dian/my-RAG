@@ -124,6 +124,10 @@ async def upload_document(request: Request, kb_id: str,
             detail=f"知识库中已存在同名文档：{original_name}，如需覆盖请确认后重传")
 
     # 分块读取，限制大小（上限可由配置档案 ingestion.max_upload_mb 调整）
+    # 注：老版 .doc 曾另设 50MB 上限——本地 LibreOffice 转换没有内存上限，
+    # 实测 105MB / 795 张扫描图吃到 27.9GB 把整机拖到 OOM。接入 Gotenberg 后
+    # 转换跑在容器里、由容器的 mem_limit 兜底（超限只杀容器不拖垮宿主机），
+    # 该额外限制已取消，.doc 与其他格式一样只受 max_upload_mb 约束
     upload_max_mb = get_active_config().ingestion.max_upload_mb
     content = b""
     while chunk := await file.read(8 * 1024 * 1024):

@@ -3,9 +3,9 @@
 # 一键起齐 MySQL 8 + MinIO，端口与系统配置页默认一致。
 #
 # 用法:
-#   docker compose -f docker/docker-compose.infra.yml up -d          # 起 MySQL + MinIO
-#   docker compose -f docker/docker-compose.infra.yml up -d mysql    # 只起某一个
-#   docker compose -f docker/docker-compose.infra.yml down           # 停止（数据卷保留）
+#   docker compose -f docker/docker-compose.infra.yml up -d              # 全部
+#   docker compose -f docker/docker-compose.infra.yml up -d mysql        # 只起某一个
+#   docker compose -f docker/docker-compose.infra.yml down               # 停止（数据卷保留）
 #
 # 重要:
 #   1. 口令均为占位符，使用前必须改为强口令（改完与 docker/.env.docker
@@ -16,6 +16,9 @@
 #      替代（对象存本地 data/storage），详见 docs/external-deps.md
 #   4. 数据卷持久化在 docker/volumes/ 下（mysql-data / minio-data），
 #      down 不删数据；彻底删除请 docker compose down -v（慎用）
+#   5. Gotenberg（Office → PDF，端口 3001）是**按需启用**的转换服务，在
+#      docker/Gotenberg/ 单独编排（同 docker/Milvus/ 的组织方式）——只在需要
+#      把 .doc/.docx 转 PDF 再交 MinerU 解析时才起，见该目录下的说明
 # ============================================================
 
 services:

@@ -10,7 +10,7 @@ const DeepdocPanel: React.FC = () => (
       type="info"
       showIcon
       style={{ marginBottom: 12 }}
-      message="DeepDoc 通过 RAGFlow 服务解析 PDF，表格输出为可检索的 HTML（vs MinerU 表格为图片不可检索）"
+      message="文档解析引擎：解析 PDF，表格输出为可检索的 HTML"
     />
     <Row gutter={12}>
       <Col span={12}>

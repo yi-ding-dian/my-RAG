@@ -35,6 +35,7 @@ from typing import Any, Dict, Optional, Tuple
 from backend.config import (AgenticConfig, ChatConfig, ChunkingConfig,
                             ContextualRetrievalConfig,
                             DeepDocConfig, EmbeddingConfig,
+                            GotenbergConfig,
                             ImageSummaryConfig, IngestionConfig,
                             LLMConfig, MinerUConfig, MinIOConfig, MySQLConfig,
                             RerankConfig, RetrievalConfig, ServiceConfig,
@@ -268,6 +269,14 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             "password": {"strip": True, "condition": "secret_truthy"},
             "timeout": {"condition": "not_none"},
             "dataset_prefix": {"strip": True},
+        },
+        fill_section=True),
+    # Gotenberg 文档转换（Office → PDF）：配合 MinerU 用——MinerU 的主场是 PDF
+    # （按版面还原标题层级），docx 直接给它标题会全丢（见 GotenbergConfig 说明）
+    "gotenberg": _reflect_section("gotenberg", GotenbergConfig,
+        overrides={
+            "base_url": {"strip": True},
+            "timeout": {"condition": "not_none"},
         },
         fill_section=True),
     "retrieval": _reflect_section("retrieval", RetrievalConfig,

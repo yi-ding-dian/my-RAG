@@ -164,6 +164,57 @@ def probe_mineru_sync(cfg=None, *, timeout: Optional[float] = None,
             "reason": _join_errors(errors, "无响应")}
 
 
+# ==================== Gotenberg ====================
+
+# 健康检查端点：返回 {"status":"up","details":{libreoffice:{status},chromium:{status}}}
+GOTENBERG_HEALTH_ENDPOINT = "/health"
+DEFAULT_GOTENBERG_TIMEOUT = 120.0
+
+
+def probe_gotenberg_sync(cfg=None, *, timeout: Optional[float] = None) -> dict:
+    """Gotenberg 文档转换服务健康探测（同步形态，httpx.get /health）
+
+    只探活、不试转换：转换要传实际文件、代价大，真正可用性由调用时兜底。
+    返回体里的 status/libreoffice 一并带进 reason——服务进程活着但内部
+    LibreOffice 挂掉时（Gotenberg 会返回 down）能一眼看出来。
+    """
+    base_url = _cfg_str(cfg, "base_url", "url").strip().rstrip("/")
+    timeout = (float(timeout) if timeout is not None
+               else _cfg_timeout(cfg, DEFAULT_GOTENBERG_TIMEOUT))
+    t0 = time.monotonic()
+    if not base_url:
+        return {"ok": False, "latency_ms": 0, "reason": "Gotenberg 服务地址未配置"}
+    try:
+        resp = httpx.get(f"{base_url}{GOTENBERG_HEALTH_ENDPOINT}",
+                         timeout=timeout)
+        latency = int((time.monotonic() - t0) * 1000)
+        if resp.status_code >= 400:
+            return {"ok": False, "latency_ms": latency,
+                    "reason": f"服务返回 HTTP {resp.status_code}"}
+        detail = ""
+        try:
+            body = resp.json()
+            status = str(body.get("status") or "")
+            if status:
+                detail = f"，status={status}"
+            lo = ((body.get("details") or {}).get("libreoffice")
+                  or {}).get("status")
+            if lo:
+                detail += f"，libreoffice={lo}"
+        except Exception:  # 响应非 JSON 不影响"服务可达"这个结论
+            pass
+        return {"ok": True, "latency_ms": latency,
+                "reason": f"连接成功（HTTP {resp.status_code}{detail}）"}
+    except httpx.TimeoutException:
+        return {"ok": False,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "reason": f"连接超时（{int(timeout)}s）"}
+    except Exception as e:
+        return {"ok": False,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "reason": f"连接失败: {str(e)[:120]}"}
+
+
 # ==================== DeepDoc ====================
 
 
