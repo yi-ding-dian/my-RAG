@@ -185,3 +185,62 @@ class TestIngestParams:
         by_id = {d["id"]: d for d in docs}
         assert by_id[doc1["id"]]["parser_id"] == "title"
         assert by_id[doc2["id"]]["parser_id"] == "naive"
+
+
+# ==================== 默认值供给（GET /api/kbs/ingest-defaults）====================
+
+class TestIngestDefaults:
+    """前端默认值的唯一来源：不再硬编码 800/100、512/50 这组数值
+
+    前端曾在向导 / 批量智能 / 批量统一 / 失败兜底 / 解析配置弹窗各抄一份，
+    且与活跃配置漂移（超管改了 CHUNK_SIZE，向导仍发 800）。改为接口供给后，
+    数值只有一个来源。
+    """
+
+    def _get(self, client, headers):
+        return client.get("/api/kbs/ingest-defaults", headers=headers)
+
+    def test_requires_login(self, client):
+        assert self._get(client, None).status_code == 401
+
+    def test_login_is_enough(self, client, user_headers):
+        """普通用户也能读（前端渲染表单要用，不是管理接口）"""
+        assert self._get(client, user_headers).status_code == 200
+
+    def test_covers_all_methods(self, client, admin_headers):
+        from backend.chunking.common import VALID_METHODS
+        data = self._get(client, admin_headers).json()
+        assert set(data["methods"]) == set(VALID_METHODS)
+
+    def test_parent_child_uses_frontend_convention(self, client, admin_headers):
+        """父子分块用前端历史约定值（512/50），与后端缺省（活跃配置）不同
+        ——保持原值以免改变既有入库结果"""
+        pc = self._get(client, admin_headers).json()["methods"]["parent_child"]
+        assert pc["chunk_size"] == 512 and pc["overlap"] == 50
+        assert pc["parent_split_level"] == 2
+        assert pc["retrieval_mode"] == "parent"
+
+    def test_chunk_size_follows_active_config(self, client, admin_headers):
+        """泛用方式的大小跟随活跃配置（超管改了 CHUNK_SIZE，前端即时跟上）"""
+        from backend.config import get_active_config
+        data = self._get(client, admin_headers).json()
+        active = get_active_config().chunking
+        assert data["methods"]["naive"]["chunk_size"] == active.chunk_size
+        assert data["methods"]["hierarchical"]["overlap"] == active.chunk_overlap
+
+    def test_param_free_methods(self, client, admin_headers):
+        """qa / agentic 无切块参数（参数对它们无意义）"""
+        methods = self._get(client, admin_headers).json()["methods"]
+        assert methods["qa"] == {} and methods["agentic"] == {}
+
+    def test_ranges_and_agentic_limits(self, client, admin_headers):
+        from backend.services.ingestion.params import (
+            _MAX_AGENTIC_TEXT_CHARS, _MAX_AGENTIC_TEXT_CHARS_HARD)
+        data = self._get(client, admin_headers).json()
+        assert data["ranges"]["chunk_size"] == [50, 20000]
+        assert data["agentic"] == {"confirm_chars": _MAX_AGENTIC_TEXT_CHARS,
+                                   "hard_chars": _MAX_AGENTIC_TEXT_CHARS_HARD}
+
+    def test_route_not_shadowed_by_kb_id(self, client, admin_headers):
+        """静态路径必须排在 /{kb_id} 之前，否则会被当成 kb_id 匹配（404）"""
+        assert self._get(client, admin_headers).status_code == 200

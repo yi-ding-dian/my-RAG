@@ -357,6 +357,11 @@ class TestRecommendations:
         assert "上下文检索" in rec["contextual_retrieval"]["reason"]
 
     def test_no_headings_over_threshold(self, client, admin_headers):
+        """超阈值：上下文检索不是"不建议"而是"不可开启"
+
+        开启会让**整文档入库失败**（contextual_retriever 抛 DocTooLongError，
+        异常冒泡到任务外层写回 failed），所以前端要把开关禁用掉而不只是提示。
+        """
         _set_threshold(200)
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"], filename="长文.txt",
@@ -365,7 +370,12 @@ class TestRecommendations:
         rec = data["recommendations"]
         assert rec["chunk_method"]["method"] == "naive"
         assert rec["contextual_retrieval"]["recommended"] is False
-        assert "不建议" in rec["contextual_retrieval"]["reason"]
+        assert "不可开启" in rec["contextual_retrieval"]["reason"]
+        # 成本预估里同样标记不可用（前端据此禁用开关，而不是让用户开出必失败的任务）
+        ctx = next(i for i in data["parse_plan"]["cost"]["items"]
+                   if i["key"] == "contextual_retrieval")
+        assert ctx["available"] is False
+        assert ctx["calls"] == 0
 
     def test_qa_document(self, client, admin_headers):
         content = (
@@ -377,6 +387,115 @@ class TestRecommendations:
         assert rec["chunk_method"]["method"] == "qa"
         assert rec["chunk_method"]["recommended"] is True
         assert "问答对" in rec["chunk_method"]["reason"]
+
+
+# ==================== 入库方案（parse_plan）====================
+
+class TestDocxStructHierarchicalEndToEnd:
+    """规范标题样式的 docx → 结构解析 → 层级聚合切块（端到端验收线）
+
+    这条是本次"推荐与默认选中打架"修复的验收线：Step1 面板 / Step2 徽标 /
+    Step2 默认选中三处都从 parse_plan 派生，只要这里对，三处必然一致。
+    """
+
+    def _docx_with_headings(self, client, kb_id, headings: int,
+                            body_per_section: int = 5):
+        import docx as docx_mod
+        buf = io.BytesIO()
+        d = docx_mod.Document()
+        for i in range(headings):
+            d.add_heading(f"第{i + 1}章 测试章节", level=1)
+            d.add_paragraph("这是章节正文内容。" * body_per_section)
+        d.save(buf)
+        return upload_doc(
+            client, kb_id, filename="norm.docx", content=buf.getvalue(),
+            mime="application/vnd.openxmlformats-officedocument"
+                 ".wordprocessingml.document")
+
+    def test_normative_docx_gets_hierarchical(self, client, admin_headers):
+        kb = create_kb(client)
+        doc = self._docx_with_headings(client, kb["id"], headings=3)
+        data = _analyze(client, kb["id"], doc["id"])
+        # 结构探测认定规范（样式标题 >= 3 且覆盖率 >= 2%）
+        assert data["structure"]["docx_structure"]["is_normative"] is True
+        assert data["engine_suggestion"]["suggested"] == "docx_struct"
+        # 入库方案用层级聚合切块——**且主推荐与投影一致**（不再各说各话）
+        assert data["parse_plan"]["config"]["method"] == "hierarchical"
+        assert data["recommendations"]["chunk_method"]["method"] == "hierarchical"
+        # 父子分块降为备选
+        assert "parent_child" in [a["method"]
+                                  for a in data["parse_plan"]["alternatives"]]
+        # 包含父标题推荐 False：层级聚合的块自带标题链，该开关对它不生效
+        assert data["parse_plan"]["config"]["enable_heading_in_content"] is False
+        # 每个配置键都带理由
+        assert {d["key"] for d in data["parse_plan"]["decisions"]} >= \
+            set(data["parse_plan"]["config"])
+
+    def test_non_normative_docx_not_struct(self, client, admin_headers):
+        """标题太少（不够规范性阈值）→ 不走结构解析、不推层级聚合"""
+        kb = create_kb(client)
+        doc = self._docx_with_headings(client, kb["id"], headings=1)
+        data = _analyze(client, kb["id"], doc["id"])
+        assert data["structure"]["docx_structure"]["is_normative"] is False
+        assert data["engine_suggestion"]["suggested"] != "docx_struct"
+        assert data["parse_plan"]["config"]["method"] != "hierarchical"
+
+
+class TestSpreadsheetPlan:
+
+    def test_xlsx_plan_and_empty_profile(self, client, admin_headers):
+        """表格：按 Sheet 分节切块；画像四段保持空 dict（前端靠它切分支）"""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "设备清单"
+        ws.append(["名称", "数量"])
+        ws.append(["隔离开关", 3])
+        wb.create_sheet("备注").append(["说明文字"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        kb = create_kb(client)
+        doc = upload_doc(
+            client, kb["id"], filename="s.xlsx", content=buf.getvalue(),
+            mime="application/vnd.openxmlformats-officedocument"
+                 ".spreadsheetml.sheet")
+        data = _analyze(client, kb["id"], doc["id"])
+        assert data["spreadsheet"]["sheet_count"] == 2
+        assert data["parse_plan"]["config"]["method"] == "title"
+        # 表格自带结构上下文，不推 LLM 摘要
+        assert data["recommendations"]["contextual_retrieval"]["recommended"] is False
+        # 文本画像段保持空（DocumentPortrait 依赖这个分支切换）
+        assert data["length"] == {}
+        assert data["structure"] == {}
+        assert data["qa"] == {}
+        # 表格不吃 parser_engine
+        assert "parser_engine" not in data["parse_plan"]["config"]
+
+
+class TestAgenticWindow:
+    """Agentic 不进默认路径：恒为"可选"备选，超 5 万字直接不可用"""
+
+    def test_offered_as_optional_never_default(self, client, admin_headers):
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"], filename="t.txt",
+                         content="普通正文段落。\n\n" * 400)
+        data = _analyze(client, kb["id"], doc["id"])
+        ag = next(a for a in data["parse_plan"]["alternatives"]
+                  if a["method"] == "agentic")
+        assert ag["badge"] == "可选"
+        assert ag["recommended"] is False
+        assert data["parse_plan"]["config"]["method"] != "agentic"
+
+    def test_unavailable_over_hard_limit(self, client, admin_headers):
+        """超 5 万字：calls 归零且标不可用（成本项要说实话，别让用户以为能用）"""
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"], filename="big.txt",
+                         content="正文。" * 20000)      # 约 6 万字
+        data = _analyze(client, kb["id"], doc["id"])
+        ag = next(i for i in data["parse_plan"]["cost"]["items"]
+                  if i["key"] == "agentic")
+        assert ag["available"] is False
+        assert ag["calls"] == 0
 
 
 # ==================== 引擎建议 ====================

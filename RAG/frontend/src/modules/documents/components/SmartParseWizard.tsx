@@ -32,12 +32,12 @@ import type {
   ImgSummaryFormat,
   IngestConfig,
   ParseMethod,
-  ParserEngine,
   ParserLlmModelItem,
   ThinkingMode,
 } from '../../../shared/api/client';
 import { analyzeDocument, getLlmModelList, ingestDocument, testLlmModelByName } from '../../../shared/api/client';
 import DocumentPortrait, { ENGINE_LABELS } from './DocumentPortrait';
+import { buildConfig, useIngestDefaults } from '../ingestDefaults';
 import ImgSummaryFormatPicker, {
   IMG_FMT_LABELS,
 } from './ImgSummaryFormatPicker';
@@ -94,6 +94,8 @@ interface SmartParseWizardProps {
  */
 const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, onCancel, onSuccess }) => {
   const { message } = AntApp.useApp();
+  /** 默认值表（后端 /kbs/ingest-defaults）：用户中途切了切块方式时用它装配参数 */
+  const defaults = useIngestDefaults();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [analyze, setAnalyze] = useState<AnalyzeResult | null>(null);
@@ -124,11 +126,17 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
   const [submitting, setSubmitting] = useState(false);
 
   const isAgentic = method === 'agentic';
-  const docFileType = (doc?.file_type ?? '').toLowerCase().replace(/^\./, '');
-  const isPdfLike = docFileType === 'pdf' || docFileType === 'docx';
   const rec = analyze?.recommendations;
+  /** 上下文检索对本文档是否可开启：超阈值时开启会让**整文档入库失败**
+   *  （后端抛 DocTooLongError，任务写回 failed），所以不是"不推荐"而是禁止。
+   *  权威判断来自入库方案的 cost（plan 缺失时退回阈值比较）。 */
+  const ctxCost = analyze?.parse_plan?.cost?.items
+    ?.find(i => i.key === 'contextual_retrieval');
+  const ctxAvailable = ctxCost
+    ? ctxCost.available
+    : !(analyze?.length.over_threshold ?? false);
 
-  // 拉取画像（打开/重试共用）：成功后回填推荐默认值（主推荐切块方式 + 增强开关）
+  // 拉取画像（打开/重试共用）：成功后回填**入库方案**给的默认值
   const loadAnalyze = React.useCallback(() => {
     if (!kbId || !doc) return;
     setLoading(true);
@@ -138,18 +146,15 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
         setAnalyze(res.data);
         if (!initRef.current) {
           initRef.current = true;
-          const r = res.data.recommendations;
-          // 切块方式默认：解析引擎=结构解析（docx_struct，标题层级精确）时优先
-          // 默认层级聚合切块（按章节聚合、块首自带标题链）——该组合下边界落在
-          // 标题之间，不会把小节正文从中间切断；其余引擎产物层级不可靠，
-          // 跟随画像主推荐（无推荐则用通用切块默认值）
-          if (res.data.engine_suggestion?.suggested === 'docx_struct') {
-            setMethod('hierarchical');
-          } else if (r?.chunk_method?.method) {
-            setMethod(r.chunk_method.method);
+          // 切块方式与开关都从后端入库方案取。**这里不再自己判断引擎**——原先
+          // 叠了层"引擎=结构解析就强制选层级聚合"的特判，与后端推荐矩阵各说各话，
+          // 于是 Step1 面板 / Step2 徽标 / 默认选中三处打架。现在三处同源。
+          const plan = res.data.parse_plan;
+          if (plan) {
+            setMethod(plan.config.method ?? 'naive');
+            setContextualRetrieval(!!plan.switches.contextual_retrieval);
+            setHeadingInContent(!!plan.switches.enable_heading_in_content);
           }
-          setContextualRetrieval(r?.contextual_retrieval?.recommended ?? false);
-          setHeadingInContent(r?.enable_heading_in_content ?? false);
         }
       })
       .catch(e => {
@@ -259,47 +264,31 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
   // Step4 确认解析：按向导选择生成配置，调现有 ingest 接口（与手动解析同一 API）
   const handleOk = async () => {
     if (!kbId || !doc) return;
-    const config: IngestConfig = { method };
-    // 切块参数默认值（与手动解析弹窗缺省一致）
-    if (method === 'parent_child') {
-      config.chunk_size = 512;
-      config.overlap = 50;
-      config.parent_chunk_size = 1024;
-      config.parent_chunk_overlap = 100;
-      config.parent_split_level = 2;
-      config.retrieval_mode = 'parent';
-    } else if (method === 'title') {
-      config.split_level = 2;
-      config.chunk_size = 800;
-      config.overlap = 100;
-    } else if (method === 'naive' || method === 'regex' || method === 'hierarchical') {
-      // 层级聚合切块参数与通用切块同（chunk_size/overlap，后端同一套校验）
-      config.chunk_size = 800;
-      config.overlap = 100;
-      if (method === 'regex') {
-        if (!regexPattern.trim()) {
-          message.error('请填写正则表达式');
-          setStep(1);
-          return;
-        }
-        config.regex_pattern = regexPattern.trim();
-      }
+    if (method === 'regex' && !regexPattern.trim()) {
+      message.error('请填写正则表达式');
+      setStep(1);
+      return;
     }
-    // 引擎建议（仅 pdf/docx/doc 提交；txt/md 直读不传，后端默认）
-    const suggested = analyze?.engine_suggestion?.suggested;
-    if (isPdfLike && suggested
-        && ['mineru', 'deepdoc', 'docx_struct', 'plain'].includes(suggested)) {
-      config.parser_engine = suggested as ParserEngine;
-    }
-    config.enable_heading_in_content = headingInContent;
-    config.contextual_retrieval = contextualRetrieval;
-    config.knowledge_graph = knowledgeGraph;
-    // 图片摘要用的是「图片解析模型」（vision 段，多模态），与上面的解析 LLM
-    // 无关——故它不参与下面 parse_llm_model 的判定条件
-    config.image_summary = imageSummary;
+    // 切块参数以**后端入库方案**为准（它已综合画像与引擎建议）；用户中途切了
+    // 方式时方案里的参数不对应，改用默认值表（同一来源：/kbs/ingest-defaults）
+    // 重新装配。用户真正拥有的只有下面这些开关与 LLM 相关项。
+    const plan = analyze?.parse_plan;
+    const base = (plan && plan.config.method === method)
+      ? plan.config
+      : buildConfig(defaults, method);
+    const config: IngestConfig = {
+      ...base,
+      enable_heading_in_content: headingInContent,
+      contextual_retrieval: contextualRetrieval,
+      knowledge_graph: knowledgeGraph,
+      // 图片摘要用的是「图片解析模型」（vision 段，多模态），与下面的解析 LLM
+      // 无关——故它不参与 parse_llm_model 的判定条件
+      image_summary: imageSummary,
+      thinking_mode: thinkingMode,
+    };
     // 输出格式只在开启时带；'' = 跟随系统配置（不传该参数，后端用部门/全局的）
     if (imageSummary && imageFormat) config.image_summary_format = imageFormat;
-    config.thinking_mode = thinkingMode;
+    if (method === 'regex') config.regex_pattern = regexPattern.trim();
     if ((contextualRetrieval || knowledgeGraph || isAgentic) && parseLlmModel) {
       config.parse_llm_model = parseLlmModel;
     }
@@ -417,20 +406,21 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
               </div>
               <Switch
                 checked={contextualRetrieval}
-                disabled={isAgentic}
+                disabled={isAgentic || !ctxAvailable}
                 onChange={setContextualRetrieval}
                 style={{ flexShrink: 0 }}
               />
             </div>
             {/* 展开区收在同一张卡里：超阈值提醒与费用提示都属于这一项 */}
-            {(analyze?.length.over_threshold || contextualRetrieval) && (
+            {(!ctxAvailable || contextualRetrieval) && (
               <div className="spw-toggle-extra">
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  {analyze?.length.over_threshold && (
+                  {!ctxAvailable && (
                     <Alert
-                      type="warning"
+                      type="error"
                       showIcon
-                      message={`本文档 ${analyze.length.doc_label} 超过完整文档阈值，效果不佳不建议开启`}
+                      message={ctxCost?.detail
+                        || `文档 ${analyze?.length.doc_label ?? ''} 超过完整文档阈值，开启会导致入库失败，不可开启`}
                     />
                   )}
                   {contextualRetrieval && (

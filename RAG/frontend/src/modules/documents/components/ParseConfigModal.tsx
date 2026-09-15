@@ -28,8 +28,8 @@ const DEFAULT_DELIMITERS = ['\n\n', '\n', '。', '；'];
 const displayDelimiter = (d: string): string => d.replace(/\n/g, '\\n');
 const parseDelimiterInput = (s: string): string => s.replace(/\\n/g, '\n');
 
-import MinerUBackendField from './parse-fields/MinerUBackendField';
-import PagesRangeField from './parse-fields/PagesRangeField';
+import { useIngestDefaults } from '../ingestDefaults';
+import MinerUBackendField from './parse-fields/MinerUBackendField';import PagesRangeField from './parse-fields/PagesRangeField';
 import TaskPageSizeField from './parse-fields/TaskPageSizeField';
 import SwitchField from './parse-fields/SwitchField';
 import LangSelectField from './parse-fields/LangSelectField';
@@ -121,6 +121,8 @@ const ParseModeOptionLabel: React.FC<{ label: string; entry: ParserStatusEntry |
 /** 解析配置弹窗：选择切块方式与参数后触发解析（参考 KnowFlow chunk-method-modal / chunking-config 交互） */
 const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, onCancel, onSuccess }) => {
   const { message } = AntApp.useApp();
+  /** 默认值表（后端 /kbs/ingest-defaults）：切块方式的参数初值不再前端硬编码 */
+  const defaults = useIngestDefaults();
   const [form] = Form.useForm<ParseConfigFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [parserStatus, setParserStatus] = useState<ParserStatus | null>(null);
@@ -412,23 +414,19 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     }
   };
 
-  // 切换切块方式时补齐该方式的默认值（已有值不覆盖）
+  // 切换切块方式时补齐该方式的默认值（已有值不覆盖）。
+  // 数值来自后端 /kbs/ingest-defaults，前端不再自带一份参数知识——此前
+  // 512/50/1024/100、800/100 这组字面量在五个地方各抄了一遍。
   useEffect(() => {
     if (!open) return;
-    const isParentChild = method === 'parent_child';
-    const get = (name: keyof ParseConfigFormValues) => form.getFieldValue(name);
-    if (isParentChild) {
-      if (get('chunk_size') == null) form.setFieldValue('chunk_size', 512);
-      if (get('overlap') == null) form.setFieldValue('overlap', 50);
-      if (get('parent_chunk_size') == null) form.setFieldValue('parent_chunk_size', 1024);
-      if (get('parent_chunk_overlap') == null) form.setFieldValue('parent_chunk_overlap', 100);
-      if (get('parent_split_level') == null) form.setFieldValue('parent_split_level', 2);
-      if (get('retrieval_mode') == null) form.setFieldValue('retrieval_mode', 'parent');
-    } else {
-      if (get('chunk_size') == null) form.setFieldValue('chunk_size', 800);
-      if (get('overlap') == null) form.setFieldValue('overlap', 100);
-    }
-  }, [method, open, form]);
+    const base = defaults?.methods?.[method] as
+      Record<string, unknown> | undefined;
+    if (!base) return;
+    Object.entries(base).forEach(([k, v]) => {
+      const key = k as keyof ParseConfigFormValues;
+      if (form.getFieldValue(key) == null) form.setFieldValue(key, v);
+    });
+  }, [method, open, form, defaults]);
 
   const handleOk = async () => {
     if (!kbId || !doc) return;
@@ -742,7 +740,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                     // 章节边界；MinerU 等扁平产物效果差，不出现）
                     ...(isHierarchicalAvailable
                       ? [{
-                          value: 'hierarchical' as ParseMode,
+                          value: 'hierarchical' as ParseMethod,
                           label: '层级聚合切块（按章节聚合，块边界落在标题之间，块首自带标题链）',
                         }]
                       : []),

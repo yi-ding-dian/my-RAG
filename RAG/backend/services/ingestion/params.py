@@ -293,3 +293,69 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
 # pending_confirm 待确认状态（不算失败，error 带提示），确认后重提入库）
 _MAX_AGENTIC_TEXT_CHARS = 10000
 _MAX_AGENTIC_TEXT_CHARS_HARD = 50000
+
+
+# ---- 默认值供给（前端消费；见 public_defaults）----
+# 各切块方式的默认参数（前端手动选择 / 统一批量时的初值）
+# - chunk_size/overlap 统一取**活跃配置的当前值**：超管改配置即时生效。前端曾
+#   把 800/100 硬编码在 5 处，改了系统配置前端不跟，这是漂移的来源
+# - parent_child 的子块参数是前端历史约定值（512/50），与后端缺省（活跃配置）
+#   不同，保持原值以免改变既有入库结果
+_METHOD_PARAM_DEFAULTS = {
+    "parent_child": {
+        "chunk_size": 512,
+        "overlap": 50,
+        "parent_chunk_size": _DEFAULT_PARENT_CHUNK_SIZE,
+        "parent_chunk_overlap": _DEFAULT_PARENT_CHUNK_OVERLAP,
+        "parent_split_level": _DEFAULT_PARENT_SPLIT_LEVEL,
+        "retrieval_mode": "parent",
+    },
+    "title": {"split_level": 2},
+}
+
+# 参数对它们无意义的方式（问答对整块 / LLM 全量切分）
+_PARAM_FREE_METHODS = ("qa", "agentic")
+
+
+def method_defaults(cfg=None) -> dict:
+    """各切块方式的默认参数（chunk_size/overlap 取活跃配置的当前值）
+
+    供智能解析决策矩阵与前端手动模式共用——数值只有一个来源。
+    """
+    chunking = (cfg or get_active_config()).chunking
+    base = {"chunk_size": chunking.chunk_size,
+            "overlap": chunking.chunk_overlap}
+    out = {m: dict(base) for m in VALID_METHODS}
+    out["parent_child"].update(_METHOD_PARAM_DEFAULTS["parent_child"])
+    out["title"].update(_METHOD_PARAM_DEFAULTS["title"])
+    for m in _PARAM_FREE_METHODS:
+        out[m] = {}
+    return out
+
+
+def public_defaults(cfg=None) -> dict:
+    """前端消费的默认值与合法范围（GET /api/kbs/ingest-defaults）
+
+    存在的意义：让前端**不必再硬编码**一份参数知识。此前 `800/100`、
+    `512/50/1024/100` 这组字面量在向导/批量智能/批量统一/失败兜底/解析配置
+    弹窗里抄了 5 遍，且与后端活跃配置漂移。改为接口供给后，前端只做展示与
+    用户覆盖，数值仍只有这一个来源。
+    """
+    return {
+        "methods": method_defaults(cfg),
+        "ranges": {
+            "chunk_size": [_MIN_CHUNK_SIZE, _MAX_CHUNK_SIZE],
+            "split_level": [_MIN_SPLIT_LEVEL, _MAX_SPLIT_LEVEL],
+            "parent_chunk_size": [_MIN_PARENT_CHUNK_SIZE,
+                                  _MAX_PARENT_CHUNK_SIZE],
+            "parent_chunk_overlap": [_MIN_PARENT_CHUNK_OVERLAP,
+                                     _MAX_PARENT_CHUNK_OVERLAP],
+            "parent_split_level": [_MIN_PARENT_SPLIT_LEVEL,
+                                   _MAX_PARENT_SPLIT_LEVEL],
+            "task_page_size": [_MIN_TASK_PAGE_SIZE, _MAX_TASK_PAGE_SIZE],
+        },
+        "retrieval_modes": list(_VALID_RETRIEVAL_MODES),
+        "agentic": {"confirm_chars": _MAX_AGENTIC_TEXT_CHARS,
+                    "hard_chars": _MAX_AGENTIC_TEXT_CHARS_HARD},
+        "parser_defaults": dict(_DEFAULT_PARSER_CONFIG),
+    }

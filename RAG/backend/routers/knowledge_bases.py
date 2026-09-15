@@ -31,6 +31,7 @@ from backend.services.dim_check import (get_kb_vector_status,
                                         get_rebuild_status, kb_vector_summary,
                                         run_rebuild_task, start_rebuild_task)
 from backend.services.document_service import get_document_service
+from backend.services.ingestion.params import public_defaults
 from backend.services.kb_service import get_kb_service
 from backend.services.knowledge_graph_service import graph_path
 from backend.services.parsers.probe import probe_parsers
@@ -86,6 +87,20 @@ async def parsers_status(user: UserPublic = Depends(get_current_user)):
     （默认超时 5s/8s，总耗时 ≤8s），探测失败不抛异常（=不可用+原因）。
     """
     return await probe_parsers()
+
+
+@router.get("/ingest-defaults")
+async def ingest_defaults(user: UserPublic = Depends(get_current_user)):
+    """入库参数默认值与合法范围（登录即可）：供前端表单初值与校验
+
+    存在的意义：前端此前把 `800/100`、`512/50/1024/100` 这组默认值硬编码在
+    5 处，且与后端活跃配置漂移（超管改了 CHUNK_SIZE，向导仍发 800）。改为接口
+    供给后，数值只有一个来源（services/ingestion/params.py）。
+
+    响应契约见 params.public_defaults：{methods, ranges, retrieval_modes,
+    agentic, parser_defaults}。
+    """
+    return public_defaults()
 
 
 @router.get("/tags", response_model=TagAggregate)

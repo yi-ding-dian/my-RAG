@@ -13,6 +13,7 @@ import type {
   DocxOutlineResponse,
   GlobalDocumentPage,
   IngestConfig,
+  IngestDefaults,
   IngestResult,
   KnowledgeBase,
   KnowledgeGraph,
@@ -95,6 +96,16 @@ export const ingestDocument = (kbId: string, docId: string, config?: IngestConfi
 // ========== 解析器可用性探测（解析前检测，解析弹窗状态徽标） ==========
 
 export const getParserStatus = () => api.get<ParserStatus>('/kbs/parsers/status');
+
+// ========== 入库参数默认值（表单初值与校验范围的唯一来源，在后端 params.py） ==========
+
+/**
+ * 各切块方式的默认参数 + 合法范围 + agentic 两档上限。
+ * 前端不再自带一份参数知识（此前向导 / 批量两种模式 / 解析配置弹窗各抄了一份，
+ * 且与后端活跃配置漂移——超管改了 CHUNK_SIZE，向导仍发 800）。
+ */
+export const getIngestDefaults = () =>
+  api.get<IngestDefaults>('/kbs/ingest-defaults');
 
 // ========== 智能解析引导（文档画像分析，独立模块；向导生成配置后复用 ingest） ==========
 

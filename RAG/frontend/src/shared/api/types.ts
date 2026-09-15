@@ -557,6 +557,78 @@ export interface MethodRecommendation {
   label: string;
   recommended: boolean;
   reason: string;
+  /** 徽标文案：推荐 / 可选 / 备选（**后端给出**，前端不再自行判断该标谁） */
+  badge?: string;
+}
+
+/** 一条决策：入库配置里一个字段的取值、来源与中文理由（后端 ParsePlan.decisions）
+ *
+ *  source：rule=规则命中 / engine=引擎联动 / profile=画像 / default=缺省 / limit=上限回退
+ *  billable=true 表示这是花钱的 LLM 环节，是否开启由用户按预算决定 */
+export interface PlanDecision {
+  key: string;
+  value: unknown;
+  reason: string;
+  source: string;
+  billable: boolean;
+}
+
+/** 单个 LLM 环节的成本（**原始单位**：调用次数 + 字符数 + 图片张数）
+ *
+ *  不做 token 换算——各模型词表不同（同一汉字 0.6~2 token），换算留给展示层按
+ *  本模型实测系数来。calls 是主计量（成本 = 次数 × 单价）；未开启的环节也给
+ *  "开启后会是多少"，前端做开关预览时零请求。 */
+export interface CostItem {
+  /** contextual_retrieval / knowledge_graph / image_summary / agentic / heading_levels */
+  key: string;
+  label: string;
+  calls: number;
+  input_chars: number;
+  output_chars: number;
+  images: number;
+  /** 估算口径（可直接做 tooltip），如"每块重发全文 ≤2.0 万字 × 26 块" */
+  detail: string;
+  /** false = 对本文档不可开启（如超阈值的上下文检索会让整文档入库失败） */
+  available: boolean;
+}
+
+export interface CostEstimate {
+  chunks: number;
+  enabled: Record<string, boolean>;
+  items: CostItem[];
+  /** 以下 total_* 只对**已开启**项求和 */
+  total_calls: number;
+  total_input_chars: number;
+  total_output_chars: number;
+  total_images: number;
+  notes: string[];
+}
+
+/** 入库方案（后端唯一真相源）：推荐 → 入库配置的唯一出口
+ *
+ *  三处曾经各说各话的数据（Step1 面板 / Step2 徽标 / Step2 默认选中）都从它派生，
+ *  结构上不可能再打架。config 可直接作为 ingest 请求体提交。 */
+export interface ParsePlan {
+  config: IngestConfig;
+  decisions: PlanDecision[];
+  cost: CostEstimate;
+  alternatives: MethodRecommendation[];
+  /** 增强开关的推荐值（前端 Step3 初值） */
+  switches: Record<string, boolean>;
+  engine: string;
+  warnings: string[];
+}
+
+/** GET /kbs/ingest-defaults 响应：前端表单默认值与合法范围的唯一来源
+ *
+ *  存在的意义：前端曾把 800/100、512/50 这组默认值硬编码在 5 处且与后端活跃配置
+ *  漂移。改为接口供给后，前端只做展示与用户覆盖。 */
+export interface IngestDefaults {
+  methods: Record<string, IngestConfig>;
+  ranges: Record<string, [number, number]>;
+  retrieval_modes: string[];
+  agentic: { confirm_chars: number; hard_chars: number };
+  parser_defaults: Record<string, unknown>;
 }
 
 /** GET /kbs/{kb_id}/documents/{doc_id}/analyze 响应（画像 + 推荐，任何一步
@@ -578,6 +650,9 @@ export interface AnalyzeResult {
     enable_heading_in_content: boolean;
   };
   warnings: string[];
+  /** 入库方案（唯一真相源）：向导与批量智能模式的配置都从这里取。
+   *  后端决策矩阵异常时为 null（部分画像 + warnings，接口仍 200）。 */
+  parse_plan?: ParsePlan | null;
   /** 表格文档画像（xlsx/xls/csv，非表格文档无此字段） */
   spreadsheet?: {
     sheet_count: number;

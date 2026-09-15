@@ -17,13 +17,12 @@ import { UploadOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import type { ImgSummaryFormat } from '../../../shared/api/client';
 import ImgSummaryFormatPicker from './ImgSummaryFormatPicker';
+import { buildConfig, useIngestDefaults } from '../ingestDefaults';
 import {
   asApiError,
-  AnalyzeResult,
   DocumentItem,
   IngestConfig,
   ParseMethod,
-  ParserEngine,
   analyzeDocument,
   ingestDocument,
   uploadDocument,
@@ -41,73 +40,12 @@ const METHOD_OPTIONS: { value: ParseMethod; label: string }[] = [
   { value: 'agentic', label: 'Agentic 智能分块' },
 ];
 
-/** 智能模式：画像推荐 → IngestConfig（与 SmartParseWizard.handleOk 同源逻辑：
- *  主推荐切块方式 + 默认参数 + 引擎建议 + 推荐增强开关）。
- *  推荐矩阵主推只可能 naive/parent_child/qa（regex 需 pattern，防御性回退 naive）。 */
-const buildSmartConfig = (analyze: AnalyzeResult, fileType: string): IngestConfig => {
-  const r = analyze.recommendations;
-  let method: ParseMethod = r?.chunk_method?.method ?? 'naive';
-  if (method === 'regex') method = 'naive';
-  const config: IngestConfig = { method };
-  if (method === 'parent_child') {
-    config.chunk_size = 512;
-    config.overlap = 50;
-    config.parent_chunk_size = 1024;
-    config.parent_chunk_overlap = 100;
-    config.parent_split_level = 2;
-    config.retrieval_mode = 'parent';
-  } else if (method === 'title') {
-    config.split_level = 2;
-    config.chunk_size = 800;
-    config.overlap = 100;
-  } else {
-    config.chunk_size = 800;
-    config.overlap = 100;
-  }
-  const suggested = analyze.engine_suggestion?.suggested;
-  const isPdfLike = fileType === 'pdf' || fileType === 'docx';
-  if (isPdfLike && suggested
-      && ['mineru', 'deepdoc', 'docx_struct', 'plain'].includes(suggested)) {
-    config.parser_engine = suggested as ParserEngine;
-  }
-  config.enable_heading_in_content = r?.enable_heading_in_content ?? false;
-  config.contextual_retrieval = r?.contextual_retrieval?.recommended ?? false;
-  return config;
-};
-
-/** 统一模式：用户选择的解析配置（qa/agentic 无参数，与其他方式共用默认切块参数） */
-const buildUniformConfig = (
-  method: ParseMethod,
-  regexPattern: string,
-  contextualRetrieval: boolean,
-  knowledgeGraph: boolean,
-  imageSummary: boolean,
-  imageFormat: ImgSummaryFormat | '',
-): IngestConfig => {
-  const config: IngestConfig = { method };
-  if (method === 'parent_child') {
-    config.chunk_size = 512;
-    config.overlap = 50;
-    config.parent_chunk_size = 1024;
-    config.parent_chunk_overlap = 100;
-    config.parent_split_level = 2;
-    config.retrieval_mode = 'parent';
-  } else if (method === 'title') {
-    config.split_level = 2;
-    config.chunk_size = 800;
-    config.overlap = 100;
-  } else if (method === 'naive' || method === 'regex') {
-    config.chunk_size = 800;
-    config.overlap = 100;
-    if (method === 'regex') config.regex_pattern = regexPattern.trim();
-  }
-  config.contextual_retrieval = contextualRetrieval;
-  config.knowledge_graph = knowledgeGraph;
-  config.image_summary = imageSummary;
-  // 输出格式：'' = 跟随系统配置（不带该参数）
-  if (imageSummary && imageFormat) config.image_summary_format = imageFormat;
-  return config;
-};
+/* 配置装配统一走 ingestDefaults（默认值来源在后端 /kbs/ingest-defaults）：
+ *  - 智能模式：直接用后端给出的 plan.config —— 画像、引擎建议、切块参数是一起
+ *    定好的，前端零加工
+ *  - 统一模式：默认值查表 + 用户选的增强开关覆盖
+ * 这里此前有两份硬编码参数表，且智能模式漏了"结构解析 → 层级聚合切块"那层联动，
+ * 导致同一份 docx 在向导里给层级聚合、在批量智能里给父子分块。 */
 
 interface BatchResult {
   name: string;
@@ -143,6 +81,8 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   onSuccess,
 }) => {
   const { message } = AntApp.useApp();
+  /** 默认值表（后端 /kbs/ingest-defaults）；null=未拉到，buildConfig 不发参数 */
+  const ingestDefaults = useIngestDefaults();
 
   // 解析方式：smart=逐个画像推荐（默认）/ uniform=统一配置
   const [mode, setMode] = useState<'smart' | 'uniform'>('smart');
@@ -240,22 +180,32 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
         });
         continue;
       }
-      // 2) 解析配置：智能=画像推荐（失败回退默认配置，不中断批量）；
-      //    统一=用户选择
+      // 2) 解析配置：智能=后端给的入库方案（失败回退最小配置，不中断批量）；
+      //    统一=默认值查表 + 用户开关
       let config: IngestConfig;
       let note = '';
       if (mode === 'smart') {
         try {
           const a = await analyzeDocument(kbId, doc.id);
-          config = buildSmartConfig(a.data, doc.file_type);
+          const plan = a.data.parse_plan;
+          // plan 为 null = 后端决策矩阵异常（画像仍照常返回）→ 退回最小配置
+          config = plan?.config ?? { method: 'naive' };
+          if (!plan) note = '画像未给出方案，已按默认配置入库';
         } catch {
-          config = { method: 'naive', chunk_size: 800, overlap: 100 };
+          config = { method: 'naive' };
           note = '画像分析失败，已按默认配置入库';
         }
       } else {
-        config = buildUniformConfig(
-          method, regexPattern, contextualRetrieval, knowledgeGraph,
-          imageSummary, imageFormat);
+        config = buildConfig(ingestDefaults, method, {
+          contextual_retrieval: contextualRetrieval,
+          knowledge_graph: knowledgeGraph,
+          image_summary: imageSummary,
+          // 输出格式：'' = 跟随系统配置（不带该参数）
+          ...(imageSummary && imageFormat
+            ? { image_summary_format: imageFormat } : {}),
+          ...(method === 'regex'
+            ? { regex_pattern: regexPattern.trim() } : {}),
+        });
       }
       // 3) 触发入库（后台任务：parsing → ingested，列表轮询刷新）
       try {
