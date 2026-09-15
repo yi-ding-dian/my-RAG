@@ -149,8 +149,18 @@ const AppModal: React.FC<AppModalProps> = ({
     const el = contentRef.current;
     if (!el) return;
     const measure = () => {
-      // 滚动高度 = 内容自然高（无滚动限制时），即使当前被钳制
-      setContentH(el.scrollHeight || el.offsetHeight);
+      // **不能直接用 scrollHeight**：contentRef 是 height:100% 的容器，元素高被
+      // 弹窗高度撑满，而 scrollHeight = max(内容高, 元素高)——于是"容器高"被误
+      // 当成"内容高"，与"弹窗高度由内容决定"形成循环依赖。结果取决于打开动画
+      // 期间的初始扰动：内容少的弹窗会收敛到偏大的高度（实测 2 行内容撑到 476px，
+      // 比 defaultSize 的 360 还高，中间一大片留白）。
+      // 这里临时解除高度约束量真实内容高，同步改回——两次赋值在同一帧内完成，
+      // 浏览器不会绘制中间态，无闪烁；高度值不变故不会触发本 ResizeObserver 回调。
+      const prev = el.style.height;
+      el.style.height = 'auto';
+      const h = el.scrollHeight || el.offsetHeight;
+      el.style.height = prev;
+      setContentH(h);
     };
     measure();
     const ro = new ResizeObserver(measure);
