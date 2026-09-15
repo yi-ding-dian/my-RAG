@@ -10,10 +10,18 @@ const api = axios.create({
   timeout: 120000,
 });
 
-// 请求拦截器：自动携带 Authorization（/api/auth/login 与 /api/health 为公开接口，放行）
+/**
+ * 公开接口（无需 Authorization；401 也不跳登录页）：登录与根健康检查。
+ *
+ * 必须**锚定匹配**，不能用 includes：`'/logs/health'` 这类子串会被 includes('/health')
+ * 误判为公开接口，于是永不携带 token —— 接口稳定 401，而红绿灯只能静默失败。
+ */
+const isPublicApi = (url: string) =>
+  /^\/health(\?|$)/.test(url) || url.startsWith('/auth/login');
+
+// 请求拦截器：自动携带 Authorization（公开接口放行）
 api.interceptors.request.use(config => {
-  const url = config.url ?? '';
-  if (!url.includes('/auth/login') && !url.includes('/health')) {
+  if (!isPublicApi(config.url ?? '')) {
     const header = authHeader();
     if (header.Authorization) config.headers.Authorization = header.Authorization;
   }
@@ -25,9 +33,7 @@ api.interceptors.response.use(
   res => res,
   err => {
     const status = err.response?.status;
-    const url = err.config?.url ?? '';
-    const isPublic = url.includes('/auth/login') || url.includes('/health');
-    if (status === 401 && !isPublic) {
+    if (status === 401 && !isPublicApi(err.config?.url ?? '')) {
       clearAuth();
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login';

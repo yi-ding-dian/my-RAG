@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from backend.routers.logs import LOG_DIR, _log_path, _valid_date
+from backend.routers.logs import LOG_DIR, _is_http_noise, _log_path, _valid_date
 
 
 def _d(days_ago: int) -> str:
@@ -33,10 +33,12 @@ def _write(date: str, content: str):
     p.write_text(content, encoding="utf-8")
 
 
-def _tail(client, headers, date=None, offset=0, limit=200):
+def _tail(client, headers, date=None, offset=0, limit=200, hide_http=None):
     params = {"offset": offset, "limit": limit}
     if date is not None:
         params["date"] = date
+    if hide_http is not None:
+        params["hide_http"] = hide_http
     resp = client.get("/api/logs/tail", params=params, headers=headers)
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -45,6 +47,13 @@ def _tail(client, headers, date=None, offset=0, limit=200):
 def _standard_line(ts, level, name, msg):
     """构造一条与 main.py logging 格式一致的标准行"""
     return f"{ts} [{level}] {name}: {msg}"
+
+
+def _httpx_line(ts, status="200 OK", method="POST",
+                url="http://192.168.0.11:8000/v1/chat/completions"):
+    """构造一条 httpx 请求回显行（格式同 httpx/_client.py 的 logger.info）"""
+    return _standard_line(ts, "INFO", "httpx",
+                          f'HTTP Request: {method} {url} "HTTP/1.1 {status}"')
 
 
 # ==================== 权限 ====================
@@ -302,6 +311,135 @@ class TestLogFileDownload:
                           params={"date": "2026/01/01"}, headers=admin_headers)
         assert resp.status_code == 400
         assert "日期格式" in resp.json()["detail"]
+
+
+# ==================== hide_http：第三方 HTTP 噪音行过滤 ====================
+
+class TestIsHttpNoise:
+    """噪音判定：只有「正常」回显算噪音；HTTP 失败与非 httpx 业务日志一律保留"""
+
+    def test_httpx_success_is_noise(self):
+        assert _is_http_noise(_httpx_line("2026-08-15 10:00:00,000")) is True
+        assert _is_http_noise(
+            _httpx_line("2026-08-15 10:00:00,000", "301 Moved Permanently")) is True
+
+    def test_httpx_failure_kept(self):
+        """4xx/5xx 保留——httpx 对失败请求同样打 INFO，按级别过滤抓不着"""
+        for status in ("404 Not Found", "500 Internal Server Error",
+                       "429 Too Many Requests"):
+            assert _is_http_noise(
+                _httpx_line("2026-08-15 10:00:00,000", status)) is False
+
+    def test_connection_layer_is_noise(self):
+        assert _is_http_noise(_standard_line(
+            "2026-08-15 10:00:00,000", "WARNING", "urllib3.connectionpool",
+            "Connection pool is full, discarding connection")) is True
+        assert _is_http_noise(_standard_line(
+            "2026-08-15 10:00:00,000", "DEBUG", "httpcore",
+            "connect_tcp.started")) is True
+
+    def test_others_kept(self):
+        # 业务日志
+        assert _is_http_noise(_standard_line(
+            "2026-08-15 10:00:00,000", "INFO", "backend.services",
+            "入库完成")) is False
+        # httpx 的非回显消息（无状态码）不判噪音，避免误伤
+        assert _is_http_noise(_standard_line(
+            "2026-08-15 10:00:00,000", "INFO", "httpx", "redirecting")) is False
+        # 非标准行（多行消息续行）一律保留
+        assert _is_http_noise("这是多行消息的续行内容") is False
+
+
+class TestLogsHideHttp:
+    """hide_http 参数：tail/segments/range 三接口同口径扣除噪音行"""
+
+    def _write_mixed(self, date: str):
+        """混合日志：业务 INFO / httpx 成功 / httpx 失败 / 业务 ERROR / 连接池告警"""
+        _write(date,
+               _standard_line("2026-08-15 10:00:00,000", "INFO",
+                              "backend.services", "入库完成") + "\n"
+               + _httpx_line("2026-08-15 10:00:01,000") + "\n"
+               + _httpx_line("2026-08-15 10:00:02,000",
+                             "500 Internal Server Error") + "\n"
+               + _standard_line("2026-08-15 10:00:03,000", "ERROR",
+                                "backend.services", "解析失败") + "\n"
+               + _standard_line("2026-08-15 10:00:04,000", "WARNING",
+                                "urllib3.connectionpool",
+                                "Connection pool is full") + "\n")
+
+    def test_tail_default_keeps_all(self, client, admin_headers):
+        """缺省（接口默认 false）全量返回：老行为不受影响"""
+        date = _d(1)
+        self._write_mixed(date)
+        assert len(_tail(client, admin_headers, date=date)["lines"]) == 5
+
+    def test_tail_hide_http(self, client, admin_headers):
+        """hide_http=true：只剩业务行与 HTTP 失败回显"""
+        date = _d(1)
+        self._write_mixed(date)
+        msgs = [l["message"] for l in
+                _tail(client, admin_headers, date=date, hide_http=True)["lines"]]
+        assert len(msgs) == 3
+        assert msgs[0] == "backend.services: 入库完成"
+        assert "500 Internal Server Error" in msgs[1]   # HTTP 失败回显保留
+        assert msgs[2] == "backend.services: 解析失败"
+
+    def test_tail_mode_negative_offset_hide_http(self, client, admin_headers):
+        """尾部模式（首次加载）同样过滤"""
+        date = _d(1)
+        self._write_mixed(date)
+        data = _tail(client, admin_headers, date=date, offset=-1, hide_http=True)
+        assert len(data["lines"]) == 3
+
+    def test_segments_hide_http(self, client, admin_headers):
+        """段划分不变，只把噪音行从条数/级别小计/起止时间里剔除"""
+        date = _d(1)
+        self._write_mixed(date)
+        raw = client.get("/api/logs/segments", params={"date": date},
+                         headers=admin_headers).json()
+        assert raw["segments"][0]["count"] == 5
+        assert raw["segments"][0]["levels"] == {"INFO": 3, "ERROR": 1, "WARNING": 1}
+
+        hidden = client.get("/api/logs/segments",
+                            params={"date": date, "hide_http": "true"},
+                            headers=admin_headers).json()
+        assert len(hidden["segments"]) == 1          # 段没被拆开
+        seg = hidden["segments"][0]
+        assert seg["count"] == 3                     # 业务 INFO + httpx500 + 业务 ERROR
+        assert seg["levels"] == {"INFO": 2, "ERROR": 1}
+        assert seg["start_ts"] == "2026-08-15 10:00:00"
+        assert seg["end_ts"] == "2026-08-15 10:00:03"
+
+    def test_segments_all_noise_dropped(self, client, admin_headers):
+        """整段都是噪音（过滤后一条不剩）不返回，避免前端出现「0 条」空段"""
+        date = _d(1)
+        _write(date,
+               _standard_line("2026-08-15 10:00:00,000", "INFO", "mod", "业务") + "\n"
+               + _httpx_line("2026-08-15 10:05:00,000") + "\n"
+               + _httpx_line("2026-08-15 10:05:01,000") + "\n")
+        raw = client.get("/api/logs/segments", params={"date": date},
+                         headers=admin_headers).json()
+        assert len(raw["segments"]) == 2             # 空档 >60s → 两段
+        hidden = client.get("/api/logs/segments",
+                            params={"date": date, "hide_http": "true"},
+                            headers=admin_headers).json()
+        assert len(hidden["segments"]) == 1          # 10:05 那段全是噪音被丢弃
+        assert hidden["segments"][0]["count"] == 1
+
+    def test_range_hide_http(self, client, admin_headers):
+        """区间查询的 total 与行内容同口径扣除"""
+        date = _d(1)
+        self._write_mixed(date)
+        params = {"date": date, "start": "2026-08-15 10:00:00",
+                  "end": "2026-08-15 10:00:09"}
+        raw = client.get("/api/logs/range", params=params,
+                         headers=admin_headers).json()
+        assert raw["total"] == 5
+        hidden = client.get("/api/logs/range",
+                            params={**params, "hide_http": "true"},
+                            headers=admin_headers).json()
+        assert hidden["total"] == 3
+        assert len(hidden["lines"]) == 3
 
 
 # ==================== 内部辅助 ====================

@@ -100,8 +100,10 @@ from backend.services.storage_service import get_storage_service
 from backend.services.table_normalizer import html_tables_to_pipe
 from backend.services.text_cleanup import strip_subsup_tags
 from backend.services.vector_store import get_vector_store
+from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 
 # 后台入库任务并发上限（系统配置 ingestion.concurrency，默认 3，超管在
 # Settings 页可调，改动即时生效；.env INGEST_CONCURRENCY 仅作出厂默认，
@@ -449,25 +451,24 @@ class IngestionService(_TraceMixin, _ImageMixin):
             logger.info("入库任务已取消: %s (%s)", doc.original_name, doc_id)
             doc_svc.mark_failed(doc_id, "用户取消解析")
         except ParserUnavailableError as e:
-            # 可预期失败（解析服务不可用/调用失败）：warning 不记堆栈；
-            # 错误消息 = 原始解析异常文本（mark_failed 文案与历史一致）
-            logger.warning("入库失败（解析服务不可用）: %s (%s)", doc_id, e)
+            # 系统级故障（解析服务不可用/调用失败）：打 fault 标记点亮红绿灯；
+            # warning 不记堆栈，错误消息 = 原始解析异常文本（与历史一致）
+            log.system_error("入库失败（解析服务不可用）: %s (%s)", doc_id, e)
             doc_svc.mark_failed(doc_id, str(e))
         except EmbeddingError as e:
-            # 可预期失败（Embedding 服务不可用/超时，重试后仍失败）：
-            # warning 不记堆栈，任务失败语义不变
-            logger.warning("入库失败（Embedding 服务不可用）: %s (%s)",
-                           doc_id, e)
+            # 系统级故障（Embedding 服务不可用/超时，重试后仍失败）：打 fault
+            # 标记点亮红绿灯；warning 不记堆栈，任务失败语义不变
+            log.system_error("入库失败（Embedding 服务不可用）: %s (%s)", doc_id, e)
             doc_svc.mark_failed(doc_id, str(e))
         except VectorDimensionError as e:
-            # 可预期失败（更换 embedding 模型后维度不匹配）：warning，
-            # 任务失败语义不变（提示更换模型或重建向量）
-            logger.warning("入库失败（向量维度不匹配）: %s (%s)", doc_id, e)
+            # 系统级故障（更换 embedding 模型后维度不匹配）：打 fault 标记点亮
+            # 红绿灯；warning 级别，任务失败语义不变（提示更换模型或重建向量）
+            log.system_error("入库失败（向量维度不匹配）: %s (%s)", doc_id, e)
             doc_svc.mark_failed(doc_id, str(e))
         except (LLMTimeoutError, LLMRequestError) as e:
-            # 可预期失败（LLM 超时/限流/网络错误冒泡到任务层）：warning
-            # 不记堆栈，任务失败语义不变
-            logger.warning("入库失败（LLM 调用失败）: %s (%s)", doc_id, e)
+            # 系统级故障（LLM 超时/限流/网络错误冒泡到任务层）：打 fault 标记点亮
+            # 红绿灯；warning 不记堆栈，任务失败语义不变
+            log.system_error("入库失败（LLM 调用失败）: %s (%s)", doc_id, e)
             doc_svc.mark_failed(doc_id, str(e))
         except Exception as e:
             # 兜底（未知异常）：不记堆栈，信息保留

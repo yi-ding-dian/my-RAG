@@ -35,8 +35,10 @@ from backend.services.feedback_service import (create_feedback,
                                                get_feedback_msg_idxs)
 from backend.services.knowledge_graph_service import build_kg_source
 from backend.services.retrieval_service import get_retrieval_service
+from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 router = APIRouter(prefix="/api/chat", tags=["聊天"])
 
 
@@ -88,7 +90,7 @@ async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
         except Exception as e:
             # 兜底异常：细节仅进日志（logger.exception 已有），
             # 不向客户端透出内部异常信息（防信息泄露）
-            logger.exception("SSE 流异常: %s", e)
+            log.system_error("SSE 流异常: %s", e, exc_info=True)
             yield sse_event("error", {"message": "服务异常，请稍后重试"})
 
     return StreamingResponse(
@@ -171,7 +173,7 @@ async def retrieve(body: RetrieveRequest, db: AsyncSession = Depends(get_db),
             s.kb_name = kb_name_map.get(s.kb_id, s.kb_name)
         return RetrieveResponse(sources=sources)
     except Exception as e:
-        logger.exception("检索失败: %s", e)
+        log.system_error("检索失败: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"检索失败: {e}")
 
 

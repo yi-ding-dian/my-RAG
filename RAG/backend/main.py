@@ -6,13 +6,9 @@
 from __future__ import annotations
 
 import logging
-import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import TextIO
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,70 +28,14 @@ from backend.routers import (audit, auth, chat, departments, ext_query, files,
 from backend.routers.documents import admin as admin_documents
 from backend.routers.documents import crud as documents
 from backend.routers.documents import smart_parse
+from backend.logger import SystemFaultFilter
+from backend.logger.handlers import DailyRotatingFileHandler
+from backend.logger import AppLog
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-
-
-class DailyRotatingFileHandler(logging.Handler):
-    """运行日志按天落盘 handler：data/logs/kb-YYYY-MM-DD.log
-
-    当天文件即 kb-今天.log（与 /api/logs/tail 按天契约一致）；跨天时切换新文件；
-    每次写入顺带清理超过 backup_days 天的旧文件。线程安全由 logging 上层保证
-    （emit 由 root logger 加锁调用）。
-    """
-
-    def __init__(self, log_dir: Path, backup_days: int = 14, encoding: str = "utf-8"):
-        super().__init__()
-        self.log_dir = log_dir
-        self.backup_days = backup_days
-        self.encoding = encoding
-        self._current_date = ""
-        self._stream: TextIO | None = None
-        self._file_re = re.compile(r"^kb-(\d{4}-\d{2}-\d{2})\.log$")
-
-    def _ensure_stream(self) -> None:
-        today = datetime.now().strftime("%Y-%m-%d")
-        if self._stream is None or today != self._current_date:
-            if self._stream is not None:
-                try:
-                    self._stream.close()
-                except OSError:
-                    pass
-            self._stream = open(self.log_dir / f"kb-{today}.log", "a",
-                                encoding=self.encoding)
-            self._current_date = today
-
-    def _cleanup(self) -> None:
-        cutoff = (datetime.now() - timedelta(days=self.backup_days)).strftime("%Y-%m-%d")
-        for p in self.log_dir.glob("kb-*.log"):
-            m = self._file_re.match(p.name)
-            if m and m.group(1) < cutoff:
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
-
-    def emit(self, record) -> None:
-        try:
-            self._ensure_stream()
-            assert self._stream is not None
-            self._stream.write(self.format(record) + "\n")
-            self._stream.flush()
-            self._cleanup()
-        except Exception:  # noqa: BLE001
-            self.handleError(record)
-
-    def close(self) -> None:
-        if self._stream is not None:
-            try:
-                self._stream.close()
-            except OSError:
-                pass
-            self._stream = None
-        super().close()
 
 
 def _setup_file_logging() -> None:
@@ -115,8 +55,21 @@ def _setup_file_logging() -> None:
     root.addHandler(_file_handler)
 
 
+def _install_fault_filter() -> None:
+    """给 root 的所有 handler 挂「系统级故障」标记 filter（幂等）
+
+    必须挂 handler 而非 logger：日志 propagate 时只检查各级 handler 的 filter，
+    不检查父 logger 自身的 filter，挂在 logger 上对子 logger 的记录无效。
+    """
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, SystemFaultFilter) for f in handler.filters):
+            handler.addFilter(SystemFaultFilter())
+
+
 _setup_file_logging()
+_install_fault_filter()
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 
@@ -232,6 +185,19 @@ def health():
         "embedding_model": cfg.embedding.model,
         "version": "0.1.0",
     }
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception(request: Request, exc: Exception):
+    """未捕获异常（系统级故障）：落盘 + 返回 500
+
+    必须显式记录：uvicorn 把 ASGI 未捕获异常记到 `uvicorn.error`，而该 logger
+    的 propagate=false（uvicorn 默认 LOGGING_CONFIG，实测确认），**不进 root
+    logger、不落盘**——不补这一刀，「日志查看」的红灯恰恰看不见最严重的故障。
+    """
+    log.system_error("未捕获异常: %s %s", request.method, request.url.path,
+                     exc_info=exc)
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
 
 # 生产环境: 服务前端静态文件（若 frontend/dist 存在）

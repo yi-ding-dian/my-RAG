@@ -1293,6 +1293,63 @@ export interface LogRangeResult {
   truncated: boolean;
 }
 
+/**
+ * 红绿灯状态（看**系统级故障**，与日志级别正交）。
+ *
+ * 判定只看「域」不看级别：`[WARNING] ... Embedding 服务不可用` 照样是系统级故障
+ * （全站问答瘫痪），而 `[ERROR] ... 文档超阈值入库失败` 是用户级、不点灯。
+ */
+export interface LogHealth {
+  /** green = 正常；red = 窗口内有**未确认**的系统级故障 */
+  level: 'green' | 'red';
+  /** 回看窗口（分钟） */
+  window_minutes: number;
+  /** 窗口内**未确认**的系统级故障条数（决定灯色） */
+  fault_count: number;
+  /** 窗口内已确认（ACK 消警）的条数 */
+  acked_count: number;
+  /** 未确认故障里 ERROR 级条数 */
+  error_count: number;
+  /** 未确认故障里 WARNING 级条数 */
+  warning_count: number;
+  /** 中文摘要（可直接展示） */
+  summary: string;
+}
+
+/** 总览里的系统级故障条目：在 LogLine 基础上带 ACK 信息 */
+export interface LogFaultEntry extends LogLine {
+  /** 故障唯一标识（调 POST /logs/ack 逐条确认用） */
+  id: string;
+  /** 是否已确认（已解决） */
+  acked: boolean;
+  /** 确认时填的处理备注（未确认或没填为空串） */
+  ack_note: string;
+}
+
+/** 某天的日志统计：分级别计数与系统级故障数**正交**（用户级 ERROR 计入 error 不计入 faults） */
+export interface LogDayStat {
+  date: string;
+  lines: number;
+  info: number;
+  warning: number;
+  error: number;
+  /** 系统级故障条数（含 ERROR 与 WARNING 级） */
+  faults: number;
+  /** 系统级故障里 ERROR 级的条数；**用户级 ERROR = error - fault_errors** */
+  fault_errors: number;
+}
+
+/** 系统日志总览（「日志查看」页总览 Tab） */
+export interface LogOverview {
+  /** 近 N 天（时间正序，只含实际有日志的天） */
+  days: LogDayStat[];
+  totals: Omit<LogDayStat, 'date'>;
+  today: LogDayStat;
+  health: LogHealth;
+  /** 最近系统级故障（最新在前，带 id/acked 供逐条确认） */
+  recent_faults: LogFaultEntry[];
+}
+
 // ========== 外部查询 ==========
 
 /** 外部查询的检索/对话参数（复用聊天配置语义；null/缺省 = 跟随全局活跃配置） */

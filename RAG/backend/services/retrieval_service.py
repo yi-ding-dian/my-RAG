@@ -26,8 +26,10 @@ from backend.services.bm25 import BM25Index, tokenize
 from backend.services.embedding_service import get_embedding_service
 from backend.services.rerank_client import get_rerank_client
 from backend.services.vector_store import get_vector_store
+from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 
 # BM25 索引构建锁（模块级）：并发检索请求同时 miss 缓存时保证只构建一次
 _bm25_build_lock = asyncio.Lock()
@@ -97,7 +99,7 @@ class RetrievalService:
         try:
             query_vec = await emb_svc.embed([query])
         except Exception as e:
-            logger.error("query 向量化失败: %s", e)
+            log.system_error("query 向量化失败: %s", e)
             raise RetrievalUnavailableError(
                 f"检索服务不可用：Embedding 服务调用失败（{e.__class__.__name__}），"
                 "请检查 Embedding 服务后重试") from e

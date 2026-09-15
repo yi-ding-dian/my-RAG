@@ -44,12 +44,14 @@ from backend.services.retrieval_service import (RetrievalUnavailableError,
 from backend.services.settings.service import (merge_chat_config,
                                                merge_department_llm)
 from backend.services.thinking_strategy import get_thinking_strategy
+from backend.logger import AppLog
 
 # 历史模块名保留：_llm_to_dict（4 处历史 import：agentic_chunker /
 # contextual_retriever / knowledge_graph_service / ext_query）
 _llm_to_dict = llm_to_dict
 
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 
 _SYSTEM_PROMPT_TEMPLATE = (
     "你是一个严谨的知识库问答助手，回答用户问题时必须严格遵循以下规则：\n"
@@ -494,14 +496,14 @@ class ChatService:
                         min_score=eff_min_score)
                 retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
-                # 可预期失败（Embedding 服务不可用等）：warning 不透传堆栈，
-                # 用户消息语义与历史一致（"检索服务不可用：..."原样透传）
-                logger.warning("检索服务不可用: %s", e)
+                # 系统级故障（Embedding 服务不可用等）：打 fault 标记点亮红绿灯；
+                # warning 不透传堆栈，用户消息语义与历史一致（原样透传）
+                log.system_error("检索服务不可用: %s", e)
                 yield sse_event("error", {"message": str(e)})
                 return
             except Exception as e:
                 # 兜底（未知异常）：不记堆栈，信息保留
-                logger.error("检索失败: %s", e)
+                log.system_error("检索失败: %s", e)
                 yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
 
@@ -700,9 +702,9 @@ class ChatService:
                 raise
             except (APITimeoutError, APIConnectionError, RateLimitError,
                     APIStatusError) as e:
-                # 可预期失败：LLM 服务超时/断连/限流/HTTP 错误 → warning
-                # 不记堆栈；用户消息语义与历史一致（"LLM 调用失败: ..."）
-                logger.warning("LLM 流式调用失败（LLM 服务异常）: %s", e)
+                # 系统级故障：LLM 服务超时/断连/限流 → 打 fault 标记点亮红绿灯；
+                # warning 不记堆栈；用户消息语义与历史一致（"LLM 调用失败: ..."）
+                log.system_error("LLM 流式调用失败（LLM 服务异常）: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
                 self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
@@ -711,7 +713,7 @@ class ChatService:
                 return
             except Exception as e:
                 # 兜底（未知异常）：不记堆栈，信息保留
-                logger.error("LLM 流式调用失败: %s", e)
+                log.system_error("LLM 流式调用失败: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
                 self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
@@ -738,7 +740,7 @@ class ChatService:
                 try:
                     self._finalize(session, message, answer_parts, [], agentic_meta, detail=prompt_detail)
                 except Exception:
-                    logger.exception("兜底落盘失败: %s", session.id)
+                    log.system_error("兜底落盘失败: %s", session.id, exc_info=True)
 
     @staticmethod
     def _build_system_content(system_prompt: str, refs: str,

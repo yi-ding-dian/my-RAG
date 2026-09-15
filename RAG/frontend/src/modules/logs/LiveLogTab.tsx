@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Card, Input, List, Select, Space, Spin, Switch, Tag, Typography } from 'antd';
+import { Button, Card, Input, List, Select, Space, Spin, Switch, Tag, Tooltip, Typography } from 'antd';
 import { ClearOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
@@ -39,8 +39,15 @@ const { Text } = Typography;
  * - 日志时间段：按「时间空档」把日志切成输出段（左侧列表：起止时间 + 条数 +
  *   ERROR 数），点击某段只看该区间日志（「全部日志」返回）；缓冲能完整覆盖时
  *   本地过滤，不够时调后端按时间段查询；时间段摘要降频刷新（每 3 个轮询周期）
+ * - HTTP 请求日志开关：默认关（隐藏 httpx 2xx/3xx 请求回显与连接池提示，
+ *   4xx/5xx 始终保留），过滤在后端做，切换后整体重拉保证条数/时间段口径一致
  */
-const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, active }) => {
+const LiveLogTab: React.FC<{
+  app: AppInstance;
+  active: boolean;
+  /** 从总览点柱子跳过来的日期；每次跳转是新对象，连点同一天也会再次触发 */
+  jumpDate?: { date: string } | null;
+}> = ({ app, active, jumpDate }) => {
   const { message } = app;
 
   const today = dayjs().format('YYYY-MM-DD');
@@ -50,6 +57,9 @@ const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, acti
   const [keyword, setKeyword] = useState('');
   const [levelFilter, setLevelFilter] = useState<string[]>([]);
   const [paused, setPaused] = useState(false); // true = 暂停自动刷新
+  // 显示第三方 HTTP 请求日志：默认关 = 隐藏 httpx 2xx/3xx 请求回显与连接池提示
+  // （4xx/5xx 始终保留）。过滤在后端做，切换后需重新拉取，保证条数/时间段口径一致
+  const [showHttp, setShowHttp] = useState(false);
   // 时间段（输出段）导航
   const [segments, setSegments] = useState<LogSegment[]>([]);
   const [segTruncated, setSegTruncated] = useState(false);
@@ -66,7 +76,8 @@ const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, acti
 
   const fetchTail = useCallback(async (initial = false) => {
     try {
-      const res = await tailSystemLogs(selectedDate, initial ? -1 : offsetRef.current, TAIL_LIMIT);
+      const res = await tailSystemLogs(
+        selectedDate, initial ? -1 : offsetRef.current, TAIL_LIMIT, !showHttp);
       offsetRef.current = res.data.offset;
       if (res.data.lines.length > 0) {
         setLines(prev => {
@@ -79,20 +90,27 @@ const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, acti
     } catch {
       if (initial) message.error('加载系统日志失败');
     }
-  }, [selectedDate, message]);
+  }, [selectedDate, showHttp, message]);
 
   // 时间段摘要（起止时间/条数/级别小计）；失败静默（不影响日志流）
   const fetchSegments = useCallback(async () => {
     try {
-      const res = await listLogSegments(selectedDate, gapSeconds);
+      const res = await listLogSegments(selectedDate, gapSeconds, undefined, !showHttp);
       setSegments(res.data.segments);
       setSegTruncated(res.data.truncated);
     } catch {
       // 静默
     }
-  }, [selectedDate, gapSeconds]);
+  }, [selectedDate, gapSeconds, showHttp]);
 
-  // 挂载 + 切换日期：清缓存/选中态、游标归位、重新加载日志与时间段
+  // 总览点柱子跳转过来：切到该日期（下面的 selectedDate effect 会顺势重载日志
+  // 与时间段，字节游标自动归位到该天文件尾部）
+  useEffect(() => {
+    if (jumpDate?.date) setSelectedDate(jumpDate.date);
+  }, [jumpDate]);
+
+  // 挂载 + 切换日期/HTTP 日志开关：清缓存/选中态、游标归位、重新加载日志与时间段
+  // （开关切换必须重拉：过滤在后端做，旧行是另一种口径，混在一起条数会对不上）
   useEffect(() => {
     setLines([]);
     setSegments([]);
@@ -102,7 +120,7 @@ const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, acti
     void fetchTail(true);
     void fetchSegments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate]);
+  }, [selectedDate, showHttp]);
 
   // 调整空档选项 → 重新切分时间段（首屏由上方 effect 负责）
   const fetchSegmentsRef = useRef(fetchSegments);
@@ -151,7 +169,8 @@ const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, acti
     setRangeLoading(true);
     setRangeData(null);
     try {
-      const res = await queryLogRange(selectedDate, seg.start_ts, seg.end_ts, RANGE_LIMIT);
+      const res = await queryLogRange(
+        selectedDate, seg.start_ts, seg.end_ts, RANGE_LIMIT, !showHttp);
       setRangeData(res.data);
     } catch {
       message.error('加载该时间段日志失败');
@@ -237,6 +256,12 @@ const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, acti
           onChange={setLevelFilter}
           options={LEVEL_OPTIONS}
         />
+        <Tooltip title="显示 httpx 请求回显与连接池提示等正常 HTTP 日志（4xx/5xx 始终显示）">
+          <Space size={6}>
+            <Switch size="small" checked={showHttp} onChange={setShowHttp} />
+            <Text type="secondary" style={{ fontSize: 12 }}>HTTP 请求日志</Text>
+          </Space>
+        </Tooltip>
         <Button icon={<ReloadOutlined />} onClick={() => void fetchTail(false)}>刷新</Button>
         <Button icon={<ClearOutlined />} onClick={clearLines}>清空</Button>
       </Space>
@@ -247,6 +272,7 @@ const LiveLogTab: React.FC<{ app: AppInstance; active: boolean }> = ({ app, acti
           {selectedSeg ? '当前时间' : '已加载'} {displayLines.length} 行
           {filtering ? `（过滤后显示 ${filteredLines.length} 行）` : ''}
           ，保留最近 {MAX_LOG_LINES} 行
+          {!showHttp ? '（已隐藏 HTTP 请求日志）' : ''}
         </Text>
         {LEVEL_OPTIONS.map(o => (
           <Tag key={o.value} color={levelColor(o.value)}>

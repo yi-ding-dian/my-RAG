@@ -24,8 +24,10 @@ from typing import Dict, List, Optional
 from backend.config import DATA_DIR, get_active_config
 from backend.services import embedding_service as _embedding_module
 from backend.services.vector_store import get_vector_store
+from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 
 _TASK_FILE = DATA_DIR / "rebuild_tasks.json"
 
@@ -404,7 +406,7 @@ async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
                     task["done"], task["failed"])
     except Exception as e:
         # 任务级兜底（如 get_all 异常）：任务仍标记结束，信息进 errors
-        logger.exception("重建向量任务异常: kb=%s task=%s", kb_id, task_id)
+        log.system_error("重建向量任务异常: kb=%s task=%s", kb_id, task_id, exc_info=True)
         task["failed"] = task.get("failed", 0) + 1
         task["errors"].append({"doc_id": None, "doc_name": None,
                                "error": f"任务级异常: {str(e)[:500]}"})

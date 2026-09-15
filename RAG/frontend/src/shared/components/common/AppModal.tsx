@@ -91,6 +91,9 @@ const AppModal: React.FC<AppModalProps> = ({
   busy = false,
   /** 默认关闭"点击遮罩关闭"（防误触丢内容；需开启时显式传 true；busy 时强制关闭） */
   maskClosable = false,
+  /** 垂直居中（antd 语义）。默认 false=靠上显示：小屏/大卡时顶部不过高、
+   *  底部不出屏；内容矮的小弹窗需要居中时显式传 true */
+  centered = false,
   open,
   children,
   width: _widthProp,
@@ -159,6 +162,9 @@ const AppModal: React.FC<AppModalProps> = ({
   const { handlers, box: dragBox, draggingDir } = useResizable(
     { w: defaultSize.w, h: defaultSize.h, left: -1, top: -1 },
     shellRef,
+    // 把本组件的 minSize 透传下去：不传的话拖拽下限会是 useResizable 里写死的
+    // 520×360，内容少的弹窗就永远拖不小（且比自己的默认高度还大）
+    minSize,
   );
   // 拖拽过程中实时同步手动尺寸（useResizable 内部 box 更新）
   const dragTimer = useRef<number>(0);
@@ -195,20 +201,30 @@ const AppModal: React.FC<AppModalProps> = ({
   const cardTotal = bodyH + nonBodyH;
   const topPx = Math.round(Math.min(96, Math.max(12, (vh - cardTotal) / 2)));
   const showHandles = dimension !== 'fixed' && Boolean(open);
+  // 未拖拽时的定位：默认靠上（top ≤96，小屏/大卡不出屏）；centered 时交给 antd
+  // 的垂直居中，**不能再传 top**——内联 top 会盖掉居中布局，弹窗仍偏上。
+  // centered + 拖拽时同样不传 left/top：居中布局下弹窗实际位置不由 left/top 决定，
+  // 传了会让弹窗跳到指针处（实测拖右下角手柄整个弹窗跑到屏幕右下、按钮出屏），
+  // 所以居中模式下拖拽**只改尺寸、位置仍由居中决定**。
+  const modalStyle =
+    dragBox.left >= 0 || dragBox.top >= 0
+      ? (centered
+          ? undefined
+          : {
+              left: dragBox.left >= 0 ? dragBox.left : undefined,
+              top: dragBox.top >= 0 ? dragBox.top : undefined,
+              margin: 0,
+            })
+      : centered
+        ? undefined
+        : { top: topPx };
 
   return (
     <Modal
       open={open}
       width={w}
-      style={
-        dragBox.left >= 0 || dragBox.top >= 0
-          ? {
-              left: dragBox.left >= 0 ? dragBox.left : undefined,
-              top: dragBox.top >= 0 ? dragBox.top : undefined,
-              margin: 0,
-            }
-          : { top: topPx }
-      }
+      centered={centered}
+      style={modalStyle}
       styles={{
         body: {
           height: bodyH,

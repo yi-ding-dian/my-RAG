@@ -12,6 +12,8 @@ import type {
   ExtQueryCreateInput,
   ExtQueryUpdateInput,
   LogFileInfo,
+  LogHealth,
+  LogOverview,
   LogRangeResult,
   LogSegmentsResult,
   LogTailResult,
@@ -136,30 +138,74 @@ export const deleteAuditLogsByDate = (date: string) =>
  * 读系统运行日志（按天 + 字节游标增量）：date 缺省=今天（YYYY-MM-DD）；
  * offset < 0 = 尾部模式取最近 limit 行（首次加载/切换日期用）；
  * offset 超文件大小后端自动归位尾部；文件不存在返回空。
+ * hideHttp=true 时后端跳过第三方 HTTP 正常噪音行（httpx 2xx/3xx 回显、
+ * 连接池提示；4xx/5xx 保留），只影响返回内容，日志文件始终全量落盘。
  */
-export const tailSystemLogs = (date?: string, offset = 0, limit = 200) =>
-  api.get<LogTailResult>('/logs/tail', { params: { date, offset, limit } });
+export const tailSystemLogs = (date?: string, offset = 0, limit = 200, hideHttp = false) =>
+  api.get<LogTailResult>('/logs/tail', {
+    params: { date, offset, limit, hide_http: hideHttp },
+  });
 
 export const listLogFiles = () => api.get<{ files: LogFileInfo[] }>('/logs/files');
 
 /**
+ * 系统日志总览（「总览」Tab）：近 N 天分级别计数 + 系统级故障数 + 红绿灯 +
+ * 最近系统级故障列表。每天统计后端按 (路径, mtime, 大小) 缓存，轮询成本低。
+ */
+export const getLogOverview = (days = 7, windowMinutes = 60) =>
+  api.get<LogOverview>('/logs/overview', {
+    params: { days, window_minutes: windowMinutes },
+  });
+
+/**
+ * 红绿灯状态（轻量，菜单红点轮询与外部监控用）：red = 窗口内有系统级故障
+ * （`system.` 域：LLM 崩溃/依赖连不上等），green = 正常。用户级失败不点灯。
+ */
+export const getLogHealth = (windowMinutes = 60) =>
+  api.get<LogHealth>('/logs/health', { params: { window_minutes: windowMinutes } });
+
+/** 菜单红绿灯轮询间隔（毫秒）：日志统计扫的是文件，比页面内轮询放慢些 */
+export const LOG_HEALTH_POLL_INTERVAL = 60000;
+
+/**
+ * 灯色已变化的广播事件：总览页确认故障（ACK）后派发，让菜单红绿灯**立即**重拉，
+ * 不必干等一个 60s 轮询周期（否则用户刚点完确认、菜单还红着，会以为没生效）。
+ */
+export const LOG_HEALTH_REFRESH_EVENT = 'log-health-refresh';
+
+/**
+ * 确认系统级故障已解决（**按条** ACK 消警，可附处理备注）：传故障 id 列表
+ * （overview 的 recent_faults[].id），全部确认完（未确认数为 0）红灯才灭；
+ * 之后新产生的故障是新 id、会重新亮灯。备注随确认存下，overview 会带回来。
+ */
+export const ackLogFaults = (ids: string[], note = '', windowMinutes = 60) =>
+  api.post<LogHealth>('/logs/ack', { ids, note }, {
+    params: { window_minutes: windowMinutes },
+  });
+
+/**
  * 日志时间段切分（时间段导航）：相邻两行间隔超 gapSeconds 视为新输出段，
  * 返回每段起止时间/条数/级别小计。后端只扫描文件尾部（大文件保护），
- * truncated=true 表示更早内容未统计。
+ * truncated=true 表示更早内容未统计。hideHttp 同 tailSystemLogs（噪音行
+ * 仍参与段边界划分，但不计入条数与级别小计，整段皆噪音的段不返回）。
  */
-export const listLogSegments = (date?: string, gapSeconds = 60, maxSegments = 200) =>
+export const listLogSegments = (date?: string, gapSeconds = 60, maxSegments = 200,
+                               hideHttp = false) =>
   api.get<LogSegmentsResult>('/logs/segments', {
-    params: { date, gap_seconds: gapSeconds, max_segments: maxSegments },
+    params: {
+      date, gap_seconds: gapSeconds, max_segments: maxSegments, hide_http: hideHttp,
+    },
   });
 
 /**
  * 按时间段查询日志行（时间戳秒级前缀比较，含起止边界）；超 limit 取区间最后
  * limit 行，total 为区间命中总数、truncated 表示被 limit 截断（供前端提示）。
+ * hideHttp 同 tailSystemLogs（total 与行内容口径一致）。
  */
 export const queryLogRange = (
-  date: string | undefined, start: string, end: string, limit = 500,
+  date: string | undefined, start: string, end: string, limit = 500, hideHttp = false,
 ) => api.get<LogRangeResult>('/logs/range', {
-  params: { date, start, end, limit },
+  params: { date, start, end, limit, hide_http: hideHttp },
 });
 
 /** 删除指定天日志文件（不存在静默成功） */

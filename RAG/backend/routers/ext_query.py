@@ -50,7 +50,10 @@ from backend.services.kb_service import get_kb_service
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
 
+from backend.logger import AppLog
+
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 
 # ==================== 请求模型 ====================
 
@@ -337,10 +340,11 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                     merged.extend(await get_retrieval_service().retrieve(
                         kid, question, top_k=top_k, min_score=min_score))
             except RetrievalUnavailableError as e:
+                log.system_error("外部查询检索服务不可用: %s", e)
                 yield sse_event("error", {"message": str(e)})
                 return
             except Exception as e:
-                logger.exception("外部查询检索失败: %s", e)
+                log.system_error("外部查询检索失败: %s", e, exc_info=True)
                 yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
             merged.sort(key=lambda s: s.score, reverse=True)
@@ -405,7 +409,7 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.exception("外部查询 LLM 流式调用失败: %s", e)
+                log.system_error("外部查询 LLM 流式调用失败: %s", e, exc_info=True)
                 err_msg = f"LLM 调用失败: {e}"
                 ext_svc.append_context(config_id, body.session_id or "",
                                        question, err_msg)
@@ -420,7 +424,7 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
             yield sse_event("done", {"session_id": body.session_id or "",
                                      "message_count": len(answer_parts)})
         except Exception as e:
-            logger.exception("外部查询 SSE 流异常: %s", e)
+            log.system_error("外部查询 SSE 流异常: %s", e, exc_info=True)
             yield sse_event("error", {"message": f"服务异常: {e}"})
 
     return StreamingResponse(
@@ -512,10 +516,10 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
             merged.extend(await get_retrieval_service().retrieve(
                 kid, question, top_k=top_k, min_score=min_score))
     except RetrievalUnavailableError as e:
-        logger.warning("外部同步查询检索服务不可用: %s", e)
+        log.system_error("外部同步查询检索服务不可用: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("外部同步查询检索失败: %s", e)
+        log.system_error("外部同步查询检索失败: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"检索失败: {e}")
     merged.sort(key=lambda s: s.score, reverse=True)
     sources = merged[:top_k]
@@ -558,7 +562,7 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
         if getattr(resp, "choices", None):
             answer = resp.choices[0].message.content or ""
     except Exception as e:
-        logger.exception("外部同步查询 LLM 调用失败: %s", e)
+        log.system_error("外部同步查询 LLM 调用失败: %s", e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"LLM 调用失败: {e}")
 
     # 5) 截断与响应组装：answer ≤6000；sources 每条 text ≤2000，

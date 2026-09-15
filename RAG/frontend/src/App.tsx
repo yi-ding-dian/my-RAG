@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
+  Badge,
   Dropdown,
   Layout,
   Menu,
@@ -33,7 +34,13 @@ import ForcedPasswordModal from './modules/users/components/ForcedPasswordModal'
 import { AuthProvider, useAuth } from './shared/auth/AuthContext';
 import { THEME_PRESETS, useTheme } from './theme';
 import { APP_VERSION } from './constants';
-import { avatarUrl } from './shared/api/client';
+import {
+  LOG_HEALTH_POLL_INTERVAL,
+  LOG_HEALTH_REFRESH_EVENT,
+  avatarUrl,
+  getLogHealth,
+} from './shared/api/client';
+import type { LogHealth } from './shared/api/client';
 import type { User } from './shared/auth/token';
 
 /* 页面按需加载（代码分割）：主 chunk 只含框架与路由，页面与业务依赖各自独立 chunk */
@@ -103,7 +110,7 @@ const roleMeta: Record<User['role'], { color: string; text: string }> = {
 /** 菜单过滤：/settings 仅 super_admin、/dept-config 仅 dept_admin（配置收口：
     超管管基础设施，部门管理员管本部门业务配置）；/users、(全局)文档、日志对
     两个管理角色开放（dept_admin 数据限本部门）；外部查询仅 super_admin */
-const filterMenu = (user: User | null) => {
+const filterMenu = (user: User | null, logHealth: LogHealth | null) => {
   const isAdmin = user?.role === 'super_admin' || user?.role === 'dept_admin';
   return menuItems
     .filter(item => {
@@ -122,12 +129,26 @@ const filterMenu = (user: User | null) => {
       }
       return true;
     })
-    .map(item =>
+    .map(item => {
       // dept_admin 的全局文档入口标签显示「文档管理」（数据限本部门，不再是"全部"）
-      item.key === '/global-documents' && user?.role === 'dept_admin'
-        ? { ...item, label: '文档管理' }
-        : item,
-    );
+      if (item.key === '/global-documents' && user?.role === 'dept_admin') {
+        return { ...item, label: '文档管理' };
+      }
+      // 日志红绿灯：系统级故障红灯 / 正常绿灯，点在**文字右侧**（antd Badge 原生色，
+      // 与菜单样式统一）。仅超管——系统日志接口对 dept_admin 无权限，红点没有数据源
+      if (item.key === '/logs' && user?.role === 'super_admin' && logHealth) {
+        return {
+          ...item,
+          label: (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              日志查看
+              <Badge status={logHealth.level === 'red' ? 'error' : 'success'} />
+            </span>
+          ),
+        };
+      }
+      return item;
+    });
 };
 
 /** 侧栏菜单高亮匹配：子路由（如 /analytics/quality）按最长路径前缀命中父级菜单 key */
@@ -208,6 +229,38 @@ const AppLayout: React.FC = () => {
   // 头像更换后重置失败态，自动重试加载新头像
   useEffect(() => setAvatarFailed(false), [user?.avatar]);
 
+  // 菜单「日志查看」红绿灯（仅超管）：60s 轮询系统级故障状态。
+  // 失败静默——红绿灯是锦上添花，拿不到不能影响页面其他部分
+  const [logHealth, setLogHealth] = useState<LogHealth | null>(null);
+  // 总览页确认故障后广播 → 立即重拉（不等 60s 轮询，否则刚确认完菜单还红着）
+  const [healthSeq, setHealthSeq] = useState(0);
+  useEffect(() => {
+    const onRefresh = () => setHealthSeq(s => s + 1);
+    window.addEventListener(LOG_HEALTH_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(LOG_HEALTH_REFRESH_EVENT, onRefresh);
+  }, []);
+  useEffect(() => {
+    if (user?.role !== 'super_admin') {
+      setLogHealth(null);
+      return;
+    }
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await getLogHealth();
+        if (!cancelled) setLogHealth(res.data);
+      } catch {
+        // 静默
+      }
+    };
+    void tick();
+    const timer = setInterval(tick, LOG_HEALTH_POLL_INTERVAL);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [user?.role, healthSeq]);
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
@@ -261,7 +314,7 @@ const AppLayout: React.FC = () => {
         <Menu
           mode="inline"
           selectedKeys={menuKeyOf(location.pathname) ? [menuKeyOf(location.pathname) as string] : []}
-          items={filterMenu(user)}
+          items={filterMenu(user, logHealth)}
           onClick={({ key }) => navigate(key)}
           style={{ borderRight: 0, marginTop: 8, flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 8px' }}
         />

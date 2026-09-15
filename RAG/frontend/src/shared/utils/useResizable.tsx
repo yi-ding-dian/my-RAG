@@ -34,6 +34,8 @@ export interface ResizableResult {
 export const useResizable = (
   init: ResizeBox,
   targetRef?: React.RefObject<HTMLElement | null>,
+  /** 最小尺寸：调用方可传更小的下限（如内容很少的小弹窗）；缺省用 MIN_SIZE */
+  minSize: { w: number; h: number } = MIN_SIZE,
 ): ResizableResult => {
   const [box, setBox] = useState(init);
   const [draggingDir, setDraggingDir] = useState<ResizeDir | null>(null);
@@ -73,13 +75,13 @@ export const useResizable = (
       if (s.dir.includes('w')) n.w = s.box.w - dx;
       if (s.dir.includes('n')) n.h = s.box.h - dy;
       // clamp 最小值；西/北向被 clamp 时回调位置（右边/下边保持不动）
-      if (n.w < MIN_SIZE.w) n.w = MIN_SIZE.w;
-      if (n.h < MIN_SIZE.h) n.h = MIN_SIZE.h;
+      if (n.w < minSize.w) n.w = minSize.w;
+      if (n.h < minSize.h) n.h = minSize.h;
       if (s.dir.includes('w')) n.left = s.box.left + (s.box.w - n.w);
       if (s.dir.includes('n')) n.top = s.box.top + (s.box.h - n.h);
       return n;
     });
-  }, []);
+  }, [minSize.w, minSize.h]);
 
   const end = useCallback(() => {
     session.current = null;

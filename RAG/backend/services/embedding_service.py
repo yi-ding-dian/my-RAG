@@ -14,8 +14,10 @@ from openai import AsyncOpenAI
 
 from backend.config import get_active_config
 from backend.services.llm_client import get_llm_client
+from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
+log = AppLog(__name__)
 
 
 class EmbeddingError(Exception):
@@ -77,7 +79,7 @@ class EmbeddingService:
                 if attempt == 0:
                     logger.warning("embedding 调用失败，重试: %s", e)
                     continue
-                logger.error("embedding 调用失败（重试后）: %s", e)
+                log.system_error("embedding 调用失败（重试后）: %s", e)
                 raise EmbeddingError(
                     f"embedding 调用失败（重试后）: {e}") from e
 
