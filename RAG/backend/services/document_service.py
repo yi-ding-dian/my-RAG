@@ -26,19 +26,22 @@ from backend.models.rag_models import DocumentItem
 logger = logging.getLogger(__name__)
 
 # 支持的文档状态
-VALID_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed",
-                "pending_confirm"}
+VALID_STATUS = {"uploaded", "converting", "parsing", "parsed", "ingested",
+                "failed", "pending_confirm"}
 
 # 支持的文件扩展名（xlsx/xls/csv 走 spreadsheet.reader 直读表格；
 # doc 为老二进制 Word，走本地结构化解析，见 parsers.client.convert_doc_to_docx）
 SUPPORTED_EXTS = {".txt", ".md", ".pdf", ".docx", ".doc",
-                  ".xlsx", ".xls", ".csv"}
+                  ".xlsx", ".xls", ".csv", ".ppt", ".pptx"}
 
 # 服务重启后残留 parsing 状态文档的错误消息（recover_stuck_parsing 写入）
-_RECOVER_ERROR = "服务重启，解析中断，请重新解析"
+_RECOVER_ERROR = "服务重启，任务中断（解析/文档转换），请重新解析或重新上传"
 
 # 状态机合法迁移
 _TRANSITIONS = {
+    # converting: ppt/pptx 上传后先经文档转换服务转 PDF 的中间态（上传即返回，
+    # 列表里显示"转换中 + 耗时"）；转换成功 → uploaded（待解析），失败 → failed
+    "converting": {"uploaded", "failed"},
     "uploaded": {"parsing"},
     "parsing": {"parsed", "ingested", "failed", "pending_confirm"},
     # ingested: 新流程解析+入库一步完成（parsed 保留兼容历史数据）；
@@ -83,11 +86,17 @@ class DocumentService:
     # ---------- 上传 / 查询 ----------
 
     def create(self, kb_id: str, original_name: str, size: int,
-               file_type: Optional[str] = None) -> DocumentItem:
+               file_type: Optional[str] = None,
+               converted_from: Optional[str] = None,
+               status: str = "uploaded") -> DocumentItem:
         """创建文档元数据（文件本身由路由层写入 uploads/）
 
         file_type 缺省由 original_name 扩展名推导；URL 导入等场景可显式
         指定（如 "url"，此时内部文件名仍带 .md 扩展名保证解析链路可用）。
+        converted_from：原格式（如 "ppt"）——该文档是上传时由 ppt 转成 PDF 的，
+        仅用于列表标注"(原为 ppt)"，不影响任何解析逻辑。
+        status：初始状态，缺省 uploaded；ppt/pptx 走后台转换时为 converting
+        （上传即返回，列表显示"转换中"，转换完成后由调用方迁到 uploaded）。
         """
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ext = Path(original_name).suffix.lower() or ""
@@ -97,8 +106,9 @@ class DocumentService:
             name=f"{uuid.uuid4().hex[:12]}{ext}",
             original_name=original_name,
             file_type=file_type if file_type is not None else ext.lstrip("."),
+            converted_from=converted_from,
             size=size,
-            status="uploaded",
+            status=status,
             created_at=now,
             updated_at=now,
         )
@@ -256,7 +266,10 @@ class DocumentService:
         返回被恢复的文档 ID 列表。
         """
         with self._lock:
-            stuck = [d for d in self._docs.values() if d.status == "parsing"]
+            # converting 同样算"卡住"：服务重启时转换任务随进程消失，文档会
+            # 永远停在"转换中"（没有后台任务再来推进它）
+            stuck = [d for d in self._docs.values()
+                     if d.status in ("parsing", "converting")]
             for doc in stuck:
                 doc.status = "failed"
                 doc.error = _RECOVER_ERROR

@@ -63,6 +63,9 @@ class DocumentItem(BaseModel):
     name: str = Field("", description="内部文件名（UUID）")
     original_name: str = Field("", description="原始文件名")
     file_type: str = Field("", description="文件类型，如 txt/pdf/docx/md")
+    # 由其他格式转换而来（ppt/pptx 在上传时转成 PDF）：记录**原格式**，供列表
+    # 标注"(原为 ppt)"。空 = 原生上传，未经过转换
+    converted_from: Optional[str] = Field(None, description="转换来源格式（如 ppt）；空=原生上传")
     size: int = Field(0, description="文件大小（字节）")
     status: str = Field("uploaded", description="状态: uploaded/parsing/parsed/ingested/failed")
     error: Optional[str] = Field(None, description="失败原因")

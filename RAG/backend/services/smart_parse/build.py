@@ -80,7 +80,11 @@ async def build_analyze(*, doc_id: str, file_type: str, path: Path,
     if probe is None:
         engine = dict(_ENGINE_FALLBACK)
     else:
-        engine = suggest_engine(file_type, probe, docx_probe)
+        engine = suggest_engine(
+            file_type, probe, docx_probe,
+            # 转换服务是否已配：老版 .doc 无样式时靠它转 PDF 交 MinerU
+            gotenberg_ready=bool(
+                (get_active_config().gotenberg.base_url or "").strip()))
         engine["probe"] = probe
 
     # ---- 3) 画像分析（每步独立容错）----

@@ -54,6 +54,8 @@ const { Text } = Typography;
 /** 状态码 → 展示元数据（页面主组件的"复制文档信息"也要用中文名，故导出） */
 export const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   uploaded: { color: 'default', text: '待解析' },
+  // ppt/pptx 上传后先转 PDF 的中间态（转完自动变"待解析"）
+  converting: { color: 'processing', text: '转换中' },
   parsing: { color: 'processing', text: '解析中' },
   parsed: { color: 'warning', text: '已解析' },
   ingested: { color: 'success', text: '已入库' },
@@ -303,7 +305,8 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
   // 定时器（空闲不空转）；耗时起点用 updated_at —— 状态转入 parsing 的那一刻
   // 就是解析开始时刻（后端状态落库时间）
   const [nowTick, setNowTick] = useState(() => Date.now());
-  const hasParsing = docs.some(d => d.status === 'parsing');
+  const hasParsing = docs.some(
+    d => d.status === 'parsing' || d.status === 'converting');
   useEffect(() => {
     if (!hasParsing) return;
     const timer = setInterval(() => setNowTick(Date.now()), 1000);
@@ -428,9 +431,18 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       onHeaderCell: () => ({ width: colWidths.name ?? 260, onResize: handleResize('name'), title: '文件名' }),
       // 点击文件名即可打开预览弹窗（替代原「文档预览」按钮）
       render: (v: string, row) => (
-        <Typography.Link onClick={() => onPreview(row)} title={v}>
-          {v}
-        </Typography.Link>
+        <>
+          <Typography.Link onClick={() => onPreview(row)} title={v}>
+            {v}
+          </Typography.Link>
+          {/* 由 ppt 等格式在上传时转成 PDF 的文档：标注原格式，别让人以为
+              "传的是 ppt、怎么变成 pdf 了"（橙色=提示性信息，非异常） */}
+          {row.converted_from && (
+            <span style={{ color: '#d97706', marginLeft: 6, fontSize: 12 }}>
+              (原为 {row.converted_from})
+            </span>
+          )}
+        </>
       ),
     },
     {
@@ -473,11 +485,12 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
             </Tooltip>
           );
         }
-        // 解析中：状态标签内附已耗时（如「解析中 2:35」），长文档解析时能看出
+        // 解析中/转换中：状态标签内附已耗时（如「解析中 2:35」），长任务能看出
         // 等了多久；起点取不到（历史数据缺 updated_at）则不显示，不影响标签
-        const elapsed = status === 'parsing' ? formatElapsed(row.updated_at) : '';
+        const busy = status === 'parsing' || status === 'converting';
+        const elapsed = busy ? formatElapsed(row.updated_at) : '';
         const tag =
-          status === 'parsing' ? (
+          busy ? (
             <Tag color={meta.color} icon={<Spin size="small" />}>
               {meta.text}{elapsed ? ` ${elapsed}` : ''}
             </Tag>

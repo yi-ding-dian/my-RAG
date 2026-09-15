@@ -261,7 +261,8 @@ const DocumentsPage: React.FC = () => {
   useEffect(() => {
     if (!kbId) return;
     const hasPending = docs.some(
-      d => d.status === 'parsing' || d.graph_status === 'building',
+      d => d.status === 'parsing' || d.status === 'converting'
+        || d.graph_status === 'building',
     );
     if (!hasPending) return;
     const timer = window.setInterval(() => {

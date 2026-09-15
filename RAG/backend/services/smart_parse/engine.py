@@ -12,13 +12,17 @@ from backend.services.smart_parse.types import (is_doc_like, is_spreadsheet,
 
 
 def suggest_engine(file_type: str, probe: dict,
-                   docx_probe: dict | None = None) -> dict:
+                   docx_probe: dict | None = None,
+                   gotenberg_ready: bool = False) -> dict:
     """基于文件类型 + 解析器可用性探测的引擎建议（纯规则）
 
     - probe：probe_parsers() 的产物 {mineru:{available,reason}, deepdoc:{...}, ...}
     - docx_probe：docx/doc 结构探测结果（可选，见 extract.probe_docx_structure）；
       判定为规范文档（is_normative）时建议本地结构化解析 docx_struct
       （标题层级/自动编号保留）；非 docx/doc 或未探测时建议逻辑不变
+    - gotenberg_ready：文档转换服务（Gotenberg）是否已配置。老版 .doc 无规范
+      样式时优先走「转 PDF → MinerU」（保留标题层级），但**前提是转换服务可用**；
+      缺省 False = 走本地结构化解析
     """
     mineru = probe.get("mineru") or {}
     deepdoc = probe.get("deepdoc") or {}
@@ -41,13 +45,24 @@ def suggest_engine(file_type: str, probe: dict,
         return {"suggested": "docx_struct",
                 "reason": "检测到规范标题样式，可用结构解析保留层级"}
     if file_type == "doc":
+        # 无规范样式（有样式的已被上面拦走）：
+        # 经 Gotenberg 转 PDF 交 MinerU —— MinerU 直接吃 docx 只提文本、标题会
+        # 全丢（实测同一文档：docx → 0 个标题，转 PDF → 94 个）。
+        # **前提是转换服务可用**：没配 Gotenberg 就只能走本地结构化解析
+        # （否则转 PDF 失败会回退成把 .doc 原样交给 MinerU，而它不认这个格式）
+        if mineru.get("available") and gotenberg_ready:
+            return {"suggested": "mineru",
+                    "reason": "doc 经文档转换服务转 PDF 后由 MinerU 解析（保留标题层级）"}
         return {"suggested": "docx_struct",
                 "reason": "老版 Word（doc）经 LibreOffice 转换后结构化解析"
                           "（本地，无服务依赖）"}
-    if file_type == "docx":
+    if file_type in ("docx", "ppt", "pptx"):
+        # ppt/pptx 与 docx 同理：MinerU 直接吃这些格式会丢标题层级（PPT 更是
+        # 先经 Gotenberg 转 PDF 才能解析）
         if mineru.get("available"):
+            label = "PPT" if file_type in ("ppt", "pptx") else "docx"
             return {"suggested": "mineru",
-                    "reason": "docx 由 MinerU 解析（服务可用，推荐）"}
+                    "reason": f"{label} 由 MinerU 解析（服务可用，推荐）"}
         return {"suggested": "plain",
                 "reason": "MinerU 不可用，python-docx 纯文本提取"}
     return {"suggested": "auto",

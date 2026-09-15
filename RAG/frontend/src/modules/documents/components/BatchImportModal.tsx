@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import AppModal from '../../../shared/components/common/AppModal';
+import AppModal, { AppModalFooter } from '../../../shared/components/common/AppModal';
 import {
   Alert, 
   App as AntApp, 
@@ -46,6 +46,12 @@ const METHOD_OPTIONS: { value: ParseMethod; label: string }[] = [
  *  - 统一模式：默认值查表 + 用户选的增强开关覆盖
  * 这里此前有两份硬编码参数表，且智能模式漏了"结构解析 → 层级聚合切块"那层联动，
  * 导致同一份 docx 在向导里给层级聚合、在批量智能里给父子分块。 */
+
+/** 批量导入支持的文件类型（注：比单文件上传少表格类，两侧白名单本来就不完全一致） */
+const BATCH_ACCEPT_EXTS = ['.txt', '.md', '.pdf', '.docx', '.doc',
+                           '.ppt', '.pptx'];
+/** **上传时**就会经文档转换服务（Gotenberg）转成 PDF 的格式（原文件不保留） */
+const BATCH_CONVERT_EXTS = ['.ppt', '.pptx'];
 
 interface BatchResult {
   name: string;
@@ -98,6 +104,8 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   // 文件选择（antd Upload 受控：beforeUpload 收集，禁止自动上传）
   const [files, setFiles] = useState<File[]>([]);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
+  /** 待确认转换的 ppt/pptx（统一弹窗确认后才收进列表） */
+  const [pendingConvert, setPendingConvert] = useState<File | null>(null);
   // 执行状态
   const [running, setRunning] = useState(false);
   const [current, setCurrent] = useState<{ index: number; total: number; name: string } | null>(null);
@@ -130,20 +138,32 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   const addFile = (file: File): boolean => {
     const dot = file.name.lastIndexOf('.');
     const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
-    if (!['.txt', '.md', '.pdf', '.docx', '.doc'].includes(ext)) {
-      message.warning(`不支持的文件类型：${file.name}（仅支持 .txt/.md/.pdf/.docx/.doc）`);
+    if (!BATCH_ACCEPT_EXTS.includes(ext)) {
+      message.warning(
+        `不支持的文件类型：${file.name}（仅支持 ${BATCH_ACCEPT_EXTS.join('/')}）`);
       return false;
     }
     if (files.some(f => f.name === file.name)) {
       message.warning(`已选择同名文件：${file.name}`);
       return false;
     }
+    // ppt/pptx：**上传时**就会经转换服务转成 PDF（原文件不保留），先让用户确认
+    // —— 用项目统一的 AppModal（见 docs/弹窗规范(AppModal).md）
+    if (BATCH_CONVERT_EXTS.includes(ext)) {
+      setPendingConvert(file);
+      return false;
+    }
+    collect(file);
+    return false; // 阻止 antd 自动上传
+  };
+
+  /** 收进待导入列表 */
+  const collect = (file: File) => {
     setFiles(prev => [...prev, file]);
     setFileList(prev => [
       ...prev,
       { uid: `${file.name}-${prev.length}`, name: file.name, status: 'done' as const },
     ]);
-    return false; // 阻止 antd 自动上传
   };
 
   const removeFile = (file: UploadFile) => {
@@ -234,6 +254,7 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   const okCount = results?.filter(r => r.ok).length ?? 0;
 
   return (
+    <>
     <AppModal
       dimension="auto"
       defaultSize={{ w: 680, h: 520 }}
@@ -377,11 +398,11 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
           <div style={{ marginBottom: 8 }}>
             <Text strong>选择文档</Text>
             <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-              支持多选批量导入并解析（.txt/.md/.pdf/.docx/.doc，最多 100MB/个）
+              支持多选批量导入并解析（{BATCH_ACCEPT_EXTS.join('/')}，最多 100MB/个）
             </Text>
           </div>
           <Upload
-            accept=".txt,.md,.pdf,.docx,.doc"
+            accept={BATCH_ACCEPT_EXTS.join(',')}
             multiple
             beforeUpload={file => addFile(file)}
             fileList={fileList}
@@ -424,6 +445,38 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
         )}
       </Space>
     </AppModal>
+
+    {/* ppt/pptx 转换确认：用项目统一弹窗（见 docs/弹窗规范(AppModal).md） */}
+    <AppModal
+      title="该文件将先转换为 PDF"
+      open={!!pendingConvert}
+      dimension="auto"
+      defaultSize={{ w: 520, h: 360 }}
+      // 内容只有几行，放宽最小高度下限（组件注释里明确支持"内容很少的小弹窗"）
+      minSize={{ w: 400, h: 180 }}
+      onCancel={() => setPendingConvert(null)}
+      footer={
+        <AppModalFooter
+          okText="转换并导入"
+          onOk={() => {
+            const f = pendingConvert;
+            setPendingConvert(null);
+            if (f) collect(f);
+          }}
+          onCancel={() => setPendingConvert(null)}
+        />
+      }
+    >
+      <div style={{ lineHeight: 1.8 }}>
+        <b>{pendingConvert?.name}</b>
+        <br />
+        导入时会先通过文档转换服务（Gotenberg）转成 PDF，
+        之后按 PDF 保存、解析与检索。
+        <br />
+        <Text type="secondary">原文件不保留。</Text>
+      </div>
+    </AppModal>
+    </>
   );
 };
 

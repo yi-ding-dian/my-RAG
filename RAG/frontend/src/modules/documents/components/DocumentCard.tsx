@@ -21,6 +21,8 @@ import CardShell from './CardShell';
 /** 文档状态 → Tag 色与文案（与表格列语义一致） */
 const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   uploaded: { color: 'default', text: '待解析' },
+  // ppt/pptx 上传后先转 PDF 的中间态（转完自动变"待解析"）
+  converting: { color: 'processing', text: '转换中' },
   parsing: { color: 'processing', text: '解析中' },
   parsed: { color: 'warning', text: '已解析' },
   ingested: { color: 'success', text: '已入库' },

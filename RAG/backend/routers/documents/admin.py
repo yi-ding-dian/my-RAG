@@ -43,8 +43,8 @@ router = APIRouter(prefix="/api/admin/documents", tags=["超管文档管理"])
 # 状态筛选合法值（与 documents.py 的 _VALID_LIST_STATUS 语义完全一致：
 # parsed 为历史中间态归入「待解析」；unparsed 映射 uploaded+parsed 两态；
 # pending_confirm=Agentic 超限待确认，归入「失败」筛选组）
-_VALID_LIST_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed",
-                      "pending_confirm", "unparsed", "all"}
+_VALID_LIST_STATUS = {"uploaded", "converting", "parsing", "parsed", "ingested",
+                      "failed", "pending_confirm", "unparsed", "all"}
 
 # 未分配部门的分组标识（department_id 为 null 的知识库）
 UNASSIGNED_DEPT_KEY = "__unassigned__"

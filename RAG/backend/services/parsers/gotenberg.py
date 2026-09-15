@@ -31,6 +31,42 @@ _CONVERT_PATH = "/forms/libreoffice/convert"
 _HEALTH_PATH = "/health"
 
 
+async def convert_bytes_to_pdf(content: bytes, filename: str, cfg) -> Optional[bytes]:
+    """把内存中的 Office 文档转成 PDF，返回 PDF 字节；不转换/失败 → None
+
+    上传路径用（手里是刚读到的字节，还没有落盘文件）。与 convert_to_pdf 同一
+    契约：**失败不抛异常**——调用方据此决定是拦下这次上传，还是原样放行。
+    """
+    base_url = (getattr(cfg, "base_url", "") or "").strip().rstrip("/")
+    if not base_url:
+        return None
+    timeout = float(getattr(cfg, "timeout", 0) or 120.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{base_url}{_CONVERT_PATH}",
+                files={"files": (filename, content)},
+            )
+        if resp.status_code >= 400:
+            logger.warning("Gotenberg 转换失败 %s: HTTP %d %s",
+                           filename, resp.status_code, resp.text[:200])
+            return None
+        data = resp.content
+        if not data.startswith(b"%PDF"):
+            logger.warning("Gotenberg 返回的不是 PDF（%s）: %s",
+                           filename, data[:200])
+            return None
+        logger.info("Gotenberg 转换完成: %s → PDF（%.1f KB）",
+                    filename, len(data) / 1024)
+        return data
+    except httpx.TimeoutException:
+        logger.warning("Gotenberg 转换超时（%.0fs）: %s", timeout, filename)
+        return None
+    except Exception as e:
+        logger.warning("Gotenberg 转换异常 %s: %s", filename, str(e)[:200])
+        return None
+
+
 async def convert_to_pdf(src: Path, cfg, out_dir: Path) -> Optional[Path]:
     """把 Office 文档转成 PDF，返回产物路径；不转换/失败 → None
 

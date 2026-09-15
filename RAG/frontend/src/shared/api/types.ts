@@ -53,6 +53,8 @@ export interface RebuildTaskStatus {
 
 export type DocumentStatus =
   | 'uploaded'
+  /** 转换中：ppt/pptx 上传后先经文档转换服务转 PDF 的中间态（完成后 → uploaded） */
+  | 'converting'
   | 'parsing'
   | 'parsed'
   | 'ingested'
@@ -152,6 +154,9 @@ export interface DocumentItem {
   name: string;
   original_name: string;
   file_type: string;
+  /** 由其他格式转换而来（ppt/pptx 在上传时转成 PDF）：原格式，
+   *  用于列表标注"(原为 ppt)"；空/缺省 = 原生上传 */
+  converted_from?: string | null;
   size: number;
   status: DocumentStatus;
   error?: string;

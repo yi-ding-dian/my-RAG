@@ -1,13 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { App as AntApp, Button, Spin, Upload, theme } from 'antd';
+import { App as AntApp, Button, Spin, Typography, Upload, theme } from 'antd';
 import {
   FileAddOutlined,
   GlobalOutlined,
   InboxOutlined,
 } from '@ant-design/icons';
 import { asApiError, uploadDocument } from '../../../shared/api/client';
+import AppModal, { AppModalFooter } from '../../../shared/components/common/AppModal';
 
 const { Dragger } = Upload;
+const { Text } = Typography;
+
+/** 上传类型白名单（与后端 SUPPORTED_EXTS 保持一致） */
+const ACCEPT_EXTS = ['.txt', '.md', '.pdf', '.docx', '.doc',
+                     '.xlsx', '.xls', '.csv', '.ppt', '.pptx'];
+
+/** **上传时**就会经文档转换服务（Gotenberg）转成 PDF 的格式（原文件不保留）
+ *  —— 它们直接进解析链路会失败或丢标题层级，故在门口就统一成 PDF */
+const UPLOAD_CONVERT_EXTS = ['.ppt', '.pptx'];
 
 interface UploadAreaProps {
   kbId?: string;
@@ -32,6 +42,8 @@ const UploadArea: React.FC<UploadAreaProps> = ({
 }) => {
   const { message, modal } = AntApp.useApp();
   const { token } = theme.useToken();
+  /** 待确认转换的 ppt/pptx（统一弹窗确认后才入队上传） */
+  const [pendingConvert, setPendingConvert] = useState<File | null>(null);
   // 批量上传状态：uploading=本批进行中；total/done=第 done+1 个；current=当前文件名
   const [uploadState, setUploadState] = useState<{
     uploading: boolean;
@@ -134,19 +146,35 @@ const UploadArea: React.FC<UploadAreaProps> = ({
     // 类型白名单与后端 SUPPORTED_EXTS 保持一致
     const dot = file.name.lastIndexOf('.');
     const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
-    if (!['.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.csv'].includes(ext)) {
+    if (!ACCEPT_EXTS.includes(ext)) {
       message.warning(
-        `不支持的文件类型：${file.name}（仅支持 .txt/.md/.pdf/.docx/.doc/.xlsx/.xls/.csv）`);
+        `不支持的文件类型：${file.name}（仅支持 ${ACCEPT_EXTS.join('/')}）`);
       return false;
     }
-    // multiple 时 antd 逐个回调 beforeUpload，先聚合成批（30ms 窗口）再统一并发上传
+    // ppt/pptx：**上传时**就会经转换服务转成 PDF（原文件不保留），先让用户确认
+    // —— 用项目统一的 AppModal（见 docs/弹窗规范(AppModal).md）
+    if (UPLOAD_CONVERT_EXTS.includes(ext)) {
+      setPendingConvert(file);
+      return false;
+    }
+    // .doc 视解析引擎而定（选 MinerU 时也会先转 PDF），提示留有余地
+    if (ext === '.doc') {
+      message.info(
+        `${file.name}：.doc 在部分解析方式下会先转成 PDF 再解析`, 6);
+    }
+    enqueue(file);
+    return false;
+  };
+
+  /** 入队并触发聚合上传（multiple 时 antd 逐个回调 beforeUpload，先聚合成批
+   *  （30ms 窗口）再统一并发上传） */
+  const enqueue = (file: File) => {
     pendingFilesRef.current.push(file);
     if (!uploadTimerRef.current) {
       uploadTimerRef.current = window.setTimeout(() => {
         void flushUploads();
       }, 30);
     }
-    return false;
   };
 
   // 组件卸载时清理批量上传聚合定时器
@@ -162,7 +190,7 @@ const UploadArea: React.FC<UploadAreaProps> = ({
         {canManage ? (
           <Dragger
             className="upload-zone upload-zone--inline"
-            accept=".txt,.md,.pdf,.docx,.doc,.xlsx,.xls,.csv"
+            accept={ACCEPT_EXTS.join(',')}
             multiple={true}
             showUploadList={false}
             beforeUpload={file => handleUpload(file)}
@@ -170,7 +198,7 @@ const UploadArea: React.FC<UploadAreaProps> = ({
           >
             <div className="upload-inline__content">
               <InboxOutlined style={{ fontSize: 16, color: token.colorPrimary }} />
-              <span>点击或拖拽文件到此处上传，支持 .txt/.md/.pdf/.docx/.doc/.xlsx/.xls/.csv</span>
+              <span>点击或拖拽文件到此处上传，支持 {ACCEPT_EXTS.join('/')}</span>
             </div>
           </Dragger>
         ) : (
@@ -208,6 +236,37 @@ const UploadArea: React.FC<UploadAreaProps> = ({
           </span>
         </div>
       )}
+
+      {/* ppt/pptx 转换确认：用项目统一弹窗（见 docs/弹窗规范(AppModal).md） */}
+      <AppModal
+        title="该文件将先转换为 PDF"
+        open={!!pendingConvert}
+        dimension="auto"
+        defaultSize={{ w: 520, h: 360 }}
+        // 内容只有几行，放宽最小高度下限（组件注释里明确支持"内容很少的小弹窗"）
+        minSize={{ w: 400, h: 180 }}
+        onCancel={() => setPendingConvert(null)}
+        footer={
+          <AppModalFooter
+            okText="转换并上传"
+            onOk={() => {
+              const f = pendingConvert;
+              setPendingConvert(null);
+              if (f) enqueue(f);
+            }}
+            onCancel={() => setPendingConvert(null)}
+          />
+        }
+      >
+        <div style={{ lineHeight: 1.8 }}>
+          <b>{pendingConvert?.name}</b>
+          <br />
+          上传时会先通过文档转换服务（Gotenberg）转成 PDF，
+          之后按 PDF 保存、解析与检索。
+          <br />
+          <Text type="secondary">原文件不保留。</Text>
+        </div>
+      </AppModal>
     </>
   );
 };

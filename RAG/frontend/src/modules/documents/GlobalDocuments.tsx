@@ -62,6 +62,8 @@ const UNASSIGNED = '__unassigned__';
 
 const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   uploaded: { color: 'default', text: '待解析' },
+  // ppt/pptx 上传后先转 PDF 的中间态（转完自动变"待解析"）
+  converting: { color: 'processing', text: '转换中' },
   parsing: { color: 'processing', text: '解析中' },
   parsed: { color: 'warning', text: '已解析' },
   ingested: { color: 'success', text: '已入库' },
@@ -187,7 +189,8 @@ const GlobalDocumentsPage: React.FC = () => {
   // 解析中计时：每秒 tick 驱动「已耗时」刷新（仅当列表存在解析中文档时才起
   // 定时器，空闲不空转）；起点用 updated_at —— 状态转入 parsing 的时刻
   const [nowTick, setNowTick] = useState(() => Date.now());
-  const hasParsing = items.some(d => d.status === 'parsing');
+  const hasParsing = items.some(
+    d => d.status === 'parsing' || d.status === 'converting');
   useEffect(() => {
     if (!hasParsing) return;
     const timer = setInterval(() => setNowTick(Date.now()), 1000);
@@ -470,9 +473,17 @@ const GlobalDocumentsPage: React.FC = () => {
       width: colWidths.name ?? 240,
       onHeaderCell: () => ({ width: colWidths.name ?? 240, onResize: handleResize('name'), title: '文件名' }),
       render: (v: string, row) => (
-        <Typography.Link onClick={() => setPreviewDoc(row)} title="点击在线预览">
-          {v}
-        </Typography.Link>
+        <>
+          <Typography.Link onClick={() => setPreviewDoc(row)} title="点击在线预览">
+            {v}
+          </Typography.Link>
+          {/* 由 ppt 等格式在上传时转成 PDF 的文档：标注原格式（与部门文档页同口径） */}
+          {row.converted_from && (
+            <span style={{ color: '#d97706', marginLeft: 6, fontSize: 12 }}>
+              (原为 {row.converted_from})
+            </span>
+          )}
+        </>
       ),
     },
     {
@@ -511,10 +522,11 @@ const GlobalDocumentsPage: React.FC = () => {
             </Tooltip>
           );
         }
-        // 解析中：状态标签内附已耗时（如「解析中 2:35」），与部门文档页同口径
-        const elapsed = status === 'parsing' ? formatElapsed(row.updated_at) : '';
+        // 解析中/转换中：状态标签内附已耗时（如「解析中 2:35」），与部门文档页同口径
+        const busy = status === 'parsing' || status === 'converting';
+        const elapsed = busy ? formatElapsed(row.updated_at) : '';
         const tag =
-          status === 'parsing' ? (
+          busy ? (
             <Tag color={meta.color} icon={<Spin size="small" />}>
               {meta.text}{elapsed ? ` ${elapsed}` : ''}
             </Tag>

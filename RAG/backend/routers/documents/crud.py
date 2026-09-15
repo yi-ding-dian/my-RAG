@@ -64,8 +64,8 @@ _MAX_PREVIEW_PDF_BYTES = 50 * 1024 * 1024  # PDF 在线预览上限 50MB
 # 文档列表状态筛选合法值（空/缺省 = 全部；parsed 为历史中间态，归入
 # 「待解析」；unparsed 为前端「未入库」筛选 value，映射 uploaded+parsed 两态；
 # pending_confirm=Agentic 超限待确认，归入「失败」筛选组（同为异常/挂起态））
-_VALID_LIST_STATUS = {"uploaded", "parsing", "parsed", "ingested", "failed",
-                      "pending_confirm", "unparsed", "all"}
+_VALID_LIST_STATUS = {"uploaded", "converting", "parsing", "parsed", "ingested",
+                      "failed", "pending_confirm", "unparsed", "all"}
 
 # Word 文档（结构化解析目标格式）：只有这两种类型支持提取标题结构
 _WORD_FILE_TYPES = ("docx", "doc")
@@ -114,15 +114,6 @@ async def upload_document(request: Request, kb_id: str,
             status_code=400,
             detail=f"知识库文档数已达上限（{limit} 个），请删除部分文档或调大配额后再上传")
 
-    # 同名检测（读文件前尽早返回；list_by_kb 默认 include_deleted=False，
-    # 回收站中的同名文档不参与，跨知识库互不影响）
-    if not force and any(
-            d.original_name == original_name
-            for d in get_document_service().list_by_kb(kb_id)):
-        raise HTTPException(
-            status_code=409,
-            detail=f"知识库中已存在同名文档：{original_name}，如需覆盖请确认后重传")
-
     # 分块读取，限制大小（上限可由配置档案 ingestion.max_upload_mb 调整）
     # 注：老版 .doc 曾另设 50MB 上限——本地 LibreOffice 转换没有内存上限，
     # 实测 105MB / 795 张扫描图吃到 27.9GB 把整机拖到 OOM。接入 Gotenberg 后
@@ -137,10 +128,30 @@ async def upload_document(request: Request, kb_id: str,
                 status_code=413,
                 detail=f"文件超过 {upload_max_mb}MB 限制（系统配置-入库与限制可调）")
 
+    # ppt/pptx：**上传时转 PDF**，但走**后台任务**——上传接口立即返回，文档先以
+    # converting 状态出现在列表里（前端显示"转换中 + 耗时"），转换完成再迁到
+    # uploaded（待解析）。若同步转，上传请求要挂几十秒、期间列表还看不到这个文档。
+    # 原文件不保留：转换是单向的，用户手上本来就有原 ppt。
+    conv_ext = ext if ext in ("ppt", "pptx") else None
+    converted_from = conv_ext
+    if conv_ext:
+        original_name = f"{Path(original_name).stem}.pdf"
+
+    # 同名检测（放在改名之后：ppt 转出来是 .pdf，要按**最终名字**查重；
+    # list_by_kb 默认 include_deleted=False，回收站中的同名不算，跨库互不影响）
+    if not force and any(
+            d.original_name == original_name
+            for d in get_document_service().list_by_kb(kb_id)):
+        raise HTTPException(
+            status_code=409,
+            detail=f"知识库中已存在同名文档：{original_name}，如需覆盖请确认后重传")
+
     # 创建元数据（UUID 内部文件名），原文件写对象存储 + 本地副本（ingest 解析 / 存储不可用 fallback）
     doc_svc = get_document_service()
     doc = doc_svc.create(
-        kb_id=kb_id, original_name=original_name, size=len(content))
+        kb_id=kb_id, original_name=original_name, size=len(content),
+        converted_from=converted_from,
+        status="converting" if conv_ext else "uploaded")
     storage = get_storage_service()
     try:
         await storage.upload_bytes(
@@ -151,6 +162,10 @@ async def upload_document(request: Request, kb_id: str,
     upload_path = doc_svc.get_upload_path(doc)
     # P2-11: 本地副本写盘放线程池，避免阻塞事件循环（大文件上传时卡住其他请求）
     await asyncio.to_thread(upload_path.write_bytes, content)
+    # ppt/pptx：后台转换 → 覆盖存储与本地副本 → 迁到 uploaded（待解析）
+    if conv_ext:
+        asyncio.create_task(
+            _convert_uploaded_office(doc.id, content, original_name))
     await _refresh_kb_stats(db, kb_id)
     await audit_service.record_action(
         user, action="doc.upload", target_type="doc",
@@ -158,6 +173,57 @@ async def upload_document(request: Request, kb_id: str,
         detail={"size": len(content), "file_type": f".{ext}"}, request=request)
     logger.info("文档上传: %s (%s) %d 字节", original_name, doc.id, len(content))
     return doc
+
+
+async def _convert_uploaded_office(doc_id: str, content: bytes,
+                                   filename: str) -> None:
+    """后台把上传的 ppt/pptx 转成 PDF（上传接口已立即返回，文档处于 converting）
+
+    - 成功：**覆盖**对象存储与本地副本（内部文件名本就是 .pdf）、更新大小、
+      迁到 uploaded（待解析）——列表里状态随之从"转换中"变成"待解析"
+    - 失败：迁到 failed + error（列表可见原因）。原内容仍是 ppt，重新解析没有
+      意义，提示用户改用 PDF 重新上传
+    - 文档中途被删/已改变状态（如进回收站）→ transition 抛 ValueError，忽略
+    """
+    doc_svc = get_document_service()
+    try:
+        from backend.services.parsers.gotenberg import convert_bytes_to_pdf
+        pdf = await convert_bytes_to_pdf(
+            content, filename, get_active_config().gotenberg)
+    except Exception as e:  # 转换客户端内部已兜底，这里防意外
+        logger.warning("PPT 转换任务异常 %s: %s", doc_id, str(e)[:150])
+        pdf = None
+    if pdf is None:
+        try:
+            doc_svc.transition(
+                doc_id, "failed",
+                error="PPT 转换为 PDF 失败：请确认系统配置里的「文档转换"
+                      "（Gotenberg）」服务可用，或用 WPS / Office 另存为 PDF "
+                      "后重新上传")
+        except ValueError:
+            pass
+        return
+    doc = doc_svc.get(doc_id)
+    if not doc:
+        return
+    try:
+        storage = get_storage_service()
+        await storage.upload_bytes(
+            f"uploads/{doc.name}", pdf, content_type="application/pdf")
+        await asyncio.to_thread(doc_svc.get_upload_path(doc).write_bytes, pdf)
+    except Exception as e:
+        logger.warning("PPT 转换产物写入失败 %s: %s", doc_id, str(e)[:150])
+        try:
+            doc_svc.transition(doc_id, "failed",
+                               error=f"转换结果保存失败: {str(e)[:120]}")
+        except ValueError:
+            pass
+        return
+    try:
+        doc_svc.transition(doc_id, "uploaded", size=len(pdf))  # → 待解析
+    except ValueError:
+        pass
+    logger.info("PPT 转换完成: %s（%.1f KB）", doc_id, len(pdf) / 1024)
 
 
 @router.post("/{doc_id}/ingest")

@@ -558,15 +558,17 @@ class IngestionService(_TraceMixin, _ImageMixin):
                     f"MinerU 服务不可用（{reason}），已切换纯文本提取")
         if parse_degrade:
             parser_config["degrade"] = parse_degrade
-        # 2.4) doc/docx 走 MinerU 时先转 PDF（需在系统配置配 Gotenberg 地址，
-        # 未配置则跳过、走原有路径）。原因：MinerU 的主场是 PDF——它按字号/
-        # 字体/位置做版面分析，能还原标题层级；而处理 docx 时只提取文本、
-        # **标题会全丢**（实测同一份文档：直接给 docx → 0 个标题；经
-        # Gotenberg 转成 PDF 再给 → 94 个标题、层级正确）。
+        # 2.4) doc/docx/ppt/pptx 走 MinerU 时先转 PDF（需在系统配置配 Gotenberg
+        # 地址，未配置则跳过、走原有路径）。原因：MinerU 的主场是 PDF——它按
+        # 字号/字体/位置做版面分析，能还原标题层级；而处理 docx/ppt 时只提取
+        # 文本、**标题会全丢**（实测同一份文档：直接给 docx → 0 个标题；经
+        # Gotenberg 转成 PDF 再给 → 94 个标题、层级正确）。PPT 更是必须先转，
+        # 解析器根本不认 .ppt 二进制格式。
         # 转换失败不阻塞入库：回退到原文件按原类型解析。
         parse_target, parse_type = upload_path, doc.file_type
         pdf_tmp_dir: Optional[Path] = None
-        if engine == "mineru" and (doc.file_type or "").lower() in ("doc", "docx"):
+        if engine == "mineru" and (doc.file_type or "").lower() in (
+                "doc", "docx", "ppt", "pptx"):
             g_cfg = get_active_config().gotenberg
             if (g_cfg.base_url or "").strip():
                 from backend.services.parsers.gotenberg import convert_to_pdf
