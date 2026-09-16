@@ -129,14 +129,18 @@ class TestRecursiveChunker:
             assert c.text.startswith("这是第"), f"块从句子中间切入: {c.text[:12]}"
 
     def test_overlap(self):
-        """overlap>0 时相邻块开头包含上一块尾部内容"""
+        """overlap>0 时相邻块有重叠（重叠区 ≥ overlap）
+
+        起点会对齐到自然边界之后（见 TestOverlapAlign）→ 实际重叠只会比
+        配置值**长**，不会短，故这里断言下界而非精确值。
+        """
         text = "句子内容。" * 30
         chunks = RecursiveChunker(chunk_size=40, overlap=8).chunk(text)
         _assert_offsets(chunks, text)
         assert len(chunks) > 1
         for prev, cur in zip(chunks, chunks[1:]):
-            assert cur.text.startswith(prev.text[-8:]), \
-                f"相邻块无重叠: {prev.text[-10:]} / {cur.text[:10]}"
+            assert cur.char_start <= prev.char_end - 8, \
+                f"相邻块重叠不足 8: prev 尾 {prev.char_end} / cur 头 {cur.char_start}"
 
     def test_chunk_size_boundary(self):
         """恰好等于 chunk_size → 单块"""
@@ -163,6 +167,64 @@ class TestRecursiveChunker:
         chunks = RecursiveChunker(chunk_size=800, overlap=100).chunk(text)
         _assert_offsets(chunks, text)
         assert _texts(chunks) == [text]
+
+
+class TestOverlapAlign:
+    """overlap 起点对齐自然边界（RecursiveChunker._align_overlap_start）
+
+    块间重叠区的起点若按字符数硬退，会落在词/句中间（实测"促进劳动就|业"
+    → 引用片段开头成"业，发展职业教育…"这种半截词）。对齐规则：在
+    [ns-2×overlap, ns) 窗口内向前找最近的边界，优先级 段落 > 句末标点 >
+    句内标点；只向前找（向后会让 overlap 缩水甚至归零）；窗口内无边界或
+    越过上一块起点则维持原位。
+    """
+
+    @staticmethod
+    def _align(text: str, ns: int, overlap: int = 10, lower: int = 0) -> int:
+        return RecursiveChunker(chunk_size=100, overlap=overlap)\
+            ._align_overlap_start(text, 0, ns, lower)
+
+    def test_prefers_paragraph(self):
+        """段落边界优先：窗口内同时有段落与句末标点时选段落之后"""
+        # "甲甲甲。乙乙乙。\n\n丙丙丙。丁丁丁。" → 段落边界在 8..10，丙 在 10
+        text = "甲甲甲。乙乙乙。\n\n丙丙丙。丁丁丁。"
+        assert self._align(text, text.index("丙") + 3) == text.index("丙")
+
+    def test_sentence_boundary(self):
+        """无段落时退到句末标点之后"""
+        text = "甲甲甲。乙乙乙。丙丙丙。"
+        assert self._align(text, text.index("丙") + 2) == text.index("丙")
+
+    def test_clause_boundary(self):
+        """只剩逗号时退到逗号之后（整段逗号的长句兜底，避免切在词中间）"""
+        text = "甲甲甲，乙乙乙，丙丙丙，丁丁丁"
+        assert self._align(text, text.index("丙") + 2) == text.index("丙")
+
+    def test_fallback_keeps_ns(self):
+        """窗口内无任何边界 → 维持原位（不劣于改动前）"""
+        assert self._align("甲" * 100, 50) == 50
+
+    def test_window_limit(self):
+        """边界超出 2×overlap 窗口 → 维持原位（防 overlap 无限膨胀）"""
+        text = "甲" * 50 + "。" + "乙" * 50  # 句号在 50，窗口 61..81 内没有边界
+        assert self._align(text, 81) == 81
+
+    def test_not_cross_lower_bound(self):
+        """不越过上一块起点"""
+        text = "甲甲甲。乙乙乙。丙丙丙。"
+        assert self._align(text, 8, lower=8) == 8
+
+    def test_chunks_start_at_boundary(self):
+        """端到端：切出的每个块（首块除外）都从自然边界之后开始"""
+        text = "句子内容。" * 30
+        chunks = RecursiveChunker(chunk_size=40, overlap=8).chunk(text)
+        _assert_offsets(chunks, text)
+        assert len(chunks) > 1
+        boundaries = set("\n。！？；.!?;，、,")
+        for c in chunks[1:]:
+            prev_char = text[c.char_start - 1]
+            assert prev_char in boundaries, \
+                f"块首未对齐边界（前一字符 {prev_char!r}）: {c.text[:12]!r}"
 
 
 class TestMarkdownSplitterSplitLevel:

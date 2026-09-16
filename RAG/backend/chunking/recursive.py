@@ -23,6 +23,17 @@ _IMAGE_REF_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)|<img\b[^>]*>", re.IGNORECASE)
 # 吃紧）→ 真实长度超过 chunk_size × 本系数时不再合并
 _MAX_RAW_LEN_FACTOR = 4
 
+# overlap 起点对齐用的自然边界，按优先级分组（组内一次搜完，取离起点最近的那个）：
+# 段落 > 句末标点 > 句内标点。见 _align_overlap_start。
+_ALIGN_BOUNDARY_GROUPS: List[Tuple[str, ...]] = (
+    ("\n\n",),
+    ("。", "！", "？", "；", ".", "!", "?", ";"),
+    ("，", "、", ","),
+)
+# 向前搜索窗口 = overlap × 本系数：窗口内找不到边界就放弃对齐（维持原位），
+# 避免在无标点长文（如表格行）里把 overlap 撑到失控
+_ALIGN_WINDOW_FACTOR = 2
+
 class RecursiveChunker:
     """递归字符切块（仿 langchain RecursiveCharacterTextSplitter 逻辑）
 
@@ -181,6 +192,40 @@ class RecursiveChunker:
         url_len = sum(len(m.group(0)) for m in _IMAGE_REF_RE.finditer(seg))
         return (e - s) - url_len
 
+    def _align_overlap_start(self, text: str, base: int, ns: int,
+                             lower_bound: int) -> int:
+        """把 overlap 续接的起点对齐到自然边界之后（返回新的全局起点）
+
+        理想起点 ns = 上一块尾 - overlap，按字符数硬退会落在词/句中间——实测
+        "促进劳动就|业" 让引用片段开头成了"业，发展职业教育…"这种半截词。这里
+        在 [ns - 2×overlap, ns) 窗口内按优先级找**离 ns 最近**的边界（段落 >
+        句末标点 > 句内标点），起点落到该边界之后的第一个非空白字符。
+
+        - **只向前找**：向后找会让 overlap 缩水甚至归零（下一个标点可能就在
+          ns 后几个字符），重叠就失去意义；向前只可能让 overlap 变大，最坏
+          情况（窗口内无边界）退化为原行为，不会比现在差
+        - 不越过 lower_bound（上一块起点）：窗口左端被其钳制，对齐结果恒 ≥ 它
+        - base = 片段文本 text 在全文的起始偏移；ns / lower_bound 为全局偏移
+        """
+        if self.overlap <= 0:
+            return ns
+        lo = max(ns - self.overlap * _ALIGN_WINDOW_FACTOR, lower_bound, base)
+        if lo >= ns:
+            return ns
+        seg = text[lo - base:ns - base]
+        for group in _ALIGN_BOUNDARY_GROUPS:
+            idx, width = -1, 0
+            for mark in group:
+                pos = seg.rfind(mark)
+                if pos > idx:
+                    idx, width = pos, len(mark)
+            if idx >= 0:
+                start = lo + idx + width  # 边界之后
+                while start < ns and text[start - base].isspace():
+                    start += 1  # 跳过边界后的空白（段落后的换行/缩进）
+                return start if start < ns else ns
+        return ns
+
     def _merge_units(self, units: List[Tuple[int, int]], text: str, base: int,
                      merge: bool = True) -> List[Tuple[int, int]]:
         """贪心合并原子单元为块区间：连续单元合并到接近 chunk_size
@@ -221,6 +266,8 @@ class RecursiveChunker:
                 s, e = blocks[k]
                 prev_s, prev_e = out[-1]
                 ns = max(prev_e - self.overlap, prev_s + 1)
+                # 起点对齐自然边界：不落在词/句中间（见 _align_overlap_start）
+                ns = self._align_overlap_start(text, base, ns, prev_s + 1)
                 # 回移起点不得落在保护区间内部（保护区间不可分：图片/表格/
                 # 代码块不能被 overlap 切进内部）→ 放弃本次 overlap
                 if any(ps < ns < pe for ps, pe in self.protected_ranges):
@@ -291,9 +338,11 @@ class RecursiveChunker:
                 # 加下句会超大小 → 封块（块边界在句子之间，不拆句）
                 chunks.append(Chunk(buf, buf_start, buf_start + len(buf)))
                 if self.overlap > 0:
-                    # overlap 续接：取当前块尾部 overlap 字符
-                    tail = buf[-self.overlap:]
-                    buf_start = buf_start + len(buf) - self.overlap
+                    # overlap 续接：取当前块尾部 overlap 字符（起点对齐自然边界）
+                    ns = self._align_overlap_start(
+                        text, base, buf_start + len(buf) - self.overlap, buf_start)
+                    tail = buf[ns - buf_start:]
+                    buf_start = ns
                     buf = tail + st
                 else:
                     buf, buf_start = st, st_start
@@ -373,9 +422,13 @@ class RecursiveChunker:
                     else:
                         good_splits.append((cur_text, cur_start))
                         # 带 overlap 续接：新块 = 当前块尾部 overlap 字符 + 分隔符 + 本段
+                        # （起点对齐自然边界，见 _align_overlap_start）
                         if self.overlap > 0:
-                            tail = cur_text[-self.overlap:]
-                            cur_start = cur_start + len(cur_text) - self.overlap
+                            ns = self._align_overlap_start(
+                                text, base,
+                                cur_start + len(cur_text) - self.overlap, cur_start)
+                            tail = cur_text[ns - cur_start:]
+                            cur_start = ns
                             cur_text = tail + separator + split_text
                         else:
                             cur_text = split_text
