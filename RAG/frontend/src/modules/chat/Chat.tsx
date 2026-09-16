@@ -29,6 +29,14 @@ import CitationTraceModal from './components/CitationTraceModal';
 import { useAuth } from '../../shared/auth/AuthContext';
 
 const KB_ID_KEY = 'myrag.kb_id';
+// 「新建」后的草稿会话 id：仅前端占位、不落库，发送第一条消息时后端才真正创建会话
+// （避免点几次「新建」就往会话列表里堆一串空会话）
+const DRAFT_SESSION_ID = '__draft__';
+// 草稿会话在列表顶部的占位项（条数/时间不展示，由渲染分支单独处理）
+const DRAFT_SESSION: ChatSession = {
+  id: DRAFT_SESSION_ID, kb_id: '', title: '新会话',
+  message_count: 0, created_at: '', updated_at: '',
+};
 
 const ChatPage: React.FC = () => {
   const { message } = AntApp.useApp();
@@ -97,16 +105,35 @@ const ChatPage: React.FC = () => {
   }, [kbId]);
 
   // ---------- 会话列表 ----------
-  const loadSessions = useCallback(
+  // 打开指定会话：加载消息并高亮（失败只提示，不改动当前选中）
+  const openSessionById = useCallback(
     async (id: string) => {
+      try {
+        const res = await getSession(id);
+        setMessages(res.data.messages);
+        setActiveSessionId(id);
+      } catch {
+        message.error('加载会话失败');
+      }
+    },
+    [message],
+  );
+
+  // autoOpenFirst：首次进入 / 切换知识库时自动打开第一个（最新）会话。
+  // 发完消息刷新列表必须传 false —— 否则会把用户手动选中的/新建的会话拽回第一个
+  const loadSessions = useCallback(
+    async (id: string, autoOpenFirst = false) => {
       try {
         const res = await listSessions(id);
         setSessions(res.data);
+        if (autoOpenFirst && res.data.length > 0) {
+          await openSessionById(res.data[0].id);
+        }
       } catch {
         message.error('加载会话列表失败');
       }
     },
-    [message],
+    [message, openSessionById],
   );
 
   useEffect(() => {
@@ -114,12 +141,17 @@ const ChatPage: React.FC = () => {
       setSessions([]);
       return;
     }
-    loadSessions(kbId);
+    // 切换知识库：旧会话属于旧库，残留会串库（消息区仍显示旧库内容、继续提问写进旧会话）
+    // → 先清空当前会话，再由 loadSessions 自动打开新库的第一个会话
+    setActiveSessionId(undefined);
+    setMessages([]);
+    loadSessions(kbId, true);
   }, [kbId, loadSessions]);
 
   const handleNewSession = () => {
     if (streamingRef.current) return;
-    setActiveSessionId(undefined);
+    // 草稿态：仅前端占位，列表顶部出现「新会话」项并高亮，发第一条消息时才落库
+    setActiveSessionId(DRAFT_SESSION_ID);
     setMessages([]);
   };
 
@@ -128,13 +160,7 @@ const ChatPage: React.FC = () => {
       message.warning('生成中，请先停止');
       return;
     }
-    try {
-      const res = await getSession(id);
-      setMessages(res.data.messages);
-      setActiveSessionId(id);
-    } catch {
-      message.error('加载会话失败');
-    }
+    await openSessionById(id);
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -377,7 +403,13 @@ const ChatPage: React.FC = () => {
       totalMsRef.current = false;
 
       abortRef.current = streamChat(
-        { kb_id: kbId, query: text, session_id: activeSessionId, top_k: topK },
+        {
+          kb_id: kbId,
+          query: text,
+          // 草稿会话不传 session_id：后端据此新建会话，done 事件回来的真实 id 再写回
+          session_id: activeSessionId === DRAFT_SESSION_ID ? undefined : activeSessionId,
+          top_k: topK,
+        },
         {
           onMeta: handleMeta,
           onAgentic: handleAgentic,
@@ -417,9 +449,26 @@ const ChatPage: React.FC = () => {
       >
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <List
-            dataSource={sessions}
+            dataSource={activeSessionId === DRAFT_SESSION_ID ? [DRAFT_SESSION, ...sessions] : sessions}
             locale={{ emptyText: <Empty description="暂无会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
             renderItem={item => {
+              // 草稿会话：顶上那条占位项，尚未落库故不给重命名/导出/删除
+              if (item.id === DRAFT_SESSION_ID) {
+                return (
+                  <List.Item
+                    className="session-item session-item--active"
+                    style={{ cursor: 'default' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+                      <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}>新会话</span>
+                        <span style={{ fontSize: 12, color: token.colorTextTertiary }}>等待提问…</span>
+                      </div>
+                    </div>
+                  </List.Item>
+                );
+              }
               // 会话名默认最多显示 8 个字符，超出用 ... 省略（悬停 Tooltip 看完整名）
               const name = item.title || '未命名会话';
               const shortName = name.length > 8 ? `${name.slice(0, 8)}...` : name;
@@ -591,7 +640,8 @@ const ChatPage: React.FC = () => {
               messages={messages}
               waiting={streaming}
               waitingHint={statusHint}
-              sessionId={activeSessionId}
+              // 草稿态不传 id：反馈条要的是真实 session_id，哨兵值后端不认
+              sessionId={activeSessionId === DRAFT_SESSION_ID ? undefined : activeSessionId}
               kbId={kbId}
               onCitationClick={(s) => {
                 setTraceSource(s);

@@ -288,13 +288,25 @@ const ExtQueriesPage: React.FC = () => {
     {
       title: '链接',
       dataIndex: 'token',
-      width: colWidths.token ?? 130,
-      onHeaderCell: () => ({ width: colWidths.token ?? 130, onResize: handleResize('token'), title: '链接' }),
+      // 列宽 210：需容纳「/ext-query/+id 前 8 位」共 19 个等宽字符（12px 下约 137px）
+      // + 复制按钮 + 单元格 padding；原先 130 装不下，连前缀都被截成 /ext-quer...
+      width: colWidths.token ?? 210,
+      onHeaderCell: () => ({ width: colWidths.token ?? 210, onResize: handleResize('token'), title: '链接' }),
       render: (_: unknown, item: ExtQuery) => (
         <Space size={4}>
-          <Typography.Text code ellipsis style={{ maxWidth: 90, fontSize: 12 }}>
-            /ext-query/{item.id.slice(0, 8)}…
-          </Typography.Text>
+          {/* 悬浮展示完整路径；令牌是访问凭证，不在此明文展示，复制走右侧按钮 */}
+          <Tooltip
+            title={
+              <>
+                <div>/ext-query/{item.id}</div>
+                <div style={{ opacity: 0.8 }}>含令牌的完整链接请点右侧按钮复制</div>
+              </>
+            }
+          >
+            <Typography.Text code ellipsis style={{ maxWidth: 145, fontSize: 12 }}>
+              /ext-query/{item.id.slice(0, 8)}
+            </Typography.Text>
+          </Tooltip>
           <Tooltip title={item.enabled ? '复制分享链接' : '已停用，无法查询'}>
             <Button
               type="text"

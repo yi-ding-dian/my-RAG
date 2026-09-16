@@ -474,7 +474,11 @@ const GlobalDocumentsPage: React.FC = () => {
       onHeaderCell: () => ({ width: colWidths.name ?? 240, onResize: handleResize('name'), title: '文件名' }),
       render: (v: string, row) => (
         <>
-          <Typography.Link onClick={() => setPreviewDoc(row)} title="点击在线预览">
+          {/* 整行可点会打开文档档案弹窗，链接本体需拦冒泡，否则预览与档案弹窗齐开 */}
+          <Typography.Link
+            onClick={e => { e.stopPropagation(); setPreviewDoc(row); }}
+            title="点击在线预览"
+          >
             {v}
           </Typography.Link>
           {/* 由 ppt 等格式在上传时转成 PDF 的文档：标注原格式（与部门文档页同口径） */}
@@ -600,6 +604,8 @@ const GlobalDocumentsPage: React.FC = () => {
       title: '操作',
       key: 'actions',
       width: 230,
+      // 该列全是操作按钮，整列拦冒泡：不拦则点按钮时连带弹出文档档案弹窗
+      onCell: () => ({ onClick: e => e.stopPropagation() }),
       render: (_, row) => (
         <Space size="small">
           <Button

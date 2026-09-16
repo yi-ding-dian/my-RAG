@@ -105,13 +105,13 @@ const DocumentsPage: React.FC = () => {
 
   const kbName = kbs.find(k => k.id === kbId)?.name;
 
-  // 面包屑：知识库 / {kbName} / 文档管理（点击「知识库」返回知识库管理页）
+  // 面包屑：知识库 / {kbName}（点击「知识库」返回知识库管理页）
+  // 末级不再追加「文档管理」：与页面大标题一字不差，且本身不可点、无导航价值
   const breadcrumbItems = useMemo(() => {
     const items: { title: React.ReactNode }[] = [
       { title: <a onClick={() => navigate('/kbs')}>知识库</a> },
     ];
     if (kbName) items.push({ title: kbName });
-    items.push({ title: '文档管理' });
     return items;
   }, [kbName, navigate]);
 
