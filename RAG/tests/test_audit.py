@@ -127,6 +127,8 @@ def _mock_conn_tests(monkeypatch, ok_map: dict):
 
     需覆盖 SettingsService 的**全部** _test_* 方法：漏掉的那个会真实执行，
     对不可达地址探测必然失败 → 整体非 success（审计仅在全部 ok 时记 success）。
+    **新增探测段时务必在这里补一行**——Gotenberg 接入时就漏过，导致本文件的
+    test_connection_test_recorded_success 一直红（新建档案默认没配 Gotenberg）。
     """
     from backend.services.settings import service as ss
 
@@ -143,6 +145,7 @@ def _mock_conn_tests(monkeypatch, ok_map: dict):
     def _test_llm(self, llm): return _ok("llm")
     def _test_embedding(self, emb): return _ok("embedding")
     def _test_mineru(self, mineru): return _ok("mineru")
+    def _test_gotenberg(self, gotenberg): return _ok("gotenberg")
     def _test_rerank(self, rerank): return _ok("rerank")
     def _test_vision(self, item): return _ok("vision")
     async def _test_vector_store(self, vs): return _ok("vector_store")
@@ -152,6 +155,7 @@ def _mock_conn_tests(monkeypatch, ok_map: dict):
     monkeypatch.setattr(ss.SettingsService, "_test_llm", _test_llm)
     monkeypatch.setattr(ss.SettingsService, "_test_embedding", _test_embedding)
     monkeypatch.setattr(ss.SettingsService, "_test_mineru", _test_mineru)
+    monkeypatch.setattr(ss.SettingsService, "_test_gotenberg", _test_gotenberg)
     monkeypatch.setattr(ss.SettingsService, "_test_rerank", _test_rerank)
     monkeypatch.setattr(ss.SettingsService, "_test_vector_store",
                         _test_vector_store)

@@ -29,7 +29,9 @@ class TestRecoverStuckParsing:
         assert doc["id"] in recovered
         d = svc.get(doc["id"])
         assert d.status == "failed"
-        assert d.error == "服务重启，解析中断，请重新解析"
+        # 文案在 d5e99d2（ppt/pptx 上传即转 PDF）时加了"文档转换"，这里断言
+        # 关键语义片段而非逐字全等——完整文案见 document_service._RECOVER_ERROR
+        assert "服务重启" in d.error and "重新解析" in d.error
 
     def test_recover_then_reingest_success(self, client, mock_embedding,
                                            admin_headers):
@@ -94,4 +96,6 @@ class TestRecoverStuckParsing:
             d = get_document_service().get("stuck1")
             assert d is not None
             assert d.status == "failed"
-            assert d.error == "服务重启，解析中断，请重新解析"
+            # 文案在 d5e99d2（ppt/pptx 上传即转 PDF）时加了"文档转换"，这里断言
+        # 关键语义片段而非逐字全等——完整文案见 document_service._RECOVER_ERROR
+        assert "服务重启" in d.error and "重新解析" in d.error
