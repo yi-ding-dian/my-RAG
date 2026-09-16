@@ -1,13 +1,14 @@
 import React, { useCallback, useState } from 'react';
 import AppModal from '../../../shared/components/common/AppModal';
 import {
-  Alert,  
-  App as AntApp,  
-  Select,  
-  Skeleton,  
-  Space,  
-  Spin,  
-  Tabs,  
+  Alert,
+  App as AntApp,
+  Select,
+  Skeleton,
+  Space,
+  Spin,
+  Tabs,
+  Tag,
   Typography} from 'antd';
 
 const { Text } = Typography;
@@ -29,6 +30,7 @@ import {
   testLlmModelByName,
 } from '../../../shared/api/client';
 import ChunkCompareView from '../../knowledge/components/ChunkCompareView';
+import { methodColor, methodLabel } from '../../../shared/api/types';
 import KnowledgeGraphTab from '../../knowledge/components/KnowledgeGraphTab';
 import DocumentPortrait from './DocumentPortrait';
 import DocumentPreviewModal from './DocumentPreviewModal';
@@ -348,9 +350,20 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
             paddingRight: 36,
           }}
         >
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {detail ? `切块详情 - ${detail.original_name}` : '切块详情'}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {detail ? `切块详情 - ${detail.original_name}` : '切块详情'}
+            </span>
+            {/* 本文档实际使用的切块算法（中文标签，与文档列表/文档信息同口径） */}
+            {detail?.parser_id && (
+              <Tag
+                color={methodColor(detail.parser_id)}
+                style={{ marginRight: 0, flexShrink: 0 }}
+              >
+                {methodLabel(detail.parser_id)}
+              </Tag>
+            )}
+          </div>
           <Tabs
             size="small"
             activeKey={detailTab}
