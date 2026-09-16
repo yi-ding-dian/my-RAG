@@ -88,6 +88,63 @@ def _unwrap_wrapped_heading(line: str) -> str | None:
     return inner if _is_heading_text_candidate(inner) else None
 
 
+# 纯文本编号标题识别：只认体系里的**高层编号**（拼接长表位置 <= 本值）。
+# legal 体系下即 编(0)/章(1)/节(2)，条(3)/款(4)/项(5) 不认——正文里
+# "第十六条　劳动合同是劳动者与用人单位…"同样匹配编号正则，认了会把每条法条
+# 都变成标题边界，切块碎成一片、标题链也烂掉。
+_PLAIN_HEADING_MAX_POS = 2
+# 句末标点：标题几乎不含；含之的多半是"第三章规定了…。"这类引用章节号的正文句
+_SENTENCE_PUNCT = "。！？；"
+
+
+def _prev_nonblank(lines: List[str], i: int) -> Optional[int]:
+    """从下标 i 起向上找第一个非空行（无则 None）"""
+    while i >= 0:
+        if lines[i].strip():
+            return i
+        i -= 1
+    return None
+
+
+def _is_plain_numbered_heading(lines: List[str], i: int, s: str,
+                               systems: List[str]) -> bool:
+    """无任何标记的编号标题行（如 MinerU 漏标 `##` 的"第三章　劳动合同和集体合同"）
+
+    仅在调用方提供编号体系时启用——体系已检测出该文档用"第X章"这类编号做
+    标题（其余标题带 `#`），那么裸编号行也该认。实测：劳动法 14 章里 11 章
+    MinerU 输出了 `##`，第三章/第十二章没有，导致目录树缺章、切块少边界。
+
+    约束从严（宁可漏认，不能把正文或目录当标题）：
+    - 编号属体系高层（见 _PLAIN_HEADING_MAX_POS）；
+    - 短、非表格/HTML 行、不以冒号结尾（字段/程序输出行特征）；
+    - 不含句末标点（引用章节号的正文句常含）；
+    - **前后都须是空行**：标题独立成段；顺带挡掉目录里"标题行紧挨标题行"
+      的连续排列（只有首行前面是空行）；
+    - **目录区判据**：越过空行往上，连续两行也是编号行 → 判为目录（正文里
+      章节标题之间必有正文，不会编号行挨着编号行）。劳动法目录区
+      "…第十一章\n\n第十二章\n\n第十三章"这类被空行隔开的行靠这条挡下
+      （实测否则会切出 8~9 字符的碎片块）。
+    """
+    if len(s) > _HEADING_MAX_LEN or s.startswith(("<", "|")):
+        return False
+    if s.endswith((":", "：")):
+        return False
+    if any(ch in s for ch in _SENTENCE_PUNCT):
+        return False
+    if i > 0 and lines[i - 1].strip():
+        return False
+    if i + 1 < len(lines) and lines[i + 1].strip():
+        return False
+    p1 = _prev_nonblank(lines, i - 1)
+    if p1 is not None and _match_system_position(lines[p1].strip(), systems):
+        p2 = _prev_nonblank(lines, p1 - 1)
+        if (p2 is not None
+                and _match_system_position(lines[p2].strip(), systems)):
+            return False  # 上面连着两行编号 → 目录区，不是标题
+    pos = _match_system_position(s, systems)
+    return pos is not None and pos <= _PLAIN_HEADING_MAX_POS
+
+
 def _iter_headings(text: str,
                    protected: List[Tuple[int, int]] | None = None,
                    heading_systems: List[str] | None = None) -> List[Tuple[int, int, str]]:
@@ -146,6 +203,13 @@ def _iter_headings(text: str,
                 lm = _LEADING_MARK_RE.match(line)
                 if lm is not None and len(s) <= _HEADING_MAX_LEN:
                     title, level = lm.group(2).strip(), 2  # 前导符号式
+                elif (heading_systems
+                      and _is_plain_numbered_heading(lines, i, s,
+                                                     heading_systems)):
+                    # 纯文本编号标题（MinerU 漏标 `#` 时兜底）；级别由第二遍
+                    # 按编号位置归一化覆盖
+                    title, level = s, 2
+                    sys_pos = _match_system_position(s, heading_systems)
                 elif (i + 1 < len(lines)
                         and _is_heading_text_candidate(line)
                         and not s.startswith(("<", "|"))
