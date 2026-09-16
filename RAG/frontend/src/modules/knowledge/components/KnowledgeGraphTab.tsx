@@ -343,22 +343,25 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
     }));
 
     const n = viewEntities.length;
+    // 力导向参数：全量视图斥力随节点数收紧（42 节点 ~241 → 200 节点 150）；
+    // 子网视图节点少，斥力随节点数增大（紧凑不散开），边距收紧。
+    // **必须挂在 series[0].force 上**——force 是 series-graph 级配置，放在 option
+    // 顶层会被 ECharts 直接忽略、悄悄退回默认参数（斥力 50），表现为几十个节点
+    // 全挤在画布正中一小团（排查过一次：42 个实体挤在 200px 里）
+    const forceOption = isSubnetView
+      ? {
+          repulsion: Math.min(240, 70 + n * 9),
+          gravity: 0.08,
+          edgeLength: [30, 70],
+          friction: 0.6,
+        }
+      : {
+          repulsion: Math.max(150, Math.round(270 - n * 0.7)),
+          gravity: 0.08,
+          edgeLength: [40, 90],
+          friction: 0.6,
+        };
     return {
-      // 力导向：全量视图斥力随节点数收紧（60 节点 ~270 → 200 节点 150）；
-      // 子网视图节点少，斥力随节点数增大（紧凑不散开），边距收紧
-      force: isSubnetView
-        ? {
-            repulsion: Math.min(240, 70 + n * 9),
-            gravity: 0.08,
-            edgeLength: [30, 70],
-            friction: 0.6,
-          }
-        : {
-            repulsion: Math.max(150, Math.round(270 - n * 0.7)),
-            gravity: 0.08,
-            edgeLength: [40, 90],
-            friction: 0.6,
-          },
       tooltip: {
         backgroundColor: isDark ? '#1f1f1f' : 'rgba(255,255,255,0.96)',
         borderColor: isDark ? '#434343' : '#d9d9d9',
@@ -403,6 +406,7 @@ const KnowledgeGraphTab: React.FC<KnowledgeGraphTabProps> = ({ graph, chunks, lo
         {
           type: 'graph',
           layout: 'force',
+          force: forceOption, // 力导向参数（series 级配置，不可放 option 顶层）
           roam: true, // 可拖拽 / 滚轮缩放
           draggable: true,
           data: nodes,
