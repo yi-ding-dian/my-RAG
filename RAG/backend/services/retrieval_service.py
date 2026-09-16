@@ -1,13 +1,15 @@
-"""检索服务：query embedding -> chroma search -> BM25 混合融合（RRF）-> 阈值过滤 -> Rerank
+"""检索服务：query embedding -> 向量检索 + 全文检索 -> RRF 融合 -> 阈值过滤 -> Rerank
 
 检索流程（get_retrieval_service().retrieve(kb_id, query)）：
 1. query 向量化 + 向量检索 top_k 候选
-2. enable_hybrid=True（默认）：再取 BM25 top_k 候选（jieba 分词，索引按 kb 惰性
-   构建 + 缓存，collection 计数变化即重建；ingestion 成功后显式 invalidate），
+2. enable_hybrid=True（默认）：再取 BM25 top_k 候选——优先向量库服务端的全文
+   检索（Milvus：中文分词与倒排索引都在服务端，随写入增量维护，应用侧不再持有
+   索引），后端不支持时回退应用层 BM25 索引（Chroma 嵌入式：jieba 分词，按 kb
+   惰性构建 + 缓存，collection 计数变化即重建；ingestion 成功后显式 invalidate），
    与向量候选并集做 RRF 融合（k=60）取 top_k；
    enable_hybrid=False：保持纯向量原逻辑
 3. 阈值过滤：纯向量模式用向量相似度；混合模式沿用 vector_score 语义
-   （BM25 单独命中的 chunk 无向量分数，不受阈值限制——向后兼容旧阈值配置）
+   （BM25 单独命中的 chunk 无向量分数，按归一化 BM25 分与阈值比较）
 4. rerank.enabled 且 base_url/model 非空时：取 top_n 候选调 rerank 服务重排，
    用 relevance_score 作为最终 score；失败（网络/超时/4xx）一律降级保留原顺序
 
@@ -25,7 +27,7 @@ from backend.models.rag_models import Source
 from backend.services.bm25 import BM25Index, tokenize
 from backend.services.embedding_service import get_embedding_service
 from backend.services.rerank_client import get_rerank_client
-from backend.services.vector_store import get_vector_store
+from backend.services.vector_store import Hit, get_vector_store
 from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
@@ -170,29 +172,15 @@ class RetrievalService:
 
     async def _hybrid_retrieve(self, kb_id: str, query: str, vector_hits,
                                top_k: int, min_score: float) -> List[Source]:
-        """BM25 + 向量 RRF 融合检索（索引惰性构建 + 缓存）"""
-        bm25, items = await self._get_bm25(kb_id)
-        if bm25 is None or not items:
-            return self._assemble(kb_id, query, vector_hits, min_score)
-        query_tokens = tokenize(query)
-        if not query_tokens:
-            return self._assemble(kb_id, query, vector_hits, min_score)
-        # BM25 打分是 CPU 密集计算，放到线程池避免阻塞事件循环
-        bm25_hits = await asyncio.to_thread(bm25.search, query_tokens,
-                                            top_k=top_k)
-        # 软删文档的 chunk 不进检索结果：BM25 索引为全量构建（索引大小与
-        # collection count 判据耦合，不能局部过滤），这里按 metadata 的
-        # doc_active 标志过滤命中（与向量路径 where 语义一致；缺失键视为活跃，
-        # 兼容历史数据）
-        bm25_hits = [h for h in bm25_hits
-                     if (items[h[0]][2] or {}).get("doc_active", True)]
+        """BM25 + 向量 RRF 融合检索
+
+        全文检索候选优先取向量库服务端（Milvus：中文分词与倒排索引都在服务端、
+        随写入增量维护）；后端不支持时回退应用层 BM25（见 _local_bm25_candidates）。
+        两路都取不到候选时退化为纯向量。
+        """
+        bm25_hits = await self._bm25_candidates(kb_id, query, top_k)
         if not bm25_hits:
             return self._assemble(kb_id, query, vector_hits, min_score)
-
-        # doc_idx -> id/text/meta 映射（BM25 索引构建时已从 collection 全量拉取）
-        ids = [it[0] for it in items]
-        texts = [it[1] for it in items]
-        metas = [it[2] for it in items]
 
         # RRF 融合：score = Σ 1/(k + rank + 1)（向量与 BM25 各一份排名贡献）
         fused: Dict[str, dict] = {}
@@ -201,11 +189,9 @@ class RetrievalService:
                 "rrf": 0.0, "vector_score": vscore, "text": text, "meta": meta,
             })
             entry["rrf"] += 1.0 / (self.RRF_K + rank + 1)
-        for rank, (idx, bscore) in enumerate(bm25_hits):
-            cid = ids[idx]
+        for rank, (cid, text, meta, bscore) in enumerate(bm25_hits):
             entry = fused.setdefault(cid, {
-                "rrf": 0.0, "vector_score": None,
-                "text": texts[idx], "meta": metas[idx],
+                "rrf": 0.0, "vector_score": None, "text": text, "meta": meta,
             })
             entry["rrf"] += 1.0 / (self.RRF_K + rank + 1)
             entry["bm25_score"] = bscore
@@ -216,7 +202,7 @@ class RetrievalService:
         # - 有向量分的条目：沿用向量分数与阈值比较（与改造前一致）
         # - BM25 单独命中（无向量分）：BM25 分归一化（除以本次查询的最大 BM25
         #   分，最强关键词命中恒为 1.0 不被误杀）后与阈值比较，弱匹配被过滤
-        max_bm25 = max((sc for _, sc in bm25_hits), default=0.0)
+        max_bm25 = max((h[3] for h in bm25_hits), default=0.0)
         filtered = 0
         sources: List[Source] = []
         for cid, entry in ordered:
@@ -237,6 +223,44 @@ class RetrievalService:
             logger.info("检索过滤: kb=%s query=%s 低于阈值 %.2f 过滤 %d 条",
                         kb_id, query[:30], min_score, filtered)
         return sources
+
+    async def _bm25_candidates(self, kb_id: str, query: str,
+                               top_k: int) -> List[Hit]:
+        """取 BM25 候选（统一返回 (id, text, meta, 分数)，供 RRF 融合）
+
+        优先向量库服务端的全文检索——分词、倒排索引、软删过滤都在服务端完成，
+        应用侧不拉全量、不建索引；服务端不支持（Chroma 嵌入式 / Milvus 集合
+        未迁移 / 服务端异常）时回退应用层索引，保证混合检索能力不丢失。
+        """
+        served = await get_vector_store().search_full_text(
+            kb_id, query, top_k=top_k, where={"doc_active": True})
+        if served:
+            return served
+        return await self._local_bm25_candidates(kb_id, query, top_k)
+
+    async def _local_bm25_candidates(self, kb_id: str, query: str,
+                                     top_k: int) -> List[Hit]:
+        """应用层 BM25 候选（Chroma 等无内置全文检索的后端走这里）
+
+        索引按 kb 惰性构建 + 缓存，collection 计数变化即重建；软删文档在此按
+        metadata 的 doc_active 过滤（与向量路径 where 语义一致；缺失键视为活跃，
+        兼容历史数据）。
+        """
+        bm25, items = await self._get_bm25(kb_id)
+        if bm25 is None or not items:
+            return []
+        query_tokens = tokenize(query)
+        if not query_tokens:
+            return []
+        # BM25 打分是 CPU 密集计算，放到线程池避免阻塞事件循环
+        hits = await asyncio.to_thread(bm25.search, query_tokens, top_k=top_k)
+        out: List[Hit] = []
+        for idx, score in hits:
+            cid, text, meta = items[idx]
+            if not (meta or {}).get("doc_active", True):
+                continue
+            out.append((cid, text, meta, score))
+        return out
 
     # ================= BM25 索引缓存 =================
 

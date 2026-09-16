@@ -5,6 +5,8 @@
 - 混合检索集成：真实入库（mock embedding 离线），向量候选固定（monkeypatch
   vector_store.search）时 BM25 能找回向量找不到的关键词 chunk；RRF 双命中
   分数高于单命中；enable_hybrid=False 保持纯向量；入库后 BM25 索引自动重建
+- 全文检索两条来源：向量库服务端（Milvus，候选直接用、不建应用层索引）与
+  应用层回退（Chroma 嵌入式，全量拉取 + jieba 分词 + 按 kb 缓存）
 - Rerank：固定分数重排生效（score 变为 relevance_score、vector_score 保留）、
   失败降级不抛异常且顺序不变、默认配置不调用
 - 配置兼容：旧档案（无 enable_hybrid/rerank 字段）加载不报错且默认值正确
@@ -44,11 +46,18 @@ def _real_items(kb_id):
 
 
 class _FixedVecStore:
-    """包装真实 vector_store：search 返回固定候选，count/get_all 走真实（BM25 用）"""
+    """包装真实 vector_store 的测试替身：向量候选固定，全文检索可切换来源
 
-    def __init__(self, real, fixed_hits):
+    - search：返回固定向量候选（用于构造"向量找不到、BM25 找得到"的场景）
+    - search_full_text：**默认返回空列表**，模拟后端不支持服务端全文检索
+      （Chroma 嵌入式），此时检索服务回退应用层 BM25 索引；传入
+      full_text_hits 则模拟 Milvus 服务端返回，用于验证服务端路径。
+    """
+
+    def __init__(self, real, fixed_hits, full_text_hits=None):
         self._real = real
         self._hits = list(fixed_hits)
+        self._ft_hits = None if full_text_hits is None else list(full_text_hits)
 
     async def search(self, kb_id, query_emb, top_k=5, where=None):
         # 与真实 Chroma where 语义一致：doc_active=True 过滤（缺失键视为活跃）
@@ -56,6 +65,14 @@ class _FixedVecStore:
             return [h for h in self._hits[:top_k]
                     if (h[2] or {}).get("doc_active", True)]
         return self._hits[:top_k]
+
+    async def search_full_text(self, kb_id, query, top_k=5, where=None):
+        if self._ft_hits is None:
+            return []  # 后端无全文检索 → 调用方回退应用层 BM25
+        if where is not None and where.get("doc_active") is True:
+            return [h for h in self._ft_hits[:top_k]
+                    if (h[2] or {}).get("doc_active", True)]
+        return self._ft_hits[:top_k]
 
     async def count(self, kb_id):
         return await self._real.count(kb_id)
@@ -163,6 +180,40 @@ class TestBM25:
 # ==================== 混合检索集成 ====================
 
 class TestHybridRetrieval:
+
+    def test_server_full_text_used_when_available(
+            self, client, mock_embedding, admin_headers, monkeypatch):
+        """向量库服务端提供全文检索时：采用服务端候选，且不构建应用层 BM25 索引
+
+        对应 Milvus 场景（路线 B）：分词与倒排索引都在服务端，应用侧不再拉全量
+        建索引——这里用 builds 断言应用层 BM25Index 一次都没被构造。
+        """
+        import backend.services.retrieval_service as rs_mod
+        kb = create_kb(client)
+        _ingest_two_docs(client, kb["id"])
+        items = _real_items(kb["id"])
+        kw = next(it for it in items if "量子" in it[1])
+        other = next(it for it in items if "量子" not in it[1])
+        # 服务端候选里混一条软删副本：应被 where doc_active=True 过滤掉
+        deleted = ("deleted_1", "量子霸权的已删副本",
+                   {"document_id": "gone", "doc_active": False}, 9.9)
+        monkeypatch.setattr(
+            "backend.services.retrieval_service.get_vector_store",
+            lambda: _FixedVecStore(
+                get_vector_store(),
+                [(other[0], other[1], other[2], 0.95)],
+                full_text_hits=[(kw[0], kw[1], kw[2], 3.7), deleted]))
+        builds: list = []
+        monkeypatch.setattr(rs_mod, "BM25Index", lambda texts: builds.append(1))
+
+        svc = get_retrieval_service()
+        sources = asyncio.run(svc.retrieve(kb["id"], "量子霸权是什么", top_k=5))
+        assert any(s.text == kw[1] for s in sources), "服务端全文检索候选应进入结果"
+        kw_src = next(s for s in sources if s.text == kw[1])
+        assert kw_src.vector_score is None, "BM25 单独命中无向量分数"
+        assert not any(s.text == deleted[1] for s in sources), \
+            "软删副本应被服务端 where 过滤掉"
+        assert builds == [], "服务端已提供全文检索，不应再构建应用层 BM25 索引"
 
     def test_hybrid_finds_keyword_chunk(self, client, mock_embedding,
                                         admin_headers, monkeypatch):

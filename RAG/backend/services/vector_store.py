@@ -28,9 +28,53 @@ logger = logging.getLogger(__name__)
 # 命中结果: (id, text, metadata, similarity)
 Hit = Tuple[str, str, Dict, float]
 
+# 全文检索字段配置（Milvus 侧）：
+# - text 必须声明为显式字段才能挂分词器——analyzer 是字段级属性，动态字段配不了；
+# - 中文必须显式指定 chinese 分词器：默认 standard 分词器会把整句当成一个 token
+#   （实测「配置工具怎么创建工程」零命中），而且配错时**向量检索照常工作、只有
+#   BM25 静默失效**，非常难发现；
+# - max_length 用 Milvus VARCHAR 上限，单个切块远低于此（层级聚合的父块也只有几千字）。
+TEXT_MAX_LENGTH = 65535
+TEXT_ANALYZER_PARAMS = {"type": "chinese"}
+
+# 显式 schema 的字段名：建表、检索、迁移脚本共用这一份，避免各处硬编码漂移
+# （Milvus 的 search/query 都要按名字指定字段，写错了不会报"字段不存在"而是
+#   报别的错，很难查）
+VECTOR_FIELD = "vector"
+TEXT_FIELD = "text"
+SPARSE_FIELD = "sparse_vector"
+
 
 class VectorBackend(ABC):
-    """向量存储后端抽象（契约见模块 docstring）"""
+    """向量存储后端抽象
+
+    接入新后端时逐条实现下面的契约，并在 tests/test_vector_backend.py 补一组
+    同参数的用例——**契约靠测试固化，不靠口头约定**。
+
+    统一契约：
+    - 集合命名 kb_{kb_id}，余弦度量；
+    - **过滤语义**：where 是等值字典，**严格等值匹配**（各后端不得自行放宽）。
+      历史数据可能缺 doc_active 键，由**各后端在查询前补齐**（Chroma 见
+      _ensure_doc_active；Milvus 侧无缺键历史数据，写入与迁移脚本都保证带键），
+      而不是把过滤放宽成"缺键也算匹配"——后者会让软删过滤被绕过，回收站里的
+      文档仍会被召回。写入侧另有保险：add 落库必带 doc_active；
+    - 防御性行为：集合不存在/连接失败时 search 返回空、search_full_text 返回空、
+      count 返回 0、delete_by_document 静默成功、update_metadata 返回 True——
+      不让上游因为"库还没建好"而报错。
+    """
+
+    # 是否支持服务端全文检索（BM25）。False 时 search_full_text 一律返回空，
+    # 调用方据此改用应用层索引或退化为纯向量（见 retrieval_service._bm25_candidates）。
+    supports_full_text: bool = False
+
+    @abstractmethod
+    def ensure_collection(self, kb_id: str, dim: int) -> None:
+        """确保集合存在且可用（写入前置）
+
+        dim 为向量维度。后端可惰性建表（Chroma：首次写入时按需创建）或显式建表
+        （Milvus：带全文检索字段，维度必须已知）。一次性工具（数据迁移脚本等）
+        也走这个入口，不要直接碰后端的私有建表逻辑。
+        """
 
     @abstractmethod
     def add(self, kb_id: str, doc_id: str, document_name: str,
@@ -42,6 +86,16 @@ class VectorBackend(ABC):
     def search(self, kb_id: str, query_embedding: List[float],
                top_k: int = 5, where: Optional[dict] = None) -> List[Hit]:
         """相似度检索，返回按相似度降序的命中列表"""
+
+    def search_full_text(self, kb_id: str, query: str,
+                         top_k: int = 5,
+                         where: Optional[dict] = None) -> List[Hit]:
+        """全文检索（BM25），入参为原始查询文本、返回格式与 search 一致。
+
+        默认返回空列表 = 该后端不支持全文检索（supports_full_text=False），
+        调用方据此改用应用层索引或退化为纯向量检索。
+        """
+        return []
 
     @abstractmethod
     def delete_by_document(self, kb_id: str, doc_id: str) -> None:
@@ -61,7 +115,7 @@ class VectorBackend(ABC):
 
     @abstractmethod
     def get_all(self, kb_id: str) -> List[Tuple[str, str, Dict]]:
-        """拉取全部 (id, text, metadata)（BM25 索引构建/重建用）"""
+        """拉取全部 (id, text, metadata)（数据导出/迁移用）"""
 
     @abstractmethod
     def drop_collection(self, kb_id: str) -> None:
@@ -88,6 +142,14 @@ class ChromaVectorBackend(VectorBackend):
                 name=name,
                 metadata={"hnsw:space": "cosine"},
             )
+
+    def ensure_collection(self, kb_id: str, dim: int) -> None:
+        """Chroma 为惰性建表：这里只触发一次 get_or_create
+
+        dim 用不上——Chroma 的维度由首次写入的向量决定（也正因如此，换 embedding
+        模型后维度冲突要靠 dim_check 的重建流程兜底）。
+        """
+        self._get_collection(kb_id)
 
     def add(self, kb_id: str, doc_id: str, document_name: str,
             chunks: List[str], embeddings: List[List[float]],
@@ -302,17 +364,21 @@ def normalize_milvus_uri(uri: str) -> str:
 class MilvusVectorBackend(VectorBackend):
     """Milvus 服务化实现（pymilvus 3.x MilvusClient 现代 API）
 
-    与 ChromaVectorBackend 行为对齐（同一种"库=集合/语义"契约）：
+    与 ChromaVectorBackend 行为对齐（同一种"库=集合"契约）：
     - collection 名 kb_{kb_id}，COSINE 度量；注意 Milvus 3.x 的 search 返回里
       distance 字段**就是余弦相似度**（不再是 2.x 时代的"距离"，详见 search）；
-    - schema = id(varchar 主键) + vector(FLOAT_VECTOR) + dynamic field：
-      text 与全部 metadata（document_id/document_name/chunk_index/
-      char_start/parent_text/doc_active…）均走动态 JSON 字段，
-      查询 output_fields=['*'] 取回；
-    - where 等值 dict 转 Milvus filter expr（如 doc_active == true）；
-    - 集合不存在/连接失败：search 空、count 0、delete 静默、
+    - schema（见 ensure_collection）：id/vector/text/sparse_vector 为显式字段，
+      其中 text 挂中文分词器、sparse_vector 由 BM25 Function 自动生成；其余
+      metadata（document_id/chunk_index/char_start/parent_text/doc_active…）
+      走动态字段，查询 output_fields=['*'] 取回；
+    - where 等值 dict 转 Milvus filter expr（如 doc_active == true；**字段缺失
+      即不匹配**，与 Chroma 契约一致）；
+    - 集合不存在/连接失败：search 空、search_full_text 空、count 0、delete 静默、
       update_metadata True（与 Chroma 防御性契约一致）。
     """
+
+    # 全文检索由服务端 BM25 提供（中文分词 + 倒排索引随写入增量维护）
+    supports_full_text = True
 
     def __init__(self, uri: str = ""):
         from pymilvus import MilvusClient
@@ -322,18 +388,47 @@ class MilvusVectorBackend(VectorBackend):
     def _collection_name(self, kb_id: str) -> str:
         return f"kb_{kb_id}"
 
-    def _ensure_collection(self, kb_id: str, dim: int) -> None:
+    def ensure_collection(self, kb_id: str, dim: int) -> None:
+        """建集合（显式 schema：向量字段 + 全文检索字段）
+
+        字段布局：
+        - id / vector：显式字段（与旧版一致）
+        - text：显式字段并挂中文分词器，BM25 Function 据此自动生成稀疏向量
+        - sparse_vector：稀疏向量，**写入时无需提供**，由 Function 从 text 生成
+        - 其余 metadata（document_id/chunk_index/char_start/parent_text/doc_active…）
+          继续走动态字段，写入侧代码不用动
+
+        集合已存在时不再重建；若它是旧版 schema（text 在动态字段里、无稀疏向量），
+        记一条警告提示迁移——那种集合上全文检索只能退化为纯向量（见 search_full_text）。
+        """
+        from pymilvus import DataType, Function, FunctionType
         name = self._collection_name(kb_id)
-        if not self._client.has_collection(name):
-            self._client.create_collection(
-                collection_name=name,
-                dimension=dim,
-                metric_type="COSINE",
-                id_type="string",
-                auto_id=False,
-                max_length=128,
-                enable_dynamic_field=True,
-            )
+        if self._client.has_collection(name):
+            fields = {f["name"] for f in
+                      self._client.describe_collection(name).get("fields", [])}
+            if SPARSE_FIELD not in fields:
+                logger.warning(
+                    "知识库 %s 为旧版集合（无全文检索字段），BM25 检索将退化为纯向量；"
+                    "执行 scripts/migrate_milvus_full_text.py 可迁移", kb_id)
+            return
+        schema = self._client.create_schema(auto_id=False, enable_dynamic_field=True)
+        schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=128)
+        schema.add_field(VECTOR_FIELD, DataType.FLOAT_VECTOR, dim=dim)
+        schema.add_field(TEXT_FIELD, DataType.VARCHAR, max_length=TEXT_MAX_LENGTH,
+                         enable_analyzer=True,
+                         analyzer_params=TEXT_ANALYZER_PARAMS)
+        schema.add_field(SPARSE_FIELD, DataType.SPARSE_FLOAT_VECTOR)
+        schema.add_function(Function(name="bm25", function_type=FunctionType.BM25,
+                                     input_field_names=[TEXT_FIELD],
+                                     output_field_names=[SPARSE_FIELD]))
+        index_params = self._client.prepare_index_params()
+        index_params.add_index(field_name=VECTOR_FIELD, index_type="AUTOINDEX",
+                               metric_type="COSINE")
+        index_params.add_index(field_name=SPARSE_FIELD,
+                               index_type="SPARSE_INVERTED_INDEX",
+                               metric_type="BM25")
+        self._client.create_collection(name, schema=schema,
+                                       index_params=index_params)
 
     @staticmethod
     def _expr_where(where: Optional[dict]) -> str:
@@ -359,7 +454,7 @@ class MilvusVectorBackend(VectorBackend):
         dim = len(embeddings[0])
         name = self._collection_name(kb_id)
         try:
-            self._ensure_collection(kb_id, dim)
+            self.ensure_collection(kb_id, dim)
         except Exception as e:
             raise RuntimeError(f"Milvus 集合创建失败: {e}") from e
         if metadatas is None:
@@ -373,8 +468,8 @@ class MilvusVectorBackend(VectorBackend):
         for i, (text, emb, m) in enumerate(zip(chunks, embeddings, metadatas)):
             rows.append({
                 "id": f"{doc_id}_{i}",
-                "vector": emb,
-                "text": text,
+                VECTOR_FIELD: emb,
+                TEXT_FIELD: text,
                 **m,
                 "doc_active": m.get("doc_active", True),
             })
@@ -396,6 +491,7 @@ class MilvusVectorBackend(VectorBackend):
             res = self._client.search(
                 collection_name=name,
                 data=[query_embedding],
+                anns_field=VECTOR_FIELD,
                 limit=max(1, top_k),
                 filter=self._expr_where(where) or None,
                 metric_type="COSINE",
@@ -409,12 +505,47 @@ class MilvusVectorBackend(VectorBackend):
         for row in (res[0] if res else []):
             ent = row.get("entity") or {}
             meta = {k: v for k, v in ent.items()
-                    if k not in ("id", "text", "vector")}
+                    if k not in ("id", TEXT_FIELD, VECTOR_FIELD)}
             # Milvus 3.x：search 返回的 distance 字段**就是余弦相似度**（实测与
             # 手算逐位相同），不再是 2.x 时代的"距离"。若沿用 `1 - distance`，
             # 相似度会被整体反过来——最相关的排最后、最不相关的排最前，语义
             # 检索全面失效（表现为"答案就在库里却永远召不回"）。
-            hits.append((row.get("id") or "", ent.get("text") or "", meta,
+            hits.append((row.get("id") or "", ent.get(TEXT_FIELD) or "", meta,
+                         float(row.get("distance", 0.0))))
+        hits.sort(key=lambda h: h[3], reverse=True)
+        return hits
+
+    def search_full_text(self, kb_id: str, query: str, top_k: int = 5,
+                         where: Optional[dict] = None) -> List[Hit]:
+        """BM25 全文检索（服务端分词 + 打分），入参是**原始查询文本**
+
+        与 search 的差别：分词完全交给 Milvus 的 chinese analyzer（应用层不再
+        持有分词器与全量索引），命中分数是 BM25 分而非余弦相似度。返回格式与
+        search 一致，调用方可直接做 RRF 融合。
+        集合缺失/为旧版 schema/连接异常一律返回空列表 → 调用方退化为纯向量。
+        """
+        name = self._collection_name(kb_id)
+        try:
+            if not self._client.has_collection(name):
+                return []
+            res = self._client.search(
+                collection_name=name,
+                data=[query],
+                anns_field=SPARSE_FIELD,
+                limit=max(1, top_k),
+                filter=self._expr_where(where) or None,
+                output_fields=["*"],
+            )
+        except Exception as e:
+            logger.warning("Milvus 全文检索失败（本次退化为纯向量）: kb=%s err=%s",
+                           kb_id, str(e)[:150])
+            return []
+        hits: List[Hit] = []
+        for row in (res[0] if res else []):
+            ent = row.get("entity") or {}
+            meta = {k: v for k, v in ent.items()
+                    if k not in ("id", TEXT_FIELD, VECTOR_FIELD, SPARSE_FIELD)}
+            hits.append((row.get("id") or "", ent.get(TEXT_FIELD) or "", meta,
                          float(row.get("distance", 0.0))))
         hits.sort(key=lambda h: h[3], reverse=True)
         return hits
@@ -508,9 +639,9 @@ class MilvusVectorBackend(VectorBackend):
                     tid = r.get("id", "")
                     out.append((
                         tid,
-                        r.get("text") or "",
+                        r.get(TEXT_FIELD) or "",
                         {k: v for k, v in r.items()
-                         if k not in ("id", "text", "vector")},
+                         if k not in ("id", TEXT_FIELD, VECTOR_FIELD)},
                     ))
                 offset += len(rows)
                 if len(rows) < limit:
@@ -549,13 +680,29 @@ class VectorStore:
         如 _purge_local 这类"纯同步部分放线程池"的调用，避免套娃）"""
         return self._backend
 
+    @property
+    def supports_full_text(self) -> bool:
+        """当前后端是否支持服务端全文检索（同步属性，不必 await）
+
+        调用方据此决定 BM25 候选从哪来：支持则用 search_full_text（服务端分词
+        与倒排索引），不支持则改用应用层索引。这是**能力声明**，与
+        search_full_text 返回空列表（可能只是这次没命中）语义不同。
+        """
+        return self._backend.supports_full_text
+
     # 后端实现均为同步（Chroma 嵌入式 / PyMilvus SDK），统一移到线程执行，
     # 避免阻塞事件循环（多 worker 前置修复：检索/入库不再占用主循环）
+    async def ensure_collection(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.ensure_collection, *args, **kwargs)
+
     async def add(self, *args, **kwargs):
         return await asyncio.to_thread(self._backend.add, *args, **kwargs)
 
     async def search(self, *args, **kwargs):
         return await asyncio.to_thread(self._backend.search, *args, **kwargs)
+
+    async def search_full_text(self, *args, **kwargs):
+        return await asyncio.to_thread(self._backend.search_full_text, *args, **kwargs)
 
     async def delete_by_document(self, *args, **kwargs):
         return await asyncio.to_thread(self._backend.delete_by_document, *args, **kwargs)

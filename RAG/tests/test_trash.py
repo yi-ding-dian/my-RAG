@@ -269,6 +269,10 @@ class _RecordingVecStore:
         self.seen_wheres.append(where)
         return self._real.search(kb_id, query_emb, top_k=top_k, where=where)
 
+    def search_full_text(self, kb_id, query, top_k=5, where=None):
+        # 服务端全文检索：真实 Chroma 后端不支持（返回空）→ 检索侧回退应用层 BM25
+        return self._real.search_full_text(kb_id, query, top_k=top_k, where=where)
+
     def get_embedding_dimension(self, kb_id):
         return self._real.get_embedding_dimension(kb_id)
 
