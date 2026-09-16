@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Input, Popover, Spin, Tree, Typography } from 'antd';
+import { Alert, Button, Input, Spin, Typography } from 'antd';
 import {
   DownloadOutlined,
   DownOutlined,
   SearchOutlined,
-  UnorderedListOutlined,
   UpOutlined,
 } from '@ant-design/icons';
 import type { DocumentItem } from '../../../shared/api/client';
 import { downloadDocumentRaw, getDocument, getDocumentRaw } from '../../../shared/api/client';
 import MdImages from '../../../shared/components/common/MdImages';
 import AppModal from '../../../shared/components/common/AppModal';
+import HeadingOutline from '../../../shared/components/common/HeadingOutline';
+import { extractHeadings, type DocHeading } from '../../../shared/utils/docHeadings';
 
 const { Text } = Typography;
 
@@ -184,60 +185,25 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     return out;
   }, [fullText, searchText]);
 
+  /** 全文标题（目录与下面的分块共用同一份抽取结果，标题数量/层级与切块详情一致） */
+  const headings = useMemo(() => extractHeadings(fullText), [fullText]);
+
   /**
    * 内容分块：Markdown 标题行独立成块（带锚点 id，供目录跳转），其余文本整块。
    * 只按标题切分——DOM 增量等于标题数（几十个），不会因为一份十万字文档炸出几千节点。
    * start 记录块在全文中的起始偏移，用于把全局命中区间映射到块内。
    */
   const blocks = useMemo(() => {
-    const re = /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
-    const out: {
-      text: string;
-      start: number;
-      heading?: { level: number; text: string; hid: number };
-    }[] = [];
+    const out: { text: string; start: number; heading?: DocHeading }[] = [];
     let last = 0;
-    let hid = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(fullText)) !== null) {
-      if (m.index > last) out.push({ text: fullText.slice(last, m.index), start: last });
-      out.push({
-        text: m[0],
-        start: m.index,
-        heading: { level: m[1].length, text: m[2].trim(), hid: hid++ },
-      });
-      last = m.index + m[0].length;
+    for (const h of headings) {
+      if (h.pos > last) out.push({ text: fullText.slice(last, h.pos), start: last });
+      out.push({ text: h.raw, start: h.pos, heading: h });
+      last = h.end;
     }
     if (last < fullText.length) out.push({ text: fullText.slice(last), start: last });
     return out;
-  }, [fullText]);
-
-  /** 目录项（Popover 列表 + 跳转锚点共用同一套编号） */
-  const headings = useMemo(
-    () => blocks.filter(b => b.heading).map(b => b.heading!),
-    [blocks],
-  );
-
-  /** 目录树：扁平标题按层级嵌套成树，供 Tree 折叠浏览（大文档 495 个标题，全平铺翻不动） */
-  const tocTree = useMemo(() => {
-    type Node = { key: string; title: string; children: Node[] };
-    const root: Node[] = [];
-    const stack: { level: number; children: Node[] }[] = [{ level: 0, children: root }];
-    headings.forEach(h => {
-      const node: Node = { key: `h-${h.hid}`, title: h.text, children: [] };
-      // 弹到最近的上级（level 更小的节点），挂上去
-      while (stack.length > 1 && stack[stack.length - 1].level >= h.level) stack.pop();
-      stack[stack.length - 1].children.push(node);
-      stack.push({ level: h.level, children: node.children });
-    });
-    return root;
-  }, [headings]);
-
-  /** 默认展开一级标题 = 首屏可见前两级；三级及以下点箭头才展开 */
-  const defaultExpandedKeys = useMemo(
-    () => headings.filter(h => h.level === 1).map(h => `h-${h.hid}`),
-    [headings],
-  );
+  }, [fullText, headings]);
 
   /**
    * 把一段文本按命中区间切成 [{text, idx}]（idx<0 = 普通段），供渲染层使用。
@@ -299,9 +265,9 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
       </mark>
     )));
 
-  /** 目录跳转：锚点 id 由 blocks 切分时按顺序分配（doc-h-0、doc-h-1…） */
-  const jumpToHeading = (hid: number) => {
-    document.getElementById(`doc-h-${hid}`)
+  /** 目录跳转：标题锚点 id 与标题编号一一对应（doc-h-0、doc-h-1…，见 blocks 渲染） */
+  const jumpToHeading = (h: DocHeading) => {
+    document.getElementById(`doc-h-${h.index}`)
       ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   };
 
@@ -428,35 +394,12 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   onClick={() => gotoMatch(1)}
                 />
                 {/* 目录：标题树（默认展开一级 = 可见前两级，三级及以下点箭头展开），
-                    点击标题滚动到对应位置；放在整条工具栏最右侧 */}
-                <Popover
-                  trigger="click"
-                  placement="bottomRight"
-                  content={(
-                    <div style={{ minWidth: 280, maxWidth: 460 }}>
-                      {headings.length === 0 ? (
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          未识别到标题（解析产物里没有 Markdown 标题）
-                        </Text>
-                      ) : (
-                        <Tree
-                          key={doc?.id}
-                          treeData={tocTree}
-                          defaultExpandedKeys={defaultExpandedKeys}
-                          height={380}
-                          onSelect={(keys) => {
-                            const k = String(keys[0] ?? '');
-                            if (k.startsWith('h-')) jumpToHeading(Number(k.slice(2)));
-                          }}
-                        />
-                      )}
-                    </div>
-                  )}
-                >
-                  <Button size="small" icon={<UnorderedListOutlined />}>
-                    目录{headings.length > 0 ? `（${headings.length}）` : ''}
-                  </Button>
-                </Popover>
+                    点击标题滚动到对应位置；放在整条工具栏最右侧（与切块详情同款组件） */}
+                <HeadingOutline
+                  headings={headings}
+                  onJump={jumpToHeading}
+                  resetKey={doc?.id}
+                />
               </div>
               {/* 必须 pre-wrap：解析产物是 Markdown 纯文本，而 MdImages 输出的是
                   HTML 片段，浏览器默认折叠空白——不加这段换行会全挤成一坨
@@ -474,10 +417,11 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                 {blocks.map((b, bi) => (b.heading ? (
                   <span
                     key={`h${bi}`}
-                    id={`doc-h-${b.heading.hid}`}
+                    id={`doc-h-${b.heading.index}`}
                     style={{ scrollMarginTop: 12 }}
                   >
-                    {renderBlockSegs(b.text, b.start, `h${bi}`, t => <span>{t}</span>)}
+                    {/* key 必须给：renderBlockSegs 返回的是数组，无搜索词时也走数组渲染 */}
+                    {renderBlockSegs(b.text, b.start, `h${bi}`, (t, k) => <span key={k}>{t}</span>)}
                   </span>
                 ) : renderBlockSegs(b.text, b.start, `t${bi}`,
                   (t, k) => <MdImages key={k} text={t} maxWidth={720} />)))}

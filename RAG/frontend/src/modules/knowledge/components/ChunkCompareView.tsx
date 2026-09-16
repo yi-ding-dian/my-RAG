@@ -3,9 +3,11 @@ import { Button, Empty, Input, List, Pagination, Tag, Tooltip, Typography, theme
 import { ArrowDownOutlined, ArrowUpOutlined, RetweetOutlined, SearchOutlined } from '@ant-design/icons';
 import { useTheme } from '../../../theme';
 import MdImages from '../../../shared/components/common/MdImages';
+import HeadingOutline from '../../../shared/components/common/HeadingOutline';
 import { renderTableBlocks } from '../../../shared/components/common/MarkdownTable';
 import renderTextWithTables from '../../../shared/utils/richText';
 import { safeTruncateWithImages } from '../../../shared/utils/safeTruncate';
+import { extractHeadings, type DocHeading } from '../../../shared/utils/docHeadings';
 import {
   computeHighlightRanges,
   splitByHighlights,
@@ -207,6 +209,13 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   const pendingLeftRef = useRef<number | null>(null);
   // 待滚动的右栏原文位置（跨页搜索定位/引用溯源定位：目标页渲染完成后滚到该位置所在区间）
   const pendingRightRef = useRef<number | null>(null);
+  /** 待定位的标题编号（目录跨页跳转：切页后按标题锚点定位，比按区间更精确） */
+  const pendingHeadingRef = useRef<number | null>(null);
+  /**
+   * 跳转后的校正目标：切页时新页的图片还没加载完，滚动到位后图片撑高内容会把目标
+   * 顶下去（实测一页 230 张图能漂 2 万像素）。窗口内每有图片加载完就重新对齐一次。
+   */
+  const realignRef = useRef<{ elId: string; until: number } | null>(null);
 
   /** 标记一次程序滚动：期间另一侧滚动不触发联动 */
   const setProgrammatic = useCallback(() => {
@@ -216,6 +225,38 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
       programmaticRef.current = false;
     }, 400);
   }, []);
+
+  /** 记下滚动目标，交给下方图片 load 监听做校正（窗口 1.5s：图片加载完即停） */
+  const armRealign = useCallback((elId: string) => {
+    realignRef.current = { elId, until: Date.now() + 1500 };
+  }, []);
+
+  // 图片懒加载完成后重新对齐跳转目标（详见 realignRef 说明）。
+  // 捕获阶段监听：img 的 load 不冒泡，必须用捕获才能在容器上收到
+  useEffect(() => {
+    const container = rightScrollRef.current;
+    if (!container) return;
+    let raf = 0;
+    const onLoad = () => {
+      const target = realignRef.current;
+      if (!target) return;
+      if (Date.now() > target.until) {
+        realignRef.current = null;
+        return;
+      }
+      // 一页几百张图会连续触发，用 rAF 合并成每帧一次
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setProgrammatic();
+        document.getElementById(target.elId)?.scrollIntoView({ block: 'start', behavior: 'auto' });
+      });
+    };
+    container.addEventListener('load', onLoad, true);
+    return () => {
+      container.removeEventListener('load', onLoad, true);
+      cancelAnimationFrame(raf);
+    };
+  }, [setProgrammatic]);
 
   /** 滚动联动防抖：用户滚动触发（程序滚动期间直接忽略） */
   const scheduleSync = useCallback((fn: () => void) => {
@@ -238,9 +279,11 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   useEffect(() => {
     const leftIdx = pendingLeftRef.current;
     const rightPos = pendingRightRef.current;
+    const headingIdx = pendingHeadingRef.current;
     if (leftIdx == null && rightPos == null) return;
     pendingLeftRef.current = null;
     pendingRightRef.current = null;
+    pendingHeadingRef.current = null;
     requestAnimationFrame(() => {
       if (leftIdx != null) {
         const el = document.getElementById(`chunk-list-${leftIdx}`);
@@ -251,10 +294,14 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
         }
       }
       if (rightPos != null) {
-        const id = rangeIdOf(rightPos);
-        if (id) {
+        // 目录跳转带标题编号：优先落到标题行锚点（段内精确位置）
+        const anchorId = headingIdx != null ? `chunk-h-${headingIdx}` : null;
+        const id = anchorId && document.getElementById(anchorId) ? anchorId : rangeIdOf(rightPos);
+        const el = id ? document.getElementById(id) : null;
+        if (el && id) {
           setProgrammatic();
-          document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+          el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+          armRealign(id);
         }
       }
     });
@@ -283,6 +330,23 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
     () => (fullText ? buildSegments(pageChunks, fullText) : []),
     [pageChunks, fullText],
   );
+
+  /** 全文标题（目录用；与文档预览同一抽取口径，两处「目录（N）」的数量与层级一致） */
+  const headings = useMemo(() => extractHeadings(fullText ?? ''), [fullText]);
+
+  /**
+   * 段内标题：段起点 → 落在该段内部的标题（不含段首那个）。
+   * 目录跳转要精确落到标题行——层级聚合切块的一个块可能很长，只跳到块起点
+   * 等于没跳到位；渲染时在这些标题行位置插锚点（见 renderSegmentText）。
+   */
+  const headingsInSegment = useMemo(() => {
+    const map = new Map<number, DocHeading[]>();
+    for (const seg of segments) {
+      const inner = headings.filter(h => h.pos > seg.start && h.pos < seg.end);
+      if (inner.length) map.set(seg.start, inner);
+    }
+    return map;
+  }, [segments, headings]);
 
   // 左栏当前页切块的展示文本（安全截断，截断点避开图片引用）+ 回答-对齐高亮区间
   // （坐标相对截断后的展示文本；无回答文本/无命中为空数组）
@@ -606,6 +670,60 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   }, [searchMatches, searchText, currentMatchIdx, gotoMatch]);
 
   /**
+   * 目录跳转：定位到标题所在位置。
+   * 与搜索定位同一套跨页机制——右栏只渲染当前页块的区间，落点不在当前页就先切页，
+   * 渲染完成后由 [page] effect 定位；差别在落点用 block:'start'（标题顶对齐往下读），
+   * 搜索用 center（把命中处摆到视线中间）。
+   * 落点优先用标题行锚点（段内标题，见 renderSegmentText），没有锚点（标题恰在段首、
+   * 或落在块间空隙）时退到所在段落/区间。
+   */
+  const gotoHeading = useCallback(
+    (h: DocHeading) => {
+      const chunk = chunkCoveringOf(h.pos);
+      if (chunk) setSelectedIndex(chunk.index);
+      const inPage =
+        segments.length > 0 && h.pos >= segments[0].start && h.pos < segments[segments.length - 1].end;
+      const scrollRight = () => {
+        const anchorId = `chunk-h-${h.index}`;
+        const id = document.getElementById(anchorId) ? anchorId : rangeIdOf(h.pos);
+        const el = id ? document.getElementById(id) : null;
+        if (el && id) {
+          setProgrammatic();
+          el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+          armRealign(id);
+        }
+      };
+      if (inPage) {
+        scrollRight();
+        if (chunk) scrollLeftToChunk(chunk.index, 'nearest', 'auto');
+        return;
+      }
+      const target = chunk ?? nearestChunkOf(h.pos);
+      if (!target) return;
+      const idx = sortedChunks.findIndex(c => c.index === target.index);
+      if (idx >= 0 && Math.floor(idx / PAGE_SIZE) + 1 === page) {
+        // 目标块就在当前页：DOM 已就绪，直接滚（等 [page] effect 会等不到——页码没变）
+        scrollRight();
+        scrollLeftToChunk(target.index, 'nearest', 'auto');
+        return;
+      }
+      pendingRightRef.current = h.pos;
+      pendingHeadingRef.current = h.index;
+      scrollLeftToChunk(target.index, 'nearest', 'auto');
+    },
+    [
+      segments,
+      page,
+      sortedChunks,
+      rangeIdOf,
+      chunkCoveringOf,
+      nearestChunkOf,
+      scrollLeftToChunk,
+      armRealign,
+    ],
+  );
+
+  /**
    * 文本片段渲染：与 MdImages 图片渲染共存——图片引用区间交给 MdImages，
    * 文本区间按搜索匹配包 <mark>（当前匹配主色底白字，其余浅色底）。
    * base 为该片段在全文中的起始偏移（匹配位置为全文绝对偏移）。
@@ -686,6 +804,44 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
     return nodes;
   };
 
+  /**
+   * 段内容渲染：段内含标题行时，在标题行位置插一个零宽锚点（chunk-h-N），目录跳转
+   * 才能精确落到标题行、而不是只到块起点。切分点取标题行起点——标题行本身就是表格
+   * 的分隔（表格中间不会出现 # 开头的行），所以不会把连续的表格切成两半。
+   */
+  const renderSegmentText = (seg: Segment) => {
+    const inner = headingsInSegment.get(seg.start);
+    if (!inner?.length) return renderHighlighted(seg.text, seg.start);
+    const parts: React.ReactNode[] = [];
+    let from = 0;
+    for (const h of inner) {
+      const cut = h.pos - seg.start;
+      if (cut > from) {
+        parts.push(
+          <React.Fragment key={`pre-${h.index}`}>
+            {renderHighlighted(seg.text.slice(from, cut), seg.start + from)}
+          </React.Fragment>,
+        );
+      }
+      parts.push(
+        <span
+          key={`anchor-${h.index}`}
+          id={`chunk-h-${h.index}`}
+          style={{ scrollMarginTop: 12 }}
+        />,
+      );
+      from = cut;
+    }
+    if (from < seg.text.length) {
+      parts.push(
+        <React.Fragment key={`tail-${seg.start}`}>
+          {renderHighlighted(seg.text.slice(from), seg.start + from)}
+        </React.Fragment>,
+      );
+    }
+    return parts;
+  };
+
   /** 右栏原文：分段渲染（块区间 span 带 data-chunk-index + 角标，非块区间普通 span）。
    *  与左栏同页分页：只渲染当前页块的覆盖区间 [首段起点, 尾段终点]，文档首尾非块原文不渲染 */
   const renderOriginal = () => {
@@ -748,7 +904,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
               #{idx}
             </span>
           ))}
-          {renderHighlighted(seg.text, seg.start)}
+          {renderSegmentText(seg)}
         </span>,
       );
       cursor = seg.end;
@@ -854,6 +1010,9 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
               />
             </>
           )}
+          {/* 目录：标题树（默认展开一级），点击跳到原文对应位置（跨页自动切页）；
+              放在整条工具栏最右侧（与文档预览同款组件） */}
+          <HeadingOutline headings={headings} onJump={gotoHeading} />
         </div>
       </div>
       {/* overflow hidden: 左右栏必须各自独立滚动视口，否则共享外层滚动
