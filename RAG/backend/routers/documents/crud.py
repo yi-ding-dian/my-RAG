@@ -33,7 +33,7 @@ from backend.deps import get_current_user, kb_or_404
 from backend.models.rag_models import (ChunkInfo, DocumentDetail,
                                        DocumentItem, DocxOutlineItem,
                                        DocxOutlineResponse, GraphBuildRequest,
-                                       IngestRequest,
+                                       IngestRequest, ParsedHeading,
                                        RenameDocumentRequest, UrlImportRequest)
 from backend.models.user_models import UserPublic
 from backend.services import audit_service
@@ -823,6 +823,31 @@ async def get_docx_outline(kb_id: str, doc_id: str,
         warning=warning)
 
 
+def _build_parsed_headings(full_text: str,
+                           heading_systems: Optional[List[str]]) -> List[ParsedHeading]:
+    """解析产物标题列表（前端目录树用）
+
+    识别口径与切块**同源**（backend.chunking.common._iter_headings）：ATX `#`
+    标题 + 纯文本样式 + 编号体系推断，含 MinerU 漏标 `#` 的裸编号标题。
+    前端不再自己抽一份——历史上后端与前端各有一套，导致"后端已识别的章标题
+    在目录树里缺失"（劳动法第三章：MinerU 没输出 `##`）。
+    """
+    if not full_text:
+        return []
+    from backend.chunking.common import _iter_headings, find_protected_ranges
+    protected = find_protected_ranges(full_text)
+    out: List[ParsedHeading] = []
+    for start, level, title in _iter_headings(full_text, protected,
+                                              heading_systems):
+        line_end = full_text.find("\n", start)
+        if line_end < 0:
+            line_end = len(full_text)
+        out.append(ParsedHeading(level=level, text=title, pos=start,
+                                 end=line_end,
+                                 raw=full_text[start:line_end]))
+    return out
+
+
 @router.get("/{doc_id}", response_model=DocumentDetail)
 async def get_document(kb_id: str, doc_id: str,
                        db: AsyncSession = Depends(get_db),
@@ -835,6 +860,7 @@ async def get_document(kb_id: str, doc_id: str,
       引用**并插入图片摘要**后的定稿文本——与切块输入是同一份，偏移以该文本
       为基准；两者一旦不同步，本接口返回的 chunks 就会与 full_text 错位）；
       chunk_preview 保留兼容
+    - headings: 解析产物标题列表（前端目录树唯一数据源，识别口径与切块一致）
     """
     await kb_or_404(db, kb_id, user)
     doc = _get_doc_or_404(kb_id, doc_id)
@@ -855,8 +881,13 @@ async def get_document(kb_id: str, doc_id: str,
             full_text = parsed_path.read_text(encoding="utf-8")
     except Exception as e:
         logger.warning("读取解析文本失败 %s: %s", doc_id, str(e)[:150])
+    # 编号体系（入库时检测并写回 parser_config）：标题识别按它推断层级，
+    # 与切块时的口径保持一致
+    heading_systems = (doc.parser_config or {}).get("heading_systems") or []
     return DocumentDetail(**doc.model_dump(mode="json"), chunks=chunks,
-                          full_text=full_text)
+                          full_text=full_text,
+                          headings=_build_parsed_headings(full_text,
+                                                          heading_systems))
 
 
 @router.delete("/{doc_id}")

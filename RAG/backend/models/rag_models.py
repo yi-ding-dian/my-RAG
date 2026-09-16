@@ -299,10 +299,26 @@ class ChunkInfo(BaseModel):
     label: Optional[str] = Field(None, description="块类型标签（仅 Agentic 智能分块成功时生成：论述类/事实类/操作类/数据类/其他；无标签为 None）")
 
 
+class ParsedHeading(BaseModel):
+    """解析产物里的一个标题（文档详情下发，供前端目录树用）
+
+    识别口径与切块完全同源（backend.chunking.common._iter_headings）：ATX `#`
+    标题 + 纯文本样式 + 编号体系推断。**前端不得自己再抽一份**——历史上后端与
+    前端各有一套抽取逻辑，导致"后端已识别的章标题在目录树里没有"（MinerU 漏标
+    `##` 的裸编号标题「第三章　劳动合同和集体合同」，后端修好了、目录树照旧缺）。
+    """
+    level: int = Field(..., description="标题层级（1~6，编号体系下为文档内相对层级）")
+    text: str = Field("", description="标题文本（不含 # 前缀）")
+    pos: int = Field(0, description="标题行在 full_text 中的起始偏移（目录跳转锚点）")
+    end: int = Field(0, description="标题行结束偏移（不含换行符）")
+    raw: str = Field("", description="标题行原文（含 # 前缀；预览整行渲染用）")
+
+
 class DocumentDetail(DocumentItem):
     """文档详情（详情接口响应：在 DocumentItem 基础上补充 chunks 对象数组与 full_text）"""
     chunks: List[ChunkInfo] = Field(default_factory=list, description="切块（完整列表，含偏移，来源 chunks_meta）")
     full_text: str = Field("", description="解析后全文（data/parsed/{doc_id}.md，偏移以此为基准；未入库/文件缺失为空）")
+    headings: List[ParsedHeading] = Field(default_factory=list, description="解析产物标题列表（目录树用；与切块同一识别口径）")
 
 
 class DocxOutlineItem(BaseModel):

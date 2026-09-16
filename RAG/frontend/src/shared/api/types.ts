@@ -260,7 +260,26 @@ export interface DocumentDetail {
   /** 文档全文（切块对比视图用），可选兼容 */
   full_text?: string;
   chunk_preview?: string[];
+  /**
+   * 解析产物标题列表（目录树**唯一**数据源）：识别在后端完成，与切块同一口径
+   * （含 MinerU 漏标 `#` 的裸编号标题）。前端不得另写一套抽取逻辑。
+   */
+  headings?: ApiHeading[];
   [k: string]: unknown;
+}
+
+/** 后端下发的解析产物标题（对应 models.ParsedHeading） */
+export interface ApiHeading {
+  /** 标题层级（1~6；编号体系下为文档内相对层级） */
+  level: number;
+  /** 标题文本（不含 # 前缀） */
+  text: string;
+  /** 标题行在全文中的起始偏移（目录跳转锚点） */
+  pos: number;
+  /** 标题行结束偏移（不含换行符） */
+  end: number;
+  /** 标题行原文（含 # 前缀；预览整行渲染用） */
+  raw: string;
 }
 
 /** 文档结构树条目（「查看文档结构」弹窗）：结构解析产物里的一个标题 */

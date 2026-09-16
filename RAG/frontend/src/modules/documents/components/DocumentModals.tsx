@@ -423,6 +423,7 @@ export function useDetailModal(kbId: string | undefined): DetailModalApi {
             []
           }
           fullText={detailData?.full_text}
+          headings={detailData?.headings}
         />
       )}
     </AppModal>

@@ -7,11 +7,12 @@ import {
   UpOutlined,
 } from '@ant-design/icons';
 import type { DocumentItem } from '../../../shared/api/client';
+import type { ApiHeading } from '../../../shared/api/types';
 import { downloadDocumentRaw, getDocument, getDocumentRaw } from '../../../shared/api/client';
 import MdImages from '../../../shared/components/common/MdImages';
 import AppModal from '../../../shared/components/common/AppModal';
 import HeadingOutline from '../../../shared/components/common/HeadingOutline';
-import { extractHeadings, type DocHeading } from '../../../shared/utils/docHeadings';
+import { toDocHeadings, type DocHeading } from '../../../shared/utils/docHeadings';
 
 const { Text } = Typography;
 
@@ -69,6 +70,8 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   const [text, setText] = useState<string>('');
   /** docx/doc 的解析全文（浏览器渲染不了 Word，改展示解析结果，见 useEffect） */
   const [fullText, setFullText] = useState<string>('');
+  /** 解析产物标题（后端下发；目录树数据源） */
+  const [apiHeadings, setApiHeadings] = useState<ApiHeading[]>([]);
   /** 解析内容内的关键词搜索（docx 分支用） */
   const [searchText, setSearchText] = useState('');
   const [matchIdx, setMatchIdx] = useState(0);
@@ -104,7 +107,9 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
     if (kind === 'docx') {
       getDocument(kbId, doc.id)
         .then(res => {
-          if (!cancelled) setFullText(res.data.full_text || '');
+          if (cancelled) return;
+          setFullText(res.data.full_text || '');
+          setApiHeadings(res.data.headings ?? []);
         })
         .catch(() => {
           if (!cancelled) setError('解析内容加载失败，可下载原文查看');
@@ -186,7 +191,7 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   }, [fullText, searchText]);
 
   /** 全文标题（目录与下面的分块共用同一份抽取结果，标题数量/层级与切块详情一致） */
-  const headings = useMemo(() => extractHeadings(fullText), [fullText]);
+  const headings = useMemo(() => toDocHeadings(apiHeadings), [apiHeadings]);
 
   /**
    * 内容分块：Markdown 标题行独立成块（带锚点 id，供目录跳转），其余文本整块。

@@ -7,7 +7,8 @@ import HeadingOutline from '../../../shared/components/common/HeadingOutline';
 import { renderTableBlocks } from '../../../shared/components/common/MarkdownTable';
 import renderTextWithTables from '../../../shared/utils/richText';
 import { safeTruncateWithImages } from '../../../shared/utils/safeTruncate';
-import { extractHeadings, type DocHeading } from '../../../shared/utils/docHeadings';
+import { toDocHeadings, type DocHeading } from '../../../shared/utils/docHeadings';
+import type { ApiHeading } from '../../../shared/api/types';
 import {
   computeHighlightRanges,
   splitByHighlights,
@@ -42,6 +43,8 @@ interface ChunkCompareViewProps {
   chunks: ChunkViewChunk[];
   /** 文档全文（可选） */
   fullText?: string;
+  /** 解析产物标题（目录树数据源；后端 get_document 的 headings 原样传入） */
+  headings?: ApiHeading[];
   /** 挂载后自动定位的切块下标（引用溯源用；缺省取第一块） */
   initialIndex?: number;
   /** 撑满父容器高度（放大态弹窗使用；默认固定高度） */
@@ -168,6 +171,7 @@ const buildSegments = (chunks: ChunkViewChunk[], fullText: string): Segment[] =>
 const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   chunks,
   fullText,
+  headings: headingsProp,
   initialIndex,
   fillHeight,
   answerText,
@@ -331,8 +335,8 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
     [pageChunks, fullText],
   );
 
-  /** 全文标题（目录用；与文档预览同一抽取口径，两处「目录（N）」的数量与层级一致） */
-  const headings = useMemo(() => extractHeadings(fullText ?? ''), [fullText]);
+  /** 全文标题（目录用；后端下发，与切块同一识别口径——前端不自己抽） */
+  const headings = useMemo(() => toDocHeadings(headingsProp), [headingsProp]);
 
   /**
    * 段内标题：段起点 → 落在该段内部的标题（不含段首那个）。

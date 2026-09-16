@@ -1,14 +1,20 @@
 /**
- * 解析产物（Markdown）的标题抽取与目录树构建。
+ * 解析产物（Markdown）的标题 → 目录树。
  *
- * 文档预览与切块详情两处的「目录」共用这一份：正则、层级嵌套、默认展开规则都从
- * 这里来——各写一份的话，两边的标题数量、层级、点击落点迟早对不上。
+ * **标题识别在后端**（`backend.chunking.common._iter_headings`，与切块同源）：
+ * 本文件只把后端下发的 `headings` 转成 DocHeading，并负责层级嵌套与默认展开。
+ * 文档预览与切块详情两处的「目录」共用这一份，标题数量、层级、点击落点自然一致。
+ *
+ * 为什么不再在前端抽：前端曾用正则只认 `#` 标题，与后端两套逻辑各行其是——
+ * MinerU 漏标 `##` 的裸编号标题（如"第三章　劳动合同和集体合同"）后端切块认得出、
+ * 目录树却缺章。**不要在前端重写识别规则。**
  */
+import type { ApiHeading } from '../api/types';
 
 export interface DocHeading {
-  /** 层级（# 的个数，1~6） */
+  /** 层级（后端推断，1~6；编号体系下为文档内相对层级） */
   level: number;
-  /** 标题文本（去掉 # 前缀与首尾空白） */
+  /** 标题文本（不含 # 前缀） */
   text: string;
   /** 标题行在全文中的起始偏移（切块详情跨页定位的基准） */
   pos: number;
@@ -20,27 +26,9 @@ export interface DocHeading {
   raw: string;
 }
 
-/** Markdown 标题行：行首 1~6 个 # + 至少一个空格/制表符 + 文本 */
-const HEADING_SRC = '^(#{1,6})[ \\t]+(.+?)[ \\t]*$';
-
-/** 抽取全文标题（按调用新建正则实例，避免共享 lastIndex 在多次调用间串状态） */
-export const extractHeadings = (fullText: string): DocHeading[] => {
-  if (!fullText) return [];
-  const re = new RegExp(HEADING_SRC, 'gm');
-  const out: DocHeading[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(fullText)) !== null) {
-    out.push({
-      level: m[1].length,
-      text: m[2].trim(),
-      pos: m.index,
-      end: m.index + m[0].length,
-      index: out.length,
-      raw: m[0],
-    });
-  }
-  return out;
-};
+/** 后端下发的标题 → DocHeading（补全文顺序编号 index） */
+export const toDocHeadings = (items?: ApiHeading[] | null): DocHeading[] =>
+  (items ?? []).map((h, i) => ({ ...h, index: i }));
 
 /** 目录树节点（antd Tree 的 DataNode 子集） */
 export interface OutlineNode {
