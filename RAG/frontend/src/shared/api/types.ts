@@ -300,6 +300,12 @@ export interface Source {
   context?: string;
   /** 原始向量检索分数（混合模式调试用；纯向量模式=score；BM25 单独命中为 null） */
   vector_score?: number | null;
+  /**
+   * score 的口径（后端下发）：rerank=重排相关度 / rrf=混合检索融合分 /
+   * vector=向量 cos 相似度。三大量纲不可比，展示层据此选文案。
+   * 历史会话快照无此字段（undefined）= 老数据，降级按 vector_score 展示。
+   */
+  score_type?: 'rerank' | 'rrf' | 'vector' | null;
   /** 块字符起始偏移（相对文档解析全文，检索测试上下文截取用；-1=历史数据无偏移） */
   char_start?: number;
   /** 块字符结束偏移（开区间，相对文档解析全文；-1=历史数据无偏移） */

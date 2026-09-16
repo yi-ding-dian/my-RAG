@@ -173,7 +173,8 @@ class Source(BaseModel):
     """检索命中的引用片段"""
     id: str = Field(..., description="块 ID（doc_id_chunk_index）")
     text: str = Field("", description="片段文本（精准命中子块）")
-    score: float = Field(0.0, description="相似度（0~1）")
+    # 口径随配置变，不是恒为"相似度"：见 score_type
+    score: float = Field(0.0, description="排序依据分（列表即按它降序；口径见 score_type，0~1 仅在 vector 口径下成立）")
     document_id: str = Field("", description="来源文档 ID")
     document_name: str = Field("", description="来源文档原始名")
     kb_id: str = Field("", description="来源文档所属知识库 ID（引用溯源用）")
@@ -182,6 +183,11 @@ class Source(BaseModel):
     parent_text: Optional[str] = Field(None, description="父块全文（parent_child 模式且 retrieval_mode=parent 时返回，作完整上下文；child 模式或非父子文档为 None）")
     context: Optional[str] = Field(None, description="上下文摘要（上下文检索增强开启时生成；检索返回的 text 已含【上下文】前缀，此字段供前端标签展示与引用拼接）")
     vector_score: Optional[float] = Field(None, description="原始向量检索分数（混合模式下保留供调试；纯向量模式=score；BM25 单独命中为 None）")
+    # score 是"排序依据"，口径随配置变（rerank 分 / RRF 融合分 / 向量 cos），
+    # 三大量纲不可比（RRF 只有 0.001~0.033）。展示层需要据此选用合适的文案，
+    # 不能一律叫"相似度"——否则 rerank 生效时面板会显示与排位不符的分数（历史事故）。
+    # 历史会话快照无此字段（None）→ 展示层降级为原口径。
+    score_type: Optional[str] = Field(None, description="score 的口径：rerank=重排相关度 / rrf=混合检索融合分 / vector=向量 cos 相似度")
     char_start: int = Field(-1, description="块字符起始偏移（相对文档解析全文；-1=历史数据无偏移，检索测试页上下文截取用）")
     char_end: int = Field(-1, description="块字符结束偏移（开区间，相对文档解析全文；-1=历史数据无偏移）")
 

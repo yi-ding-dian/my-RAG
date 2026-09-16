@@ -162,7 +162,8 @@ class RetrievalService:
             if score < min_score:
                 filtered += 1
                 continue
-            sources.append(self._build_source(kb_id, cid, text, meta, score, score))
+            sources.append(self._build_source(kb_id, cid, text, meta, score, score,
+                                              "vector"))
         if filtered:
             logger.info("检索过滤: kb=%s query=%s 低于阈值 %.2f 过滤 %d 条",
                         kb_id, query[:30], min_score, filtered)
@@ -218,7 +219,7 @@ class RetrievalService:
                 filtered += 1
                 continue
             sources.append(self._build_source(
-                kb_id, cid, entry["text"], entry["meta"], entry["rrf"], vs))
+                kb_id, cid, entry["text"], entry["meta"], entry["rrf"], vs, "rrf"))
         if filtered:
             logger.info("检索过滤: kb=%s query=%s 低于阈值 %.2f 过滤 %d 条",
                         kb_id, query[:30], min_score, filtered)
@@ -330,6 +331,8 @@ class RetrievalService:
         out: List[Source] = []
         for src, sc in ranked[:top_k]:
             src.score = round(float(sc), 4)  # 最终分数 = rerank relevance_score
+            # 口径跟着翻牌：展示层据此显示"相关度"而非原向量分
+            src.score_type = "rerank"
             out.append(src)
         return out
 
@@ -337,8 +340,13 @@ class RetrievalService:
 
     @staticmethod
     def _build_source(kb_id: str, cid: str, text: str, meta: dict,
-                      score: float, vector_score: float | None) -> Source:
-        """组装 Source（parent_child 模式且 retrieval_mode=parent：附父块全文作上下文）"""
+                      score: float, vector_score: float | None,
+                      score_type: str) -> Source:
+        """组装 Source（parent_child 模式且 retrieval_mode=parent：附父块全文作上下文）
+
+        score_type 标明 score 的口径（vector/rrf/rerank），展示层据此选文案；
+        rerank 生效时由 _rerank 事后翻牌为 rerank。
+        """
         parent_text = None
         if meta.get("retrieval_mode") == "parent":
             pt = meta.get("parent_text")
@@ -355,6 +363,7 @@ class RetrievalService:
             parent_text=parent_text,
             context=meta.get("context"),
             vector_score=round(vector_score, 4) if vector_score is not None else None,
+            score_type=score_type,
             # 块偏移（入库时已随 metadata 落库，全部切块方式均有；
             # 历史数据缺失时 -1，检索测试页上下文截取降级为全文展示）
             char_start=int(meta.get("char_start", -1)),
