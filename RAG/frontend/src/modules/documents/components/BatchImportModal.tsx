@@ -259,6 +259,9 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
       dimension="auto"
       defaultSize={{ w: 680, h: 520 }}
       rememberKey="batch-import"
+      // 选好文件（列表出现）后定住高度：运行中进度、完成后的结果列表都不再
+      // 把弹窗撑大撑小，内容多则内部滚动
+      autoLock={files.length > 0}
       title="批量导入并解析"
       open={open}
       onCancel={onCancel}

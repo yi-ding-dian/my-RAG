@@ -260,6 +260,8 @@ export function usePortraitModal(kbId: string | undefined): PortraitModalApi {
       footer={null}
       width={760}
       style={{ top: '8vh' }}
+      // 画像异步加载，加载完才定尺寸（否则锁在空壳高度上）
+      autoLock={!portraitLoading}
       styles={{ body: { padding: '16px 20px', maxHeight: '72vh', overflow: 'auto' } }}
     >
       <DocumentPortrait

@@ -650,6 +650,9 @@ const SmartParseWizard: React.FC<SmartParseWizardProps> = ({ open, doc, kbId, on
       dimension="auto"
       defaultSize={{ w: 760, h: 640 }}
       rememberKey="smart-parse"
+      // 按"第一个窗口"（Step1 画像）定尺寸，之后切步骤不再跳动；内容多的步骤
+      // 内部滚动。等画像加载完再锁，否则会锁在还在加载的空壳高度上。
+      autoLock={!loading && !!analyze}
       footer={
         <div className="spw-footer">
           <Steps
