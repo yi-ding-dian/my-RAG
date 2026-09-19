@@ -5,6 +5,7 @@ import MdImages from '../../../shared/components/common/MdImages';
 import renderTextWithTables from '../../../shared/utils/richText';
 import {
   computeHighlightRanges,
+  computeNumberRanges,
   splitByHighlights,
   type HighlightRange,
 } from '../../../shared/utils/sourceHighlight';
@@ -54,7 +55,9 @@ const PreviewBlock: React.FC<{
   color?: string;
   /** 相关文本高亮区间（相对 text 坐标），透传给 MdImages；非空时进入相关片段模式 */
   highlights?: HighlightRange[];
-}> = ({ text, maxHeight = MAX_PREVIEW_HEIGHT, imgMaxWidth = 120, color, highlights }) => {
+  /** "回答里出现过的数字"区间（相对 text 坐标），数字额外画方框，便于核对 */
+  numbers?: HighlightRange[];
+}> = ({ text, maxHeight = MAX_PREVIEW_HEIGHT, imgMaxWidth = 120, color, highlights, numbers }) => {
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [imgLoads, setImgLoads] = useState(0);
@@ -63,7 +66,7 @@ const PreviewBlock: React.FC<{
   // 相关片段模式：高亮段（splitByHighlights 过滤普通段）。空数组 → 无有效高亮 → 回退完整文本。
   // 注意 computeHighlightRanges 保证高亮区间不覆盖图片标签，故高亮段内无图片，可直接 <mark> 渲染。
   const snippetParts = highlights && highlights.length > 0
-    ? splitByHighlights(text, highlights).filter(s => s.highlighted)
+    ? splitByHighlights(text, highlights, numbers).filter(s => s.highlighted)
     : [];
   const hasSnippet = snippetParts.length > 0;
   const showSnippet = hasSnippet && !expanded;
@@ -98,7 +101,9 @@ const PreviewBlock: React.FC<{
             snippetParts.map((seg, i) => (
               <React.Fragment key={i}>
                 {i > 0 && <span style={{ opacity: 0.5 }}>…</span>}
-                <mark className="citation-highlight">{seg.text}</mark>
+                <mark className={seg.isNumber
+                  ? 'citation-highlight citation-number'
+                  : 'citation-highlight'}>{seg.text}</mark>
               </React.Fragment>
             ))
           ) : (
@@ -109,6 +114,9 @@ const PreviewBlock: React.FC<{
                 maxWidth={imgMaxWidth}
                 onImageLoad={() => setImgLoads((n) => n + 1)}
                 highlights={highlights?.map(
+                  ([s, e]) => [s - offset, e - offset] as HighlightRange,
+                )}
+                numbers={numbers?.map(
                   ([s, e]) => [s - offset, e - offset] as HighlightRange,
                 )}
               />
@@ -163,6 +171,13 @@ const SourcePanel: React.FC<SourcePanelProps> = ({
           : [];
         const textHighlights = !isGraph && answerText
           ? computeHighlightRanges(answerText, s.text)
+          : [];
+        // 数字标记：回答里出现过的数字在引用里的位置（方框，便于核对金额）
+        const parentNumbers = !isGraph && answerText
+          ? computeNumberRanges(answerText, s.parent_text || '')
+          : [];
+        const textNumbers = !isGraph && answerText
+          ? computeNumberRanges(answerText, s.text)
           : [];
         return (
         <div
@@ -229,6 +244,7 @@ const SourcePanel: React.FC<SourcePanelProps> = ({
                         maxHeight={MAX_PARENT_HEIGHT}
                         imgMaxWidth="100%"
                         highlights={parentHighlights}
+                        numbers={parentNumbers}
                       />
                     ),
                   },
@@ -243,6 +259,7 @@ const SourcePanel: React.FC<SourcePanelProps> = ({
                     text={s.text}
                     color={token.colorTextSecondary}
                     highlights={textHighlights}
+                    numbers={textNumbers}
                   />
                 </div>
               </div>
@@ -252,6 +269,7 @@ const SourcePanel: React.FC<SourcePanelProps> = ({
               text={s.text}
               color={token.colorTextSecondary}
               highlights={textHighlights}
+              numbers={textNumbers}
             />
           )}
         </div>

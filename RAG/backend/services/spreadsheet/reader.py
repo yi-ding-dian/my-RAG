@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,6 +81,39 @@ def read_spreadsheet(path: Path) -> List[Sheet]:
         return read_xls(path)
     from backend.services.spreadsheet.csv import read_csv
     return read_csv(path)
+
+
+def build_merged_ranges(
+        row_numbers: List[int],
+        raw_ranges: List[Tuple[int, int, int, int]]) -> List[MergedRange]:
+    """原始行号的合并范围 → rows 索引空间的合并范围（跳空行后两者不再一一对应）
+
+    背景（2026-09-18 修复）：读取器会跳过全空行，rows[i] 的索引因此不再等于
+    原始行号；而合并单元格坐标来自 Excel 本身（原始行号）。直接拿去
+    fill_merged 会**错位覆盖**——合并区域跨空行时，区域下方的数据行被卷进
+    填充范围：实测「花花的旅游计划.xlsx」丽江表 J2:J18 跨着 16~18 三行空行，
+    跳掉 3 行后 rows[15] 已是 Excel 第 19 行（合计行），落在填充范围 1..17 内，
+    于是合计 792.27 被合并值"丽江总支出"覆盖（K 列 6225.15、A 列标签同样中招）。
+    同文件桂林表正常，是因为它的合并区域（J1:J16）不含空行，错位发生在区域
+    之后 —— 故触发条件是「合并区域内含空行」。
+
+    - row_numbers：rows[i] 对应的原始行号（升序；与 raw_ranges 同一坐标系，
+      xlsx 为 1 基、xls 为 0 基，读取器自行保持一致）
+    - raw_ranges：(min_row, min_col, max_row, max_col) 原始闭区间；**列号原样
+      透传**（本函数只折算行）
+    - 起点取第一个 ≥ min_row 的实际行、终点取最后一个 ≤ max_row 的实际行
+    - 区域内一行都没留下（整片被跳过）→ 丢弃该合并（无值可填）
+    """
+    if not row_numbers:
+        return []
+    out: List[MergedRange] = []
+    for min_row, min_col, max_row, max_col in raw_ranges:
+        start = bisect.bisect_left(row_numbers, min_row)
+        end = bisect.bisect_right(row_numbers, max_row) - 1
+        if start > end or start >= len(row_numbers) or end < 0:
+            continue
+        out.append((start, min_col, end, max_col))
+    return out
 
 
 def fill_merged(rows: List[List[str]], ranges: List[MergedRange]) -> None:

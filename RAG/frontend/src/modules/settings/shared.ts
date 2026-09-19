@@ -49,8 +49,10 @@ export const DOMAIN_CARDS: Array<{
   {
     key: 'ingest',
     title: '入库与限制',
+    // 「输入字数」原在此摘要，随字段挪到「聊天设置」面板后移除
+    // （chat.max_query_len 属聊天输入限制，非入库限制）
     summary: p =>
-      `并发 ${p.ingestion?.concurrency ?? 3}｜单库上限 ${p.ingestion?.kb_doc_limit ?? 0}｜上传 ${p.ingestion?.max_upload_mb ?? 100}MB｜输入 ${p.chat?.max_query_len ?? 2000}字`,
+      `并发 ${p.ingestion?.concurrency ?? 3}｜单库上限 ${p.ingestion?.kb_doc_limit ?? 0}｜上传 ${p.ingestion?.max_upload_mb ?? 100}MB`,
   },
   {
     key: 'mysql',
@@ -193,6 +195,8 @@ export interface ProfileFormValues {
   ingestion_kb_doc_limit: number;
   ingestion_max_upload_mb: number;
   chat_max_query_len: number;
+  /** 引用摘要字数（悬停引用标 [n] 时浮层显示的窗口大小） */
+  chat_citation_snippet_chars: number;
   mysql_host: string;
   mysql_port: number;
   mysql_user: string;
@@ -317,6 +321,13 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
       describe_layout: vals.image_summary_opt_describe_layout ?? false,
     },
   },
+  // 聊天设置段：后端 update_profile 是**字段级合并**（只覆盖传入字段），
+  // 故这里只提交本表单承载的字段，system_prompt/thinking_mode 等其他
+  // chat 字段不受影响
+  chat: {
+    max_query_len: vals.chat_max_query_len,
+    citation_snippet_chars: vals.chat_citation_snippet_chars,
+  },
 });
 
 export const toFormValues = (p: ServiceProfile) => ({
@@ -350,6 +361,7 @@ export const toFormValues = (p: ServiceProfile) => ({
   ingestion_kb_doc_limit: p.ingestion?.kb_doc_limit ?? 0,
   ingestion_max_upload_mb: p.ingestion?.max_upload_mb ?? 100,
   chat_max_query_len: p.chat?.max_query_len ?? 2000,
+  chat_citation_snippet_chars: p.chat?.citation_snippet_chars ?? 600,
   mysql_host: p.mysql?.host,
   mysql_port: p.mysql?.port,
   mysql_user: p.mysql?.user,

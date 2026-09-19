@@ -201,11 +201,14 @@ class ChatMessage(BaseModel):
     agentic: dict = Field(default_factory=dict,
                           description="Agentic 检索决策轨迹（关闭时为空）")
     # 请求详情（流式 prompt 事件携带，落盘供历史会话回看"详情"）：
-    # 完整提示词 + 检索/图谱耗时；旧数据缺字段=无详情（前端详情按钮隐藏）
+    # 完整提示词 + 检索/图谱/改写耗时 + 改写后检索词；旧数据缺字段=无详情
+    # （前端详情按钮隐藏）
     prompt: list = Field(default_factory=list,
                          description="发给 LLM 的完整提示词 messages（请求详情用；空=未保存）")
     retrieval_ms: Optional[int] = Field(None, description="检索耗时（ms，请求详情用）")
     kg_ms: Optional[int] = Field(None, description="知识图谱增强耗时（ms，请求详情用）")
+    rewrite_ms: Optional[int] = Field(None, description="查询改写耗时（ms，请求详情用；未触发改写=0）")
+    rewritten_query: Optional[str] = Field(None, description="改写后的检索查询（请求详情用；未改写=空）")
     total_ms: Optional[int] = Field(None, description="问答总耗时（ms，前端流式结束补写；后端落盘为 None）")
     # 本次生成参数快照（模型/温度/思考模式/检索参数等影响输出的配置）：
     # 事后追溯"这条回答当时是怎么跑出来的"——温度过高、思考被关这类问题

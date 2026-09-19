@@ -113,9 +113,14 @@ def merge_department_llm(global_llm: dict, dept_llm: dict) -> dict:
     - dept_llm：部门级 LLM 配置（空 dict/None = 未设置，返回纯全局）
     - 合并规则：部门字段非 None 且非空串 → 覆盖全局；None/空串 =
       跟随全局（api_key 空串即"故意清空用全局"，与白名单清除语义一致）
-    - 返回完整 6 字段 dict（响应结构与 /api/settings/chat 的 llm 段同构）
+    - 返回 dict 含完整 6 字段（响应结构与 /api/settings/chat 的 llm 段同构）
+      **外加全局侧的其余字段**（如 thinking_control 这类模型级、不参与
+      部门覆盖的字段）——只认白名单会让它们在合并时被悄悄丢掉，下游
+      拿到 None 后行为退回默认值
     """
-    base = {k: (global_llm or {}).get(k) for k in LLM_FIELD_NAMES}
+    base = dict(global_llm or {})
+    for k in LLM_FIELD_NAMES:  # 白名单字段保证存在（缺失补 None，原语义）
+        base.setdefault(k, None)
     dept = dept_llm or {}
     if not isinstance(dept, dict):
         return base  # 脏数据容错：非 dict 视为未设置

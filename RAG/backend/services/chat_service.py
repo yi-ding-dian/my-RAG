@@ -966,7 +966,8 @@ class ChatService:
         detail：本次请求的 prompt 详情（与 prompt 事件同源），由调用方透传，
         写入 assistant 消息供历史会话"详情"回看；无详情（早退路径）传 None。
         其中 gen_params（本次实际生效的生成参数）随消息保存，供事后追溯
-        "这条回答当时是怎么跑出来的"。
+        "这条回答当时是怎么跑出来的"；rewrite_ms/rewritten_query 同理落盘
+        ——不落盘则刷新/切会话、超管会话回溯都看不到"改写了没有、改成了什么"。
         """
         chat_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session.messages.append(ChatMessage(role="user", content=message,
@@ -981,6 +982,8 @@ class ChatService:
             prompt=detail.get("prompt", []) if detail else [],
             retrieval_ms=detail.get("retrieval_ms") if detail else None,
             kg_ms=detail.get("kg_ms") if detail else None,
+            rewrite_ms=detail.get("rewrite_ms") if detail else None,
+            rewritten_query=detail.get("rewritten_query") if detail else None,
             gen_params=detail.get("gen_params", {}) if detail else {},
             created_at=chat_time,
         ))

@@ -108,6 +108,31 @@ mark.citation-highlight {
   border-bottom-color: #22c55e;
 }
 
+/* 数字方框：回答里出现过的数字，在引用文本里用方框圈出。
+   为什么单独标：数字核对是看引用时最高频的动作（"回答里的 792.27 是不是
+   从这儿抄的"），而表格类引用满屏都是数字，只圈出回答真正用到的那几个，
+   才能一眼对上（算法见 sourceHighlight.computeNumberRanges）。
+   实现要点：
+   - 用 box-shadow 外描边而非 border：不改变元素盒尺寸，密集表格里不会
+     撑开行高/列宽导致错位；
+   - 不设背景色：与 .citation-highlight 的绿色下划线叠加时两者都要看得见，
+     背景色会盖掉下划线；
+   - 颜色用品牌蓝（区别于下划线的绿）：两个标记表达的是两件事——下划线
+     "这段被回答用到了"，方框"这个数字被回答用到了" */
+mark.citation-number,
+.citation-number {
+  background: transparent;
+  color: inherit;
+  font-weight: 500;
+  padding: 0 1px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px var(--brand-primary, #2563eb);
+}
+[data-theme='dark'] mark.citation-number,
+[data-theme='dark'] .citation-number {
+  box-shadow: 0 0 0 1px var(--brand-primary-soft, #60a5fa);
+}
+
 /* 行内引用上标 [n]：醒目但克制——浅色用品牌深色（正文中可辨识），
    暗色用品牌提亮色（暗背景上更亮）；字号 12 + 字重 700（原 11/600 偏小偏浅） */
 .citation-mark {
@@ -119,9 +144,11 @@ mark.citation-highlight {
 
 /* 兜底防"荧光 mark"：antd Tooltip/任意容器内出现未带 .citation-highlight
    类的 <mark>（UA 样式黄底黑字，暗色下刺眼）一律还原为普通文本，
-   高亮只能由 .citation-highlight 提供，杜绝第三方/UA 样式串扰 */
-.ant-tooltip mark:not(.citation-highlight),
-mark:not(.citation-highlight) {
+   高亮只能由 .citation-highlight 提供，杜绝第三方/UA 样式串扰。
+   注意也要排除 .citation-number：两者特异性相同时本规则在文件后方，
+   会把数字方框的 padding 一并吃掉（曾实测到） */
+.ant-tooltip mark:not(.citation-highlight):not(.citation-number),
+mark:not(.citation-highlight):not(.citation-number) {
   background: transparent;
   color: inherit;
   padding: 0;

@@ -41,16 +41,28 @@ _LLM_KEYS = ("base_url", "api_key", "model", "temperature",
 
 
 def llm_to_dict(llm_cfg) -> dict:
-    """LLM 配置对象 → 6 字段 dict（dict 只取 _LLM_KEYS；LLMConfig 用
-    model_dump；其他对象 getattr 兜底——与原 chat_service._llm_to_dict 一致）"""
+    """LLM 配置对象 → 字段 dict（dict 取 _LLM_KEYS + thinking_control；
+    LLMConfig 用 model_dump；其他对象 getattr 兜底）
+
+    thinking_control（模型级思考控制方式）不参与客户端构造，但必须随 dict
+    流到 thinking_strategy 的判据处——部门合并产物走的就是 dict 路径，
+    漏掉它会让策略退回默认值。
+    """
     if isinstance(llm_cfg, dict):
-        return {k: llm_cfg.get(k) for k in _LLM_KEYS}
+        out = {k: llm_cfg.get(k) for k in _LLM_KEYS}
+        if llm_cfg.get("thinking_control"):
+            out["thinking_control"] = llm_cfg["thinking_control"]
+        return out
     if isinstance(llm_cfg, LLMConfig):
         return llm_cfg.model_dump()
     try:
         return llm_cfg.model_dump()  # 其他 pydantic v2 BaseModel
     except AttributeError:
-        return {k: getattr(llm_cfg, k, None) for k in _LLM_KEYS}
+        out = {k: getattr(llm_cfg, k, None) for k in _LLM_KEYS}
+        control = getattr(llm_cfg, "thinking_control", None)
+        if control:
+            out["thinking_control"] = control
+        return out
 
 
 # ---- 可预期失败异常（LLM 链路） ----

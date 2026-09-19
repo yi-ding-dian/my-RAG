@@ -84,6 +84,14 @@ export type ParseLang = 'ch' | 'en';
 export type ThinkingMode = 'disabled' | 'enabled_low' | 'enabled_high' | 'enabled_max';
 
 /**
+ * 思考控制方式（模型级，跟随模型而非服务地址）：
+ * - none    ：不处理——模型本身不思考，或部署端已关闭（如 vLLM 启动参数关了思考）
+ * - prefill ：注入 <think></think> 跳过思考——Qwen 系 + 部署端忽略 API 参数的场景（如 LM Studio）
+ * - api     ：传 thinking 参数——支持该参数的在线 API（DeepSeek 等）
+ */
+export type ThinkingControl = 'none' | 'prefill' | 'api';
+
+/**
  * 解析配置：naive=通用切块 | title=按标题切块 | regex=正则切块 | parent_child=父子分块
  * | hierarchical=层级聚合切块（按章节树自底向上聚合，块边界落在标题之间，块首自带
  * 祖先标题链；仅结构解析 docx_struct 产物可选，参数同 naive：chunk_size/overlap）
@@ -990,6 +998,8 @@ export interface LLMModelItem {
   temperature: number;
   max_tokens: number;
   timeout: number;
+  /** 思考控制方式（模型级；旧数据缺失 = none 不处理） */
+  thinking_control?: ThinkingControl;
 }
 
 /**
@@ -1127,6 +1137,8 @@ export interface ChatConfig {
   thinking_mode?: ThinkingMode;
   /** 单条输入（问题/检索 query）最大长度（字，默认 2000） */
   max_query_len?: number;
+  /** 引用摘要字数（默认 600）：悬停回答里的引用标 [n] 时浮层显示的窗口大小（字） */
+  citation_snippet_chars?: number;
 }
 
 export interface MySQLConfigProfile {
@@ -1263,6 +1275,8 @@ export interface ChatSettingsPayload {
     query_rewrite_rounds?: number;
     /** 思考模式：disabled=关闭思考（默认）| enabled_low/high/max=开启并指定强度 */
     thinking_mode?: ThinkingMode;
+    /** 引用摘要字数（默认 600；引用浮层的窗口大小，见配置档案「聊天设置」） */
+    citation_snippet_chars?: number;
   };
   /** Agentic 检索增强（默认关闭；分档：分数 ≥ recheck 直接答，< abstain 拒答） */
   agentic?: {

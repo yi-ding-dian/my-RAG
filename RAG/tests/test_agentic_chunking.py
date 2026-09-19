@@ -97,15 +97,35 @@ def _patch_agentic_client(monkeypatch, fake: _FakeAgenticClient):
 
 
 def _patch_active_llm_online(monkeypatch):
-    """激活 LLM 配置改为在线 base_url（DeepSeek 路径：ExtraBody 策略生效）"""
+    """激活 LLM 配置改为在线 base_url + thinking_control="api"
+
+    （DeepSeek 路径：ExtraBody 策略生效，extra_body 透传 thinking 参数）
+    """
     from backend.config import LLMConfig
     online = SimpleNamespace(
         llm=LLMConfig(base_url="https://api.deepseek.com/v1",
                       api_key="test-key", model="deepseek-chat",
-                      temperature=0.3, max_tokens=8192, timeout=60.0))
+                      temperature=0.3, max_tokens=8192, timeout=60.0,
+                      thinking_control="api"))
     monkeypatch.setattr(
         "backend.services.agentic_chunker.get_active_config",
         lambda: online)
+
+
+def _patch_active_llm_prefill(monkeypatch):
+    """激活 LLM 配置改为本地 Qwen 系 + thinking_control="prefill"
+
+    （LM Studio 路径：disabled 时注入空 <think> 跳过思考）
+    """
+    from backend.config import LLMConfig
+    local = SimpleNamespace(
+        llm=LLMConfig(base_url="http://127.0.0.1:1234/v1",
+                      api_key="test-key", model="qwen3-30b-a3b",
+                      temperature=0.3, max_tokens=8192, timeout=60.0,
+                      thinking_control="prefill"))
+    monkeypatch.setattr(
+        "backend.services.agentic_chunker.get_active_config",
+        lambda: local)
 
 
 def _patch_rec_embedding(monkeypatch):
@@ -409,7 +429,7 @@ class TestAgenticChunk:
         assert len(chunks) == 3  # 未抛 AgenticChunkError，正常切块
 
     def test_online_strategy_injects_extra_body(self, monkeypatch):
-        """在线模型（DeepSeek）：thinking disabled → extra_body 关闭思考"""
+        """模型配 api 方式（DeepSeek）：thinking disabled → extra_body 关闭思考"""
         _patch_active_llm_online(monkeypatch)
         fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         asyncio.run(agentic_chunk(_AGENTIC_DOC, {"thinking_mode": "disabled"}))
@@ -420,14 +440,34 @@ class TestAgenticChunk:
         assert not any(m.get("continue_assistant_turn") for m in messages)
 
     def test_local_qwen_prefill_injected(self, monkeypatch):
-        """本地模型（默认测试 base_url=127.0.0.1:59999，内网）：
+        """模型配 prefill 方式（LM Studio + Qwen 系）：
         thinking disabled → messages 末尾注入空 <think> prefill"""
+        _patch_active_llm_prefill(monkeypatch)
         fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         asyncio.run(agentic_chunk(_AGENTIC_DOC, {"thinking_mode": "disabled"}))
         messages = fake.last_kwargs["messages"]
         assert messages[-1] == {
             "role": "assistant", "content": "<think>\n\n</think>",
             "continue_assistant_turn": True}
+
+    def test_none_control_leaves_request_untouched(self, monkeypatch):
+        """模型配 none（部署端已关思考，如 vLLM）→ 请求原样发出：
+        不注入 prefill、extra_body 为空（不改请求）"""
+        from backend.config import LLMConfig
+        none_cfg = SimpleNamespace(
+            llm=LLMConfig(base_url="http://192.168.0.11:8000/v1",
+                          api_key="test-key", model="qwen3.5-9b",
+                          temperature=0.3, max_tokens=8192, timeout=60.0,
+                          thinking_control="none"))
+        monkeypatch.setattr(
+            "backend.services.agentic_chunker.get_active_config",
+            lambda: none_cfg)
+        fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
+        asyncio.run(agentic_chunk(_AGENTIC_DOC, {"thinking_mode": "disabled"}))
+        kwargs = fake.last_kwargs
+        assert not any(m.get("continue_assistant_turn")
+                       for m in kwargs["messages"]), "none 不注入 prefill"
+        assert not kwargs.get("extra_body"), "none 不带 extra_body 内容"
 
 
 class TestParseResponse:

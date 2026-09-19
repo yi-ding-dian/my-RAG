@@ -138,12 +138,13 @@ class TestWhitelistFromSchema:
         assert set(ss.CHAT_FIELD_NAMES) == {
             "temperature", "top_p", "max_tokens", "enable_multi_turn",
             "history_rounds", "system_prompt", "kg_enhance",
-            "query_rewrite", "query_rewrite_rounds", "thinking_mode"}
+            "query_rewrite", "query_rewrite_rounds", "thinking_mode",
+            "citation_snippet_chars"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
         assert set(ss.LLM_FIELD_NAMES) == {
             "base_url", "api_key", "model", "temperature",
-            "max_tokens", "timeout"}
+            "max_tokens", "timeout", "thinking_control"}
         # 白名单字段必在 schema 且 whitelist=True（无手写漂移）
         for fname in ss.CHAT_FIELD_NAMES:
             assert SECTION_SCHEMA["chat"].fields[fname].whitelist
@@ -203,6 +204,8 @@ class TestCoerceBehavior:
                                "thinking_mode": "disabled",
                                "query_rewrite": True,
                                "query_rewrite_rounds": 3,
+                               "citation_snippet_chars":
+                                   build_default_config().chat.citation_snippet_chars,
                                "max_query_len": 2000}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()

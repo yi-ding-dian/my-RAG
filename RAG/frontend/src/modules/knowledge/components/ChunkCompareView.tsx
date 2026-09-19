@@ -11,6 +11,7 @@ import { toDocHeadings, type DocHeading } from '../../../shared/utils/docHeading
 import type { ApiHeading } from '../../../shared/api/types';
 import {
   computeHighlightRanges,
+  computeNumberRanges,
   splitByHighlights,
   type HighlightRange,
 } from '../../../shared/utils/sourceHighlight';
@@ -355,12 +356,15 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   // 左栏当前页切块的展示文本（安全截断，截断点避开图片引用）+ 回答-对齐高亮区间
   // （坐标相对截断后的展示文本；无回答文本/无命中为空数组）
   const chunkDispByIndex = useMemo(() => {
-    const map = new Map<number, { text: string; highlights: HighlightRange[] }>();
+    const map = new Map<number, {
+      text: string; highlights: HighlightRange[]; numbers: HighlightRange[];
+    }>();
     for (const c of pageChunks) {
       const disp = c.text ? safeTruncateWithImages(c.text, MAX_TEXT_LEN) : '';
       map.set(c.index, {
         text: disp,
         highlights: answerText && disp ? computeHighlightRanges(answerText, disp) : [],
+        numbers: answerText && disp ? computeNumberRanges(answerText, disp) : [],
       });
     }
     return map;
@@ -369,6 +373,13 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   // 右栏全文的回答-对齐高亮区间（坐标相对 fullText；对全文一次性计算，各段换算后叠加渲染）
   const answerRanges = useMemo(
     () => (answerText && fullText ? computeHighlightRanges(answerText, fullText) : []),
+    [answerText, fullText],
+  );
+
+  // 右栏全文的"回答里出现过的数字"区间（与 answerRanges 同坐标）：渲染成方框，
+  // 便于快速核对回答里的数值是否出自该块
+  const answerNumbers = useMemo(
+    () => (answerText && fullText ? computeNumberRanges(answerText, fullText) : []),
     [answerText, fullText],
   );
 
@@ -750,21 +761,24 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
     // 换算后切分，命中部分包 .citation-highlight（与引用面板同款样式）。无区间/无命中原样返回。
     const renderAnswerPiece = (piece: string, baseInFull: number): React.ReactNode[] => {
       if (!piece) return [];
-      if (answerRanges.length === 0) {
+      if (answerRanges.length === 0 && answerNumbers.length === 0) {
         return [<React.Fragment key={`t${n++}`}>{piece}</React.Fragment>];
       }
       const rel = answerRanges.map(
         ([s, e]) => [s - baseInFull, e - baseInFull] as HighlightRange,
       );
-      return splitByHighlights(piece, rel).map(seg =>
-        seg.highlighted ? (
-          <mark key={`ah${n++}`} className="citation-highlight">
-            {seg.text}
-          </mark>
-        ) : (
-          <React.Fragment key={`at${n++}`}>{seg.text}</React.Fragment>
-        ),
+      const relNums = answerNumbers.map(
+        ([s, e]) => [s - baseInFull, e - baseInFull] as HighlightRange,
       );
+      return splitByHighlights(piece, rel, relNums).map(seg => {
+        const cls = [
+          seg.highlighted ? 'citation-highlight' : '',
+          seg.isNumber ? 'citation-number' : '',
+        ].filter(Boolean).join(' ');
+        return cls
+          ? <mark key={`ah${n++}`} className={cls}>{seg.text}</mark>
+          : <React.Fragment key={`at${n++}`}>{seg.text}</React.Fragment>;
+      });
     };
     // 文本区间（不含图片引用）：搜索匹配包 <mark>（当前匹配主色底白字，其余浅色底），
     // 匹配之外的正文叠加回答-对齐高亮（搜索高亮优先，重叠处不嵌套 mark）
@@ -1109,6 +1123,11 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
                             expandedIdx.has(c.index)
                               ? (c.text && answerText ? computeHighlightRanges(answerText, c.text) : [])
                               : (chunkDispByIndex.get(c.index)?.highlights ?? [])
+                          }
+                          numbers={
+                            expandedIdx.has(c.index)
+                              ? (c.text && answerText ? computeNumberRanges(answerText, c.text) : [])
+                              : (chunkDispByIndex.get(c.index)?.numbers ?? [])
                           }
                         />
                       </Text>

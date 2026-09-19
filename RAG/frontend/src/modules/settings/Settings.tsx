@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import AppModal from '../../shared/components/common/AppModal';
 import {
-  App as AntApp,  Card,  Form,  Input,  InputNumber,  Button,  Typography,  Space, 
-  Row,  Col,  Skeleton,  Tag,  Alert,  Popconfirm,  Tooltip,  Collapse, 
-  theme} from 'antd';
+  App as AntApp,  Card,  Form,  Input,  InputNumber,  Button,  Typography,  Space,
+  Row,  Col,  Skeleton,  Tag,  Alert,  Popconfirm,  Tooltip,  Collapse,
+  Select, theme} from 'antd';
 import {
   CheckCircleFilled, CloseCircleFilled, LoadingOutlined,
   PlusOutlined, DeleteOutlined, CheckOutlined, EditOutlined,
-  ThunderboltOutlined,
+  ThunderboltOutlined, QuestionCircleOutlined,
 } from '@ant-design/icons';
 import {
   asApiError,
@@ -17,7 +17,7 @@ import {
   getLlmModelList,
   ServiceProfile, ServiceProfileInput, LLMModelItem,
 } from '../../shared/api/client';
-import type { Department, ParserLlmModelItem, VisionModelItem } from '../../shared/api/types';
+import type { Department, ParserLlmModelItem, ThinkingControl, VisionModelItem } from '../../shared/api/types';
 import { listDepartments } from '../../shared/api/auth';
 import { getDeptConfigView } from '../../shared/api/settings';
 import { useAuth } from '../../shared/auth/AuthContext';
@@ -28,6 +28,7 @@ import {
 } from './shared';
 import type { ProfileFormValues, SectionKey, TestItem } from './shared';
 import ArPanel from './ArPanel';
+import ChatPanel from './ChatPanel';
 import RetrievalPanel from './RetrievalPanel';
 import IngestPanel from './IngestPanel';
 import LlmPanel from './LlmPanel';
@@ -217,10 +218,13 @@ const SettingsPage: React.FC = () => {
         model_api_key: m.api_key, model_model: m.model,
         model_temperature: m.temperature, model_max_tokens: m.max_tokens,
         model_timeout: m.timeout,
+        // 旧数据无该字段 → 回填 none（与后端默认一致）
+        model_thinking_control: m.thinking_control ?? 'none',
       });
     } else {
       modelForm.setFieldsValue({
         model_temperature: 0.3, model_max_tokens: 4096, model_timeout: 120,
+        model_thinking_control: 'none',
       });
     }
     setModelModalOpen(true);
@@ -236,6 +240,7 @@ const SettingsPage: React.FC = () => {
       temperature: v.model_temperature ?? 0.3,
       max_tokens: v.model_max_tokens ?? 4096,
       timeout: v.model_timeout ?? 120,
+      thinking_control: (v.model_thinking_control ?? 'none') as ThinkingControl,
     };
     setLlmModels(prev => {
       const next = [...prev];
@@ -408,6 +413,7 @@ const SettingsPage: React.FC = () => {
       ingestion_kb_doc_limit: 0,
       ingestion_max_upload_mb: 100,
       chat_max_query_len: 2000,
+      chat_citation_snippet_chars: 600,
       // MySQL / MinIO 预填后端默认值（密码类留空，保存时后端用默认或保持原值）
       mysql_host: '127.0.0.1', mysql_port: 5455, mysql_user: 'ragflow',
       mysql_database: 'my_rag',
@@ -940,6 +946,11 @@ const SettingsPage: React.FC = () => {
               },
               { key: 'ingest', label: '入库与限制', children: <IngestPanel /> },
               {
+                key: 'chat',
+                label: panelLabel('chat', '聊天设置'),
+                children: <ChatPanel />,
+              },
+              {
                 key: 'llm',
                 label: panelLabel('llm', 'LLM 对话模型（多模型管理）'),
                 children: (
@@ -1006,6 +1017,10 @@ const SettingsPage: React.FC = () => {
       {/* 模型添加/编辑弹窗（LLM 多模型管理） */}
       <AppModal
         dimension="auto"
+        // 锁定型：内容就绪后定住高度，不再跟着内容变——表单里换行/滚动条出现
+        // 会改变内容高度，若继续跟随就形成"测高→出滚动条→换行变高→再测"的
+        // 振荡（表现为弹窗抽搐）。内容固定，直接锁。
+        autoLock
         defaultSize={{ w: 600, h: 460 }}
         rememberKey="settings-2"
         title={modelEditIdx !== null
@@ -1060,18 +1075,136 @@ const SettingsPage: React.FC = () => {
           </Row>
           <Row gutter={12}>
             <Col span={8}>
-              <Form.Item name="model_temperature" label="Temperature">
+              <Form.Item
+                name="model_temperature"
+                label={
+                  <Space size={4}>
+                    Temperature
+                    <Tooltip
+                      overlayStyle={{ maxWidth: 380 }}
+                      title={
+                        <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                          控制回答的随机性（0~2）：越低越稳定、可复现，
+                          越高越发散、越有创造性。
+                          <div style={{ marginTop: 6 }}>
+                            知识库问答要忠实复述原文，建议 0.1~0.3；
+                            设太高模型容易改写甚至编造引用里没有的内容。
+                          </div>
+                        </div>
+                      }
+                    >
+                      <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
                 <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="model_max_tokens" label="Max Tokens">
+              <Form.Item
+                name="model_max_tokens"
+                label={
+                  <Space size={4}>
+                    Max Tokens
+                    <Tooltip
+                      overlayStyle={{ maxWidth: 380 }}
+                      title={
+                        <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                          单次回答最多生成的 token 数——这是
+                          <b>输出上限</b>，不是输入限制（输入多长由检索到的
+                          引用决定，不在这里设）。
+                          <div style={{ marginTop: 6 }}>
+                            它与输入共同占用模型的上下文窗口：
+                            <div style={{ marginTop: 2 }}>
+                              输入 + Max Tokens ≤ 窗口长度
+                            </div>
+                            设得过大（尤其接近窗口长度）会在调用前被模型服务
+                            直接拒绝，报"maximum context length"错误。
+                          </div>
+                          <div style={{ marginTop: 6 }}>
+                            按期望的最长回答留 1.5 倍余量即可，
+                            典型值 2048~4096。
+                          </div>
+                        </div>
+                      }
+                    >
+                      <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
                 <InputNumber min={64} max={32768} step={128} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="model_timeout" label="超时（秒）">
+              <Form.Item
+                name="model_timeout"
+                label={
+                  <Space size={4}>
+                    超时（秒）
+                    <Tooltip
+                      overlayStyle={{ maxWidth: 380 }}
+                      title={
+                        <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                          等待模型返回的最长时间，超过即本次问答失败。
+                          <div style={{ marginTop: 6 }}>
+                            本地大模型首字延迟高（参数大、或开启思考时更明显），
+                            建议按实测调整：设太小会频繁超时，
+                            设太大则真卡住时要白等很久。
+                          </div>
+                        </div>
+                      }
+                    >
+                      <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
                 <InputNumber min={1} max={600} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={12}>
+            <Col span={24}>
+              <Form.Item
+                name="model_thinking_control"
+                label={
+                  <Space size={4}>
+                    思考控制方式
+                    <Tooltip
+                      overlayStyle={{ maxWidth: 420 }}
+                      title={
+                        <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                          <div>
+                            非思考模型指的是：模型本身不支持思考，或者支持思考但部署端
+                            已经关闭（如 vLLM 启动服务时指定关闭思考）——这类模型选
+                            「不处理」，系统不会再做任何事。
+                          </div>
+                          <div style={{ marginTop: 6 }}>
+                            模型自带思考、且部署端关不掉（如 LM Studio 上的 Qwen 思考
+                            模型）→ 选「注入 &lt;think&gt; 跳过思考」；
+                            在线 API 且支持 thinking 参数（DeepSeek 等）→ 选「传 thinking 参数」。
+                          </div>
+                          <div style={{ marginTop: 6 }}>
+                            选错的影响：给不思考的模型注入 prefill，会把回答压短、
+                            图片标签被省略。
+                          </div>
+                        </div>
+                      }
+                    >
+                      <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <Select
+                  options={[
+                    { value: 'none', label: '不处理（模型不思考，或部署端已关闭）' },
+                    { value: 'prefill', label: '注入 <think></think> 跳过思考（Qwen 系 + LM Studio 等本地部署）' },
+                    { value: 'api', label: '传 thinking 参数（DeepSeek 等在线 API）' },
+                  ]}
+                />
               </Form.Item>
             </Col>
           </Row>

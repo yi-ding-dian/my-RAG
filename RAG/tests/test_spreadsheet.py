@@ -15,7 +15,8 @@ import datetime
 import pytest
 
 from backend.services.parsers import client as parser_client
-from backend.services.spreadsheet.reader import (Sheet, fill_merged,
+from backend.services.spreadsheet.reader import (Sheet, build_merged_ranges,
+                                                 fill_merged,
                                                  is_spreadsheet_ext, pad_rows,
                                                  read_spreadsheet,
                                                  render_sheet_pipe,
@@ -39,6 +40,22 @@ def test_fill_merged_malformed_range_skipped():
     rows = [["A", "x"]]
     fill_merged(rows, [(-1, 0, 0, 0)])  # 越界坐标不崩溃
     assert rows == [["A", "x"]]
+
+
+def test_build_merged_ranges_remaps_after_blank_skip():
+    """跳空行后合并坐标按映射折算（不能直接按原始行号填）"""
+    # rows 索引 → 原始行号：0→1, 1→2, 2→3, 3→7（原始 4~6 行是空行被跳过）
+    row_numbers = [1, 2, 3, 7]
+    # 合并 A2:A6（原始 1 基闭区间 2..6）→ 只覆盖 rows[1..2]，不得碰 rows[3]
+    assert build_merged_ranges(row_numbers, [(2, 0, 6, 0)]) == [(1, 0, 2, 0)]
+    # 区域整片落在被跳过的行上 → 丢弃（无值可填）
+    assert build_merged_ranges(row_numbers, [(4, 0, 6, 0)]) == []
+    # 空行表 → 丢弃
+    assert build_merged_ranges([], [(2, 0, 6, 0)]) == []
+    # 未跳空行（连续）时与"直接减 1"的旧语义一致
+    assert build_merged_ranges([1, 2, 3], [(1, 0, 3, 0)]) == [(0, 0, 2, 0)]
+    # 列号原样透传（本函数只折算行）
+    assert build_merged_ranges([1, 2], [(1, 4, 2, 7)]) == [(0, 4, 1, 7)]
 
 
 def test_pad_rows_equal_width():
@@ -154,6 +171,41 @@ def test_read_xlsx_multi_sheet_merge_date(tmp_path):
     assert sheets[2].rows[1][0] == "3"
 
 
+def test_read_xlsx_merged_across_blank_rows_keeps_data_below(tmp_path):
+    """回归：纵向合并区域跨空行时，区域**下方**的数据行不被合并值覆盖
+
+    起因（真实案例）：「花花的旅游计划.xlsx」丽江表 J2:J18 跨着 16~18 三行
+    空行，读取器跳过空行后 rows 索引前移 3 位，而合并坐标仍按原始行号填 ——
+    rows[15]（实际是 Excel 第 19 行合计行）落在填充范围 1..17 内，于是
+    792.27 被合并值"丽江总支出"覆盖（K 列 6225.15、A 列标签同因丢失）。
+    同文件桂林表正常，是因其合并区域 J1:J16 不含空行。
+    """
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "跨空行"
+    ws.append(["明细", "金额", "标签"])         # 第 1 行
+    ws.append(["支出", 100, "丽江总支出"])       # 第 2 行（合并起点）
+    ws.append(["支出", 200, None])              # 第 3 行
+    ws.append([None, None, None])               # 第 4~6 行：空行
+    ws.append([None, None, None])
+    ws.append([None, None, None])
+    ws.append(["总支出（元）", 300, "真值"])     # 第 7 行（合并区域下方）
+    ws.merge_cells("A2:A6")                     # 纵向合并且跨空行
+    ws.merge_cells("C2:C6")
+    p = tmp_path / "blank_merge.xlsx"
+    wb.save(p)
+
+    rows = read_spreadsheet(p)[0].rows
+    assert [r[0] for r in rows] == ["明细", "支出", "支出", "总支出（元）"]
+    # 合并区域内照常重复填充
+    assert rows[1][2] == "丽江总支出" and rows[2][2] == "丽江总支出"
+    # 合并区域下方：原值必须保住（修复前会被覆盖成"支出"/"丽江总支出"）
+    assert rows[3][0] == "总支出（元）"
+    assert rows[3][1] == "300"
+    assert rows[3][2] == "真值"
+
+
 # ------------------- csv -------------------
 
 
@@ -206,6 +258,32 @@ def test_read_xls_basic(tmp_path):
     assert sheets[0].name == "Sheet1"
     assert sheets[0].rows[1] == ["A", "123"]    # 整数浮点去小数点
     assert sheets[0].rows[2] == ["B", "45.5"]
+
+
+def test_read_xls_merged_across_blank_rows_keeps_data_below(tmp_path):
+    """回归（xls 与 xlsx 同因同修）：合并区域跨空行时，区域下方数据不被覆盖"""
+    import xlwt
+    wb = xlwt.Workbook()
+    sh = wb.add_sheet("跨空行")
+    sh.write(0, 0, "明细")
+    sh.write(0, 1, "金额")
+    sh.write(0, 2, "标签")
+    sh.write_merge(1, 5, 0, 0, "支出")          # A2:A6（0 基闭区间 1..5）跨空行
+    sh.write_merge(1, 5, 2, 2, "丽江总支出")     # C2:C6
+    sh.write(1, 1, 100)
+    sh.write(2, 1, 200)
+    # 第 3~5 行（0 基）留空 → 读取时被跳过
+    sh.write(6, 0, "总支出（元）")
+    sh.write(6, 1, 300)
+    sh.write(6, 2, "真值")
+    p = tmp_path / "blank_merge.xls"
+    wb.save(str(p))
+
+    rows = read_spreadsheet(p)[0].rows
+    assert [r[0] for r in rows] == ["明细", "支出", "支出", "总支出（元）"]
+    assert rows[1][2] == "丽江总支出" and rows[2][2] == "丽江总支出"
+    assert rows[3][1] == "300", "合并区域下方的值不能被覆盖"
+    assert rows[3][2] == "真值"
 
 
 # ------------------- parsers.client 集成（asyncio.run 同步包装，项目惯例） -------------------

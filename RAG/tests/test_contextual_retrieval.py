@@ -76,18 +76,18 @@ def _patch_ctx_client(monkeypatch, fake: _FakeContextClient):
 
 
 def _patch_active_llm_online(monkeypatch):
-    """激活 LLM 配置改为在线 base_url（DeepSeek 路径：ExtraBody 策略生效）
+    """激活 LLM 配置改为在线 base_url + thinking_control="api"
 
-    测试默认激活配置 base_url=http://127.0.0.1:1234（本地 LM Studio）→
-    thinking disabled 时思考关闭走 QwenPrefill（messages 注入 prefill、
-    无 extra_body）；本 helper 用于需要断言"在线 DeepSeek 行为不变"
-    （extra_body 透传）的用例。
+    （DeepSeek 路径：ExtraBody 策略生效，extra_body 透传 thinking 参数）
+    测试默认激活配置未配 thinking_control（默认 none → 不改请求）；
+    本 helper 用于需要断言"在线 DeepSeek 行为"（extra_body 透传）的用例。
     """
     from backend.config import LLMConfig
     online = SimpleNamespace(
         llm=LLMConfig(base_url="https://api.deepseek.com/v1",
                       api_key="test-key", model="deepseek-chat",
-                      temperature=0.3, max_tokens=8192, timeout=60.0),
+                      temperature=0.3, max_tokens=8192, timeout=60.0,
+                      thinking_control="api"),
         # 完整文档阈值段（enrich_chunks 每次调用实时读取）
         contextual_retrieval=SimpleNamespace(max_full_doc_chars=20000))
     monkeypatch.setattr(
@@ -220,9 +220,9 @@ class TestEnrichChunks:
         assert fake.call_count == 0
 
     def test_thinking_extra_body_default_disabled(self, monkeypatch):
-        """cfg 不带 thinking_mode → 在线模型（DeepSeek）默认关闭思考
-        extra_body 透传（摘要提速；本地 LM Studio 走 QwenPrefill prefill
-        注入，见 test_thinking_strategy）"""
+        """cfg 不带 thinking_mode → 模型配 api 方式（DeepSeek）时默认关闭
+        思考，extra_body 透传（摘要提速；判据是模型级 thinking_control，
+        见 test_thinking_strategy）"""
         _patch_active_llm_online(monkeypatch)
         fake = _patch_ctx_client(monkeypatch, _FakeContextClient())
         result = asyncio.run(enrich_chunks(
@@ -233,6 +233,7 @@ class TestEnrichChunks:
 
     def test_thinking_extra_body_enabled_low(self, monkeypatch):
         """cfg.thinking_mode=enabled_low → thinking.enabled + reasoning_effort=low"""
+        _patch_active_llm_online(monkeypatch)
         fake = _patch_ctx_client(monkeypatch, _FakeContextClient())
         result = asyncio.run(enrich_chunks(
             _mk_chunks(["片段"]), _SAMPLE_DOC,

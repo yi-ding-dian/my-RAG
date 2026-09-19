@@ -101,18 +101,19 @@ def _patch_kg_client(monkeypatch, fake: _FakeExtractionClient) -> _FakeExtractio
 
 
 def _patch_active_llm_online(monkeypatch):
-    """激活 LLM 配置改为在线 base_url（DeepSeek 路径：ExtraBody 策略生效）
+    """激活 LLM 配置改为在线 base_url + thinking_control="api"
 
-    测试默认激活配置 base_url=http://127.0.0.1:1234（本地 LM Studio）→
-    thinking disabled 时思考关闭走 QwenPrefill（messages 注入 prefill、
-    无 extra_body）；本 helper 用于需要断言"在线 DeepSeek 行为不变"
-    （extra_body 透传）的用例。
+    （DeepSeek 路径：ExtraBody 策略生效，extra_body 透传 thinking 参数）
+    测试默认激活配置 base_url=http://127.0.0.1:1234 且未配 thinking_control
+    （默认 none → 不改请求）；本 helper 用于需要断言"在线 DeepSeek
+    行为"（extra_body 透传）的用例。
     """
     from backend.config import LLMConfig
     online = SimpleNamespace(
         llm=LLMConfig(base_url="https://api.deepseek.com/v1",
                       api_key="test-key", model="deepseek-chat",
-                      temperature=0.3, max_tokens=8192, timeout=60.0))
+                      temperature=0.3, max_tokens=8192, timeout=60.0,
+                      thinking_control="api"))
     monkeypatch.setattr(
         "backend.services.knowledge_graph_service.get_active_config",
         lambda: online)
@@ -543,9 +544,9 @@ class TestBuildGraphForDoc:
         assert fake.call_count == 1
 
     def test_thinking_extra_body_default_disabled(self, monkeypatch):
-        """cfg 不带 thinking_mode → 在线模型（DeepSeek）默认关闭思考
-        extra_body 透传（本地 LM Studio 走 QwenPrefill prefill 注入，见
-        test_thinking_strategy）"""
+        """cfg 不带 thinking_mode → 模型配了 api 方式（DeepSeek）时默认
+        关闭思考，extra_body 透传（判据是模型级 thinking_control，
+        见 test_thinking_strategy）"""
         _patch_active_llm_online(monkeypatch)
         fake = _patch_kg_client(monkeypatch, _FakeExtractionClient())
         asyncio.run(build_graph_for_doc(
@@ -557,6 +558,7 @@ class TestBuildGraphForDoc:
 
     def test_thinking_extra_body_enabled_high(self, monkeypatch):
         """cfg.thinking_mode=enabled_high → thinking.enabled + reasoning_effort=high"""
+        _patch_active_llm_online(monkeypatch)
         fake = _patch_kg_client(monkeypatch, _FakeExtractionClient())
         asyncio.run(build_graph_for_doc(
             "kb1", "d1", "测试.txt", _mk_chunks(["Python 开发"]),
@@ -738,8 +740,13 @@ class TestIngestGraph:
     def test_thinking_mode_passthrough_ingest(
             self, client, monkeypatch, admin_headers):
         """入库传 thinking_mode=enabled_max → 抽取调用 extra_body 全部带
-        reasoning_effort=max，且持久化"""
+        reasoning_effort=max，且持久化（模型需配 thinking_control=api 才会
+        透传 extra_body——none 表示部署端已关思考，系统不改请求）"""
         _patch_rec_embedding(monkeypatch)
+        resp = client.post("/api/settings/chat",
+                           json={"llm": {"thinking_control": "api"}},
+                           headers=admin_headers)
+        assert resp.status_code == 200, resp.text
         fake = _patch_kg_client(monkeypatch, _FakeExtractionClient())
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"], filename="图谱测试.txt",
@@ -1213,8 +1220,8 @@ class TestExtractQueryEntities:
         assert fake.call_count == 1
 
     def test_thinking_disabled_extra_body(self, monkeypatch):
-        """在线模型（DeepSeek）：查询实体抽取固定关闭思考 extra_body 透传
-        （本地 LM Studio 走 QwenPrefill prefill 注入，见 test_thinking_strategy）"""
+        """模型配 api 方式（DeepSeek）：查询实体抽取固定关闭思考 extra_body
+        透传（判据是模型级 thinking_control，见 test_thinking_strategy）"""
         _patch_active_llm_online(monkeypatch)
         fake = _FakeQueryEntitiesClient()
         monkeypatch.setattr("backend.services.knowledge_graph_service."

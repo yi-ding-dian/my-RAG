@@ -241,6 +241,10 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             "temperature": {"condition": "not_none", "whitelist": True},
             "max_tokens": {"condition": "truthy", "whitelist": True},
             "timeout": {"condition": "not_none", "whitelist": True},
+            # 思考控制方式（none/prefill/api）：跟模型走——部门覆盖了模型，
+            # 也要能一并覆盖它，否则部门换模型后会沿用全局的控制方式
+            "thinking_control": {"strip": True, "condition": "not_none",
+                                 "whitelist": True},
         },
         pass_null=True),
     # Embedding：档案含 dimension（固定 1024，非 dataclass 字段），
@@ -362,6 +366,10 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             # 查询改写用的历史轮数（1~10 轮；部门可覆盖）
             "query_rewrite_rounds": {"condition": "not_none", "whitelist": True,
                                      "fill_missing": True, "range": (1, 10)},
+            # 引用摘要字数（前端引用浮层的窗口大小，默认 600；部门可覆盖）
+            "citation_snippet_chars": {"condition": "truthy", "whitelist": True,
+                                       "fill_missing": True,
+                                       "range": (100, 2000)},
             "max_query_len": {"fill_missing": True, "range": (100, 20000)},
             # 思考模式（聊天问答）：disabled=关闭思考（默认）| enabled_low/
             # enabled_high/enabled_max=开启并指定强度。部门可覆盖（whitelist），

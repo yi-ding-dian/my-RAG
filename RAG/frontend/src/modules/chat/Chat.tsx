@@ -16,6 +16,7 @@ import {
   deleteSession,
   exportSession,
   getSession,
+  getChatSettings,
   listKbs,
   listSessions,
   renameSession,
@@ -58,6 +59,20 @@ const ChatPage: React.FC = () => {
 
   const [topK, setTopK] = useState(5);
   const [streaming, setStreaming] = useState(false);
+  /** 引用摘要窗口大小（字）：配置档案「聊天设置 → 引用设置」，取不到时用默认 600 */
+  const [citationSnippetChars, setCitationSnippetChars] = useState<number | undefined>();
+
+  // 拉一次生效的聊天配置（接口返回「全局档案 + 部门覆盖」合并值）：
+  // 只取引用摘要字数，用于回答里引用标 [n] 的悬浮浮层窗口大小。
+  // 失败静默降级为前端默认 600 —— 展示偏好，不值得打扰用户或阻塞聊天
+  useEffect(() => {
+    getChatSettings()
+      .then(res => {
+        const n = res.data?.chat?.citation_snippet_chars;
+        if (typeof n === 'number' && n > 0) setCitationSnippetChars(n);
+      })
+      .catch(() => { /* 静默：沿用默认值 */ });
+  }, []);
   // Agentic 决策阶段的进度提示（检索中/改写中/重新检索中；默认空=「正在思考…」）
   const [statusHint, setStatusHint] = useState('');
   const [chatSettingsOpen, setChatSettingsOpen] = useState(false);
@@ -270,10 +285,13 @@ const ChatPage: React.FC = () => {
     });
   }, []);
 
-  // prompt 事件：完整提示词 + 检索/图谱耗时写入最后一条 assistant 消息
-  // （setMessages prev 形式：此时最后一条必为刚 push 的 assistant 消息）
+  // prompt 事件：完整提示词 + 检索/图谱/改写耗时 + 改写后检索词写入最后一条
+  // assistant 消息（setMessages prev 形式：此时最后一条必为刚 push 的 assistant）
+  // rewritten_query/rewrite_ms 必须一并回写：少写这两个字段会让弹窗的
+  // 「改写后检索词」「查询改写耗时」两处渲染恒不执行——明明改写了却看着像没改写
   const handlePrompt = useCallback(
-    (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number }) => {
+    (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number;
+             rewrite_ms?: number; rewritten_query?: string | null }) => {
       setMessages(prev => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -283,6 +301,8 @@ const ChatPage: React.FC = () => {
             prompt: info.prompt,
             retrieval_ms: info.retrieval_ms,
             kg_ms: info.kg_ms,
+            rewrite_ms: info.rewrite_ms,
+            rewritten_query: info.rewritten_query,
           };
         }
         return next;
@@ -643,6 +663,7 @@ const ChatPage: React.FC = () => {
               // 草稿态不传 id：反馈条要的是真实 session_id，哨兵值后端不认
               sessionId={activeSessionId === DRAFT_SESSION_ID ? undefined : activeSessionId}
               kbId={kbId}
+              citationSnippetChars={citationSnippetChars}
               onCitationClick={(s) => {
                 setTraceSource(s);
                 // 记录该引用所属的回答文本（按 source.id 匹配消息，供溯源弹窗原文回答-对齐高亮）

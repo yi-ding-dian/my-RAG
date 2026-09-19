@@ -35,6 +35,12 @@ interface MdImagesProps {
    * 图片标签不受影响（区间计算侧已保证不覆盖图片）。缺省/空数组行为与原先完全一致。
    */
   highlights?: HighlightRange[];
+  /**
+   * "回答里出现过的数字"区间（相对 text 原始坐标，可选）：
+   * 段落内命中的数字额外包 .citation-number（方框），便于核对金额等敏感数值。
+   * 与 highlights 相互独立——一段可以同时命中两者。
+   */
+  numbers?: HighlightRange[];
 }
 
 /**
@@ -54,7 +60,7 @@ interface ZoomTarget {
   alt: string;
 }
 
-const MdImages: React.FC<MdImagesProps> = ({ text, maxWidth = '100%', maxHeight, onImageLoad, highlights }) => {
+const MdImages: React.FC<MdImagesProps> = ({ text, maxWidth = '100%', maxHeight, onImageLoad, highlights, numbers }) => {
   // 图片点击放大（方案 A：组件内 state 管理当前放大目标，无全局 Provider/context）：
   // Lightbox 是纯展示组件，state 只存"当前放大哪张图"，条件渲染单个遮罩实例，
   // 关闭即卸载。MdImages 保持纯函数式渲染——流式增量（图片未闭合先文本后补全）
@@ -67,22 +73,24 @@ const MdImages: React.FC<MdImagesProps> = ({ text, maxWidth = '100%', maxHeight,
   // 并发渲染/重入（React 18 并发特性、StrictMode 双调用、热更新）下多实例
   // 交错 exec 会互相改写 lastIndex，导致匹配位置错乱、部分图片随机不显示。
   const re = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  // 普通文本段（图片标签之间）渲染：按高亮区间切分，命中的部分包 .citation-highlight；
-  // highlights 坐标相对整体 text，切分时换算成相对本段（区间落在图片内的部分被 clamp 丢弃）
+  // 普通文本段（图片标签之间）渲染：按高亮/数字区间切分，命中的部分包
+  // .citation-highlight（下划线）/ .citation-number（方框）；
+  // 坐标相对整体 text，切分时换算成相对本段（落在图片内的部分被 clamp 丢弃）
   const renderPlain = (seg: string, offset: number): React.ReactNode[] => {
     const segs = splitByHighlights(
       seg,
       highlights?.map(([s, e]) => [s - offset, e - offset] as HighlightRange),
+      numbers?.map(([s, e]) => [s - offset, e - offset] as HighlightRange),
     );
-    return segs.map((s) =>
-      s.highlighted ? (
-        <mark key={`h${key++}`} className="citation-highlight">
-          {s.text}
-        </mark>
-      ) : (
-        <React.Fragment key={`t${key++}`}>{s.text}</React.Fragment>
-      ),
-    );
+    return segs.map((s) => {
+      const cls = [
+        s.highlighted ? 'citation-highlight' : '',
+        s.isNumber ? 'citation-number' : '',
+      ].filter(Boolean).join(' ');
+      return cls
+        ? <mark key={`h${key++}`} className={cls}>{s.text}</mark>
+        : <React.Fragment key={`t${key++}`}>{s.text}</React.Fragment>;
+    });
   };
   let last = 0;
   let key = 0;

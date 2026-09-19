@@ -28,6 +28,8 @@ GLOBAL_LLM = {
     "temperature": 0.7,
     "max_tokens": 4096,
     "timeout": 60.0,
+    # 思考控制方式跟模型走：部门覆盖模型时也要能一并覆盖它
+    "thinking_control": "api",
 }
 
 
@@ -79,6 +81,24 @@ class TestMergeDepartmentLlm:
         assert merged["base_url"] == "http://x/v1"
         assert merged["api_key"] is None
         assert merged["timeout"] is None
+
+    def test_dept_overrides_thinking_control(self):
+        """部门可覆盖 thinking_control（跟模型走：部门换了模型，思考控制
+        方式也要能一并换，否则会沿用全局模型的设置）"""
+        merged = merge_department_llm(GLOBAL_LLM, {
+            "model": "dept-model", "thinking_control": "prefill",
+        })
+        assert merged["model"] == "dept-model"
+        assert merged["thinking_control"] == "prefill"
+        assert merged["base_url"] == "http://global.example/v1", \
+            "未覆盖字段仍用全局"
+
+    def test_non_whitelist_global_field_passthrough(self):
+        """全局侧的非白名单字段原样透传（不被白名单过滤悄悄丢掉——
+        thinking_control 曾因只认白名单而在合并时丢失，下游退回默认行为）"""
+        merged = merge_department_llm(
+            {**GLOBAL_LLM, "custom_field": "keep-me"}, {})
+        assert merged["custom_field"] == "keep-me"
 
 
 class TestMergeLegacyConfig:

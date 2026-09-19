@@ -67,6 +67,18 @@ const LlmPanel: React.FC<Props> = ({ llmModels, llmActive, llmTestingIdx, openMo
                 {llmActive === i && (
                   <Tag color="blue" icon={<CheckOutlined />}>激活中</Tag>
                 )}
+                {/* 思考控制方式：none（默认）不显示，避免列表噪音；
+                    prefill/api 是"系统会改请求"的标记，值得一眼看到 */}
+                {m.thinking_control === 'prefill' && (
+                  <Tooltip title="系统会在请求末尾注入 <think></think> 跳过思考（适用于 Qwen 系本地部署，如 LM Studio）">
+                    <Tag color="geekblue" style={{ fontSize: 11 }}>注入 prefill 关思考</Tag>
+                  </Tooltip>
+                )}
+                {m.thinking_control === 'api' && (
+                  <Tooltip title="系统会传 thinking 参数关闭思考（适用于 DeepSeek 等支持该参数的在线 API）">
+                    <Tag color="geekblue" style={{ fontSize: 11 }}>API 参数关思考</Tag>
+                  </Tooltip>
+                )}
                 {llmTestingIdx === i && (
                   <Tag icon={<LoadingOutlined spin />} color="processing">测试中</Tag>
                 )}

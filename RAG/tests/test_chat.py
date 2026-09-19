@@ -171,15 +171,17 @@ class TestStream:
 
 
 class TestChatThinkingMode:
-    """聊天思考模式：按服务商注入关闭思考（请求层变换，prompt 事件不受影响）
+    """聊天思考控制：按模型配置的 thinking_control 变换请求层（prompt 事件不受影响）
 
-    - 本地模型（conftest LLM_BASE_URL=127.0.0.1 内网）+ disabled（默认）
-      → 发给 LLM 的 messages 末尾注入空 <think> prefill（LM Studio 忽略
-      extra_body，prefill 是本地实测有效的关闭思考方案）
-    - 在线 API（api.deepseek.com）+ disabled → extra_body thinking disabled
-    - 在线 + enabled_low → extra_body thinking enabled + reasoning_effort low
-      （思考强度仅开启时携带）；本地 + enabled_low → 不注入 prefill
-    - prompt 事件仍为组装后原始 messages（不含 prefill/extra_body）
+    判据是**模型级字段 thinking_control**（2026-09-18 起不再看 base_url
+    是不是内网——旧判据误伤部署端已关思考的模型与内网 API 网关）：
+    - prefill + disabled（默认）→ messages 末尾注入空 <think> prefill
+      （LM Studio 忽略 extra_body，prefill 是本地实测有效的跳过思考方案）
+    - api + disabled → extra_body thinking disabled
+    - api + enabled_low → extra_body thinking enabled + reasoning_effort low
+      （思考强度仅开启时携带）；prefill + enabled_low → 不注入 prefill
+    - none/未配置 → 请求原样发出（模型不思考，或部署端已关闭）
+    - prompt 事件始终为组装后原始 messages（不含 prefill/extra_body）
     """
 
     @staticmethod
@@ -191,16 +193,19 @@ class TestChatThinkingMode:
         assert resp.status_code == 200, resp.text
 
     @staticmethod
-    def _set_llm_base_url(client, admin_headers, base_url: str):
-        resp = client.post("/api/settings/chat", json={
-            "llm": {"base_url": base_url},
-        }, headers=admin_headers)
+    def _set_llm(client, admin_headers, **llm_fields):
+        """设置全局激活模型的字段（base_url / thinking_control 等）"""
+        resp = client.post("/api/settings/chat", json={"llm": llm_fields},
+                           headers=admin_headers)
         assert resp.status_code == 200, resp.text
 
-    def test_local_disabled_injects_prefill(self, client, mock_embedding,
-                                            mock_llm, admin_headers):
-        """本地模型 + 默认 disabled → messages 末尾注入空 <think> prefill；
+    def test_prefill_disabled_injects(self, client, mock_embedding,
+                                      mock_llm, admin_headers):
+        """prefill + 默认 disabled → messages 末尾注入空 <think> prefill；
         prompt 事件仍为原始 messages（不含注入）"""
+        self._set_llm(client, admin_headers,
+                      base_url="http://192.168.0.74:1234/v1",
+                      thinking_control="prefill")
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])
         state = mock_llm()
@@ -213,7 +218,7 @@ class TestChatThinkingMode:
         assert msgs[-1]["role"] == "assistant", "末条应为 prefill 注入消息"
         assert msgs[-1]["content"] == "<think>\n\n</think>"
         assert msgs[-1]["continue_assistant_turn"] is True
-        assert "extra_body" not in kwargs, "本地 prefill 路径不传 extra_body"
+        assert "extra_body" not in kwargs, "prefill 路径不传 extra_body"
         assert kwargs["stream"] is True, "流式参数保留"
         # prompt 事件仍为组装后原始 messages（末条 user，无注入）
         prompt_block = resp.text.split("event: prompt", 1)[1].split("\n\n", 1)[0]
@@ -224,12 +229,31 @@ class TestChatThinkingMode:
                        and m.get("content") == "<think>\n\n</think>"
                        for m in prompt_msgs), "prompt 事件不应含 prefill 消息"
 
-    def test_online_disabled_extra_body(self, client, mock_embedding,
-                                        mock_llm, admin_headers):
-        """在线 API（api.deepseek.com）+ disabled → extra_body
-        {"thinking": {"type": "disabled"}}，messages 不注入"""
-        self._set_llm_base_url(client, admin_headers,
-                               "https://api.deepseek.com/v1")
+    def test_none_no_injection(self, client, mock_embedding,
+                               mock_llm, admin_headers):
+        """thinking_control=none（默认）→ 请求原样发出：不注入 prefill、
+        不传 extra_body（对不思考/部署端已关的模型零打扰，避免回答被压短丢图）"""
+        self._set_llm(client, admin_headers,
+                      base_url="http://192.168.0.11:8000/v1",
+                      thinking_control="none")
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        state = mock_llm()
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        kwargs = state.instances[-1].last_kwargs
+        assert kwargs["messages"][-1]["role"] == "user", "none 不注入 prefill"
+        assert "extra_body" not in kwargs, "none 不传 extra_body"
+
+    def test_api_disabled_extra_body(self, client, mock_embedding,
+                                     mock_llm, admin_headers):
+        """api + disabled → extra_body {"thinking": {"type": "disabled"}}，
+        messages 不注入"""
+        self._set_llm(client, admin_headers,
+                      base_url="https://api.deepseek.com/v1",
+                      thinking_control="api")
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])
         state = mock_llm()
@@ -240,14 +264,15 @@ class TestChatThinkingMode:
         kwargs = state.instances[-1].last_kwargs
         assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
         assert kwargs["messages"][-1]["role"] == "user", \
-            "在线路径不注入 prefill"
+            "api 路径不注入 prefill"
 
-    def test_online_enabled_low_extra_body(self, client, mock_embedding,
-                                           mock_llm, admin_headers):
-        """在线 API + enabled_low → extra_body thinking enabled +
+    def test_api_enabled_low_extra_body(self, client, mock_embedding,
+                                        mock_llm, admin_headers):
+        """api + enabled_low → extra_body thinking enabled +
         reasoning_effort low（思考强度仅开启时携带）"""
-        self._set_llm_base_url(client, admin_headers,
-                               "https://api.deepseek.com/v1")
+        self._set_llm(client, admin_headers,
+                      base_url="https://api.deepseek.com/v1",
+                      thinking_control="api")
         self._set_chat_cfg(client, admin_headers, thinking_mode="enabled_low")
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])
@@ -260,12 +285,15 @@ class TestChatThinkingMode:
         assert kwargs["extra_body"] == {"thinking": {"type": "enabled"},
                                         "reasoning_effort": "low"}
         assert kwargs["messages"][-1]["role"] == "user", \
-            "在线开启思考不注入 prefill"
+            "开启思考不注入 prefill"
 
-    def test_local_enabled_no_prefill(self, client, mock_embedding,
-                                      mock_llm, admin_headers):
-        """本地模型 + enabled_low → 不注入 prefill（保持模型默认思考，
-        本地 LM Studio 无法控制思考强度）"""
+    def test_prefill_enabled_no_injection(self, client, mock_embedding,
+                                          mock_llm, admin_headers):
+        """prefill + enabled_low → 不注入 prefill（保持模型默认思考，
+        注入只用于跳过思考、无法控制思考强度）"""
+        self._set_llm(client, admin_headers,
+                      base_url="http://192.168.0.74:1234/v1",
+                      thinking_control="prefill")
         self._set_chat_cfg(client, admin_headers, thinking_mode="enabled_low")
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])
@@ -276,9 +304,8 @@ class TestChatThinkingMode:
         assert resp.status_code == 200, resp.text
         kwargs = state.instances[-1].last_kwargs
         assert kwargs["messages"][-1]["role"] == "user", \
-            "本地 enabled 不注入 prefill"
-        # 本地 enabled → ExtraBody 请求层语义一致（LM Studio 会忽略，
-        # 保持模型默认思考）
+            "enabled 不注入 prefill"
+        # 请求层语义与在线一致（本地服务会忽略该参数，保持模型默认思考）
         assert kwargs["extra_body"] == {"thinking": {"type": "enabled"},
                                         "reasoning_effort": "low"}
 

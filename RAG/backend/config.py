@@ -164,6 +164,17 @@ class LLMConfig(BaseModel):
     temperature: float
     max_tokens: int
     timeout: float
+    # 思考控制方式（模型级，见 services/thinking_strategy）：
+    #   none    不处理 —— 模型本身不思考，或部署端已关闭（如 vLLM 启动参数
+    #           关了思考）；系统层不再做任何事
+    #   prefill 注入 <think></think> 跳过思考 —— 仅适用于 Qwen 系
+    #           （chat template 含 <think> 结构）且部署端忽略 API 参数的场景
+    #           （如 LM Studio）；对不思考的模型注入会把回答压短、丢图片，
+    #           对 DeepSeek 等模型实测无效
+    #   api     传 thinking 参数（{"thinking":{"type":"disabled"}}）——
+    #           支持该参数的在线 API（DeepSeek 等）
+    # 默认 none（安全）：新加的模型不会被误注入——漏注入只是慢，误注入会伤回答
+    thinking_control: str = "none"
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "LLMConfig":
@@ -174,6 +185,7 @@ class LLMConfig(BaseModel):
         - base_url/api_key/model 缺省或 None → ""（客户端构造语义与裸 dict
           的 .get(key, "") 一致）；temperature/max_tokens/timeout 缺省或
           None/0 → 出厂默认（0.3/4096/60，与历史 `float(x or 60)` 兜底一致）
+        - thinking_control 缺省/空 → "none"（旧配置升级后不误注入）
         - None/空 dict 输入 → 出厂默认（防御脏数据）
         """
         data = data or {}
@@ -184,6 +196,7 @@ class LLMConfig(BaseModel):
             temperature=float(data.get("temperature") or 0.3),
             max_tokens=int(data.get("max_tokens") or 4096),
             timeout=float(data.get("timeout") or 60.0),
+            thinking_control=data.get("thinking_control") or "none",
         )
 
 
@@ -283,6 +296,13 @@ class ChatConfig(BaseModel):
     # 与 history_rounds（喂给 LLM 对话的历史，默认 8）解耦——改写输入按
     # token 计费，轮数越多越贵；范围 1~10 由 settings schema 限制
     query_rewrite_rounds: int = 3
+    # 引用摘要字数（默认 600，部门可覆盖）：鼠标悬停在回答里的引用标 [n] 上时，
+    # 浮层显示的字数上限。**是"窗口大小"而非"从头截断长度"**——回答用到的
+    # 内容常落在块的中后段（表格块的有效数字都在表格下方），前端会先在全量
+    # 文本上定位命中、再围绕命中开窗（见 MessageList 的 buildSnippet），
+    # 从头硬截会让命中整段落在窗口外、浮层里什么也标不出来。
+    # 范围 100~2000 由 settings schema 限制
+    citation_snippet_chars: int = 600
     # 思考模式（聊天问答 LLM 调用）：disabled=关闭思考（默认，更快更省 token）
     # | enabled_low/enabled_high/enabled_max=开启思考并指定强度。注入方式按
     # 服务商区分（见 thinking_strategy）：在线 API（api.deepseek.com 等）经

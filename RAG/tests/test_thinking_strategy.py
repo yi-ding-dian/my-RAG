@@ -1,11 +1,13 @@
-"""思考关闭策略模块（backend/services/thinking_strategy.py）单测
+"""思考策略模块（backend/services/thinking_strategy.py）单测
 
 覆盖：
-- 策略选择 get_thinking_strategy：
-  - 在线 base_url（api.deepseek.com）→ ExtraBody（thinking_mode 任意，原行为）
-  - 本地 base_url（127.0.0.1/localhost/192.168./10./172.16-31.）+
-    disabled → QwenPrefill（本地关闭思考的实测有效方案）
-  - 本地 + enabled_low/high/max → ExtraBody（不注入 prefill，保持默认思考）
+- 策略选择 get_thinking_strategy：**按模型配置的 thinking_control 判断**
+  （2026-09-18 起不再按 base_url 是不是内网）
+  - prefill + disabled → QwenPrefill（注入空 <think> 块跳过思考）
+  - prefill + enabled_low/high/max → ExtraBody（不注入，保持默认思考）
+  - api → ExtraBody（与地址无关，任意 mode）
+  - none / 字段缺失（旧配置）/ 未知脏数据 → Noop（不误注入）
+  - 取值大小写与空白不敏感
   - llm_cfg 异常（None/非 dict/base_url 空）→ Noop 兜底
 - ExtraBody.apply：产物与 build_thinking_extra_body 完全一致
   （disabled/enabled_low/high/max/未知值），且不改动 messages
@@ -22,7 +24,7 @@ from backend.services.thinking_strategy import (
     build_thinking_extra_body, get_thinking_strategy)
 
 # 在线 API 代表（DeepSeek 路径）
-_ONLINE_URL = "https://api.deepseek.com/v1"
+_ONLINE_URLS = ["https://api.deepseek.com/v1"]
 # 本地内网地址（LM Studio 等，各私有段代表）
 _LOCAL_URLS = [
     "http://127.0.0.1:1234/v1",
@@ -37,29 +39,70 @@ _LOCAL_URLS = [
 # ==================== 策略选择 ====================
 
 class TestGetThinkingStrategy:
+    """按模型配置的 thinking_control 选择（**不再按 base_url 是不是内网判断**）
 
-    def test_online_url_always_extra_body(self):
-        """在线 base_url → ExtraBody（thinking_mode 任意，原行为不变）"""
-        for mode in (None, "", "disabled", "enabled_low", "enabled_high",
-                     "enabled_max", "enabled_ultra"):
-            s = get_thinking_strategy({"base_url": _ONLINE_URL,
-                                       "model": "deepseek-chat"}, mode)
-            assert isinstance(s, ExtraBodyStrategy), mode
+    背景（2026-09-18 实测）：旧判据"内网地址即注入 prefill"误伤两类模型——
+    ① 部署端已关思考的非思考模型（vLLM + Qwen3.5-9B：注入后回答 231→131 字、
+    出图 3/3→0/3）；② 内网 DeepSeek 网关（prefill 对它完全无效，思考照跑）。
+    现在判据跟着模型走：none 不处理 / prefill 注入 <think> / api 传参数。
+    """
 
-    @pytest.mark.parametrize("url", _LOCAL_URLS)
-    def test_local_url_disabled_qwen_prefill(self, url):
-        """本地 base_url + disabled → QwenPrefill（prefill 注入跳过思考）"""
-        s = get_thinking_strategy({"base_url": url}, "disabled")
+    def test_prefill_disabled_injects(self):
+        """prefill + disabled → QwenPrefill（LM Studio 上的 Qwen 思考模型）"""
+        s = get_thinking_strategy(
+            {"base_url": "http://192.168.0.74:1234/v1",
+             "thinking_control": "prefill"}, "disabled")
         assert isinstance(s, QwenPrefillStrategy)
 
-    @pytest.mark.parametrize("url", _LOCAL_URLS)
     @pytest.mark.parametrize("mode", ["enabled_low", "enabled_high",
                                       "enabled_max", "enabled"])
-    def test_local_url_enabled_no_prefill(self, url, mode):
-        """本地 base_url + enabled* → ExtraBody（不注入 prefill，
-        本地无法控制思考强度 → 保持模型默认思考）"""
-        s = get_thinking_strategy({"base_url": url}, mode)
+    def test_prefill_enabled_no_injection(self, mode):
+        """prefill + enabled* → ExtraBody（不注入 prefill，保持模型默认思考）"""
+        s = get_thinking_strategy(
+            {"base_url": "http://192.168.0.74:1234/v1",
+             "thinking_control": "prefill"}, mode)
         assert isinstance(s, ExtraBodyStrategy)
+
+    @pytest.mark.parametrize("mode", [None, "", "disabled", "enabled_low",
+                                      "enabled_high", "enabled_max"])
+    @pytest.mark.parametrize("url", _ONLINE_URLS + _LOCAL_URLS)
+    def test_api_always_extra_body(self, url, mode):
+        """api → ExtraBody（DeepSeek 等支持 thinking 参数的 API，与地址无关）"""
+        s = get_thinking_strategy({"base_url": url,
+                                   "thinking_control": "api"}, mode)
+        assert isinstance(s, ExtraBodyStrategy), (url, mode)
+
+    @pytest.mark.parametrize("url", _LOCAL_URLS)
+    def test_none_noop(self, url):
+        """none → Noop 不改请求（模型本身不思考，或部署端已关闭）"""
+        s = get_thinking_strategy({"base_url": url,
+                                   "thinking_control": "none"}, "disabled")
+        assert isinstance(s, NoopStrategy)
+
+    @pytest.mark.parametrize("url", _ONLINE_URLS + _LOCAL_URLS)
+    def test_missing_field_defaults_to_noop(self, url):
+        """旧配置无 thinking_control 字段 → Noop（升级后不误注入；漏注入只是
+        慢，误注入会伤回答——默认取安全侧）"""
+        assert isinstance(get_thinking_strategy({"base_url": url}, "disabled"),
+                          NoopStrategy)
+
+    def test_unknown_value_noop(self):
+        """脏数据（未知取值）→ Noop 兜底（不猜语义）"""
+        for bad in ("whatever", "prefil", "true", "none2", "关闭"):
+            s = get_thinking_strategy({"base_url": "http://127.0.0.1:1234/v1",
+                                       "thinking_control": bad}, "disabled")
+            assert isinstance(s, NoopStrategy), bad
+
+    def test_value_case_insensitive(self):
+        """取值大小写/空白不敏感（手改 JSON 或前端传入可能带格式差异）"""
+        for value in (" PREFILL ", "Prefill"):
+            assert isinstance(get_thinking_strategy(
+                {"base_url": "http://127.0.0.1:1234/v1",
+                 "thinking_control": value}, "disabled"), QwenPrefillStrategy)
+        for value in ("API", " api "):
+            assert isinstance(get_thinking_strategy(
+                {"base_url": "http://127.0.0.1:1234/v1",
+                 "thinking_control": value}, "disabled"), ExtraBodyStrategy)
 
     def test_noop_fallback(self):
         """llm_cfg 无法判断服务商 → Noop 兜底（不改请求）"""

@@ -21,7 +21,7 @@ import { useAuth } from '../../../shared/auth/AuthContext';
 import MdImages from '../../../shared/components/common/MdImages';
 import RequestDetailModal from '../../../shared/components/common/RequestDetailModal';
 import SourcePanel from './SourcePanel';
-import { computeHighlightRanges, splitByHighlights } from '../../../shared/utils/sourceHighlight';
+import { buildSnippet, computeHighlightRanges, computeNumberRanges, splitByHighlights } from '../../../shared/utils/sourceHighlight';
 import { cleanAnswerText } from '../../../shared/utils/cleanMarkdown';
 import { renderTableBlocks } from '../../../shared/components/common/MarkdownTable';
 
@@ -37,6 +37,8 @@ interface MessageListProps {
   sessionId?: string;
   /** 知识库 ID（反馈关联） */
   kbId?: string;
+  /** 引用摘要窗口大小（字）：来自配置档案「聊天设置 → 引用设置」，缺省 600 */
+  citationSnippetChars?: number;
 }
 
 /** 消息头像尺寸：32px 圆形，与气泡间距 8px，垂直顶部对齐（多行文本时在首行） */
@@ -112,14 +114,27 @@ const CitationMark: React.FC<{
   source: Source;
   answerText: string;
   onClick: (source: Source) => void;
-}> = ({ n, source, answerText, onClick }) => {
+  /** 摘要窗口大小（字）：配置档案「聊天设置 → 引用设置」，默认 600 */
+  snippetChars: number;
+}> = ({ n, source, answerText, onClick, snippetChars }) => {
   const raw = cleanSourceSummary(source.parent_text || source.text || '');
-  const snippet = raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
   const isGraph = source.document_name === '知识图谱';
-  // 摘要内相关部分高亮区间（坐标相对 snippet；图谱引用/无命中 → 原样显示）
-  const snippetHighlights = !isGraph && answerText
-    ? computeHighlightRanges(answerText, snippet)
+  // 先在全量文本上算高亮（位置才准），再围绕首个命中开窗——**不能先截断再算**：
+  // 回答用到的内容常落在块的中后段（表格块的有效数字都在表格下方），从头硬截
+  // 会让命中整段落在窗口外，浮层里一个高亮都标不出来（实测丢图那轮的 5 个引用
+  // 全部如此：命中数字都在 400 字之后）。
+  const fullHighlights = !isGraph && answerText
+    ? computeHighlightRanges(answerText, raw)
     : [];
+  // 数字标记：回答里出现过的数字在引用里的位置（渲染成方框，便于核对金额）
+  const fullNumbers = !isGraph && answerText
+    ? computeNumberRanges(answerText, raw)
+    : [];
+  const {
+    text: snippet,
+    highlights: snippetHighlights,
+    numbers: snippetNumbers,
+  } = buildSnippet(raw, fullHighlights, snippetChars, fullNumbers);
   // Tooltip 弹层方向：引用标位于视口上部（顶部导航高度内）时改显示在下方，
   // 防止弹层弹出后遮挡页面顶部导航栏（antd 避让只针对视口、不感知导航层）
   const [placement, setPlacement] = useState<'top' | 'bottom'>('top');
@@ -150,15 +165,15 @@ const CitationMark: React.FC<{
                 wordBreak: 'break-word',
               }}
             >
-              {splitByHighlights(snippet, snippetHighlights).map((seg, i) =>
-                seg.highlighted ? (
-                  <mark key={i} className="citation-highlight">
-                    {seg.text}
-                  </mark>
-                ) : (
-                  <React.Fragment key={i}>{seg.text}</React.Fragment>
-                ),
-              )}
+              {splitByHighlights(snippet, snippetHighlights, snippetNumbers).map((seg, i) => {
+                const cls = [
+                  seg.highlighted ? 'citation-highlight' : '',
+                  seg.isNumber ? 'citation-number' : '',
+                ].filter(Boolean).join(' ');
+                return cls
+                  ? <mark key={i} className={cls}>{seg.text}</mark>
+                  : <React.Fragment key={i}>{seg.text}</React.Fragment>;
+              })}
             </div>
           )}
           <div style={{ marginTop: 4, fontWeight: 400, opacity: 0.75 }}>
@@ -210,6 +225,7 @@ const renderCitationContent = (
   content: string,
   sources: Source[] | undefined,
   onCitationClick: ((source: Source) => void) | undefined,
+  snippetChars: number,
 ): React.ReactNode[] => {
   const parts: React.ReactNode[] = [];
   if (!content) return parts;
@@ -231,6 +247,7 @@ const renderCitationContent = (
           source={source}
           answerText={content}
           onClick={onCitationClick}
+          snippetChars={snippetChars}
         />,
       );
     } else {
@@ -259,6 +276,7 @@ const renderContent = (
   content: string,
   sources: Source[] | undefined,
   onCitationClick: ((source: Source) => void) | undefined,
+  snippetChars: number,
 ): React.ReactNode[] => {
   // 先清洗行首 Markdown 结构符号（### 标题 / - 列表等）：
   // 显示文本与高亮基准（answerText）都用清洗后文本，保证所见即所算。
@@ -272,7 +290,7 @@ const renderContent = (
     if (typeof b !== 'string') {
       return <React.Fragment key={`t${bi}`}>{b}</React.Fragment>;
     }
-    const parts = renderCitationContent(b, sources, onCitationClick);
+    const parts = renderCitationContent(b, sources, onCitationClick, snippetChars);
     return parts.map((p, pi) =>
       typeof p === 'string'
         ? <MdImages key={`m${bi}-${pi}`} text={p} maxWidth={ANSWER_IMAGE_MAX_WIDTH} />
@@ -376,7 +394,10 @@ const MessageList: React.FC<MessageListProps> = ({
   onCitationClick,
   sessionId,
   kbId,
+  citationSnippetChars,
 }) => {
+  // 引用摘要窗口大小：配置档案「聊天设置 → 引用设置」（默认 600 字）
+  const snippetChars = citationSnippetChars ?? 600;
   const containerRef = useRef<HTMLDivElement>(null);
   const { token } = theme.useToken();
   // 当前登录用户：聊天中自己的头像从此读取（无头像 → 默认 SVG 兜底）
@@ -499,7 +520,7 @@ const MessageList: React.FC<MessageListProps> = ({
                       wordBreak: 'break-word',
                     }}
                   >
-                    {renderContent(m.content, m.sources, onCitationClick)}
+                    {renderContent(m.content, m.sources, onCitationClick, snippetChars)}
                     {/* 用户点击停止后：尾部灰色小字标注（仅前端会话状态，不污染落盘内容） */}
                     {!isUser && m.stopped && !isStreamingLast && (
                       <div style={{ marginTop: 6, fontSize: 12, color: token.colorTextTertiary }}>

@@ -14,8 +14,8 @@ import datetime
 from pathlib import Path
 from typing import List
 
-from backend.services.spreadsheet.reader import (Sheet, fill_merged,
-                                                 pad_rows)
+from backend.services.spreadsheet.reader import (Sheet, build_merged_ranges,
+                                                 fill_merged, pad_rows)
 
 
 def _cell_text(value) -> str:
@@ -66,6 +66,7 @@ def read_xlsx(path: Path) -> List[Sheet]:
     sheets: List[Sheet] = []
     for ws in wb.worksheets:
         rows: List[List[str]] = []
+        row_numbers: List[int] = []  # rows[i] 对应的原始 Excel 行号（1 基）
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row,
                                 min_col=1, max_col=ws.max_column):
             cells = []
@@ -87,15 +88,15 @@ def read_xlsx(path: Path) -> List[Sheet]:
             if not any(c for c in cells):
                 continue
             rows.append(cells)
+            row_numbers.append(row[0].row)
         if not rows:
             continue
-        # 合并单元格：openpyxl 1 基含端点 → 0 基闭区间（min_row-1, min_col-1…）
-        ranges = [
-            (rng.min_row - 1, rng.min_col - 1,
-             rng.max_row - 1, rng.max_col - 1)
-            for rng in ws.merged_cells.ranges
-        ]
-        fill_merged(rows, ranges)
+        # 合并单元格：openpyxl 1 基含端点 → 列转 0 基闭区间；行号交
+        # build_merged_ranges 按"跳空行映射"折成 rows 索引——直接按原始行号
+        # 填充会错位覆盖（合并区域跨空行时把区域下方的数据行填掉，见该函数注释）
+        raw = [(rng.min_row, rng.min_col - 1, rng.max_row, rng.max_col - 1)
+               for rng in ws.merged_cells.ranges]
+        fill_merged(rows, build_merged_ranges(row_numbers, raw))
         sheets.append(Sheet(name=ws.title, rows=pad_rows(rows),
-                            stats={"merged_cells": len(ranges)}))
+                            stats={"merged_cells": len(raw)}))
     return sheets

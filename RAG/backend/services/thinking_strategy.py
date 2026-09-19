@@ -24,14 +24,20 @@
      默认思考——本地 LM Studio 无法控制思考强度，选择函数 warning 说明）
   3. NoopStrategy()：默认兜底——不改请求
 - 选择函数 get_thinking_strategy(llm_cfg, thinking_mode)：
+  按模型配置的 **thinking_control**（模型级字段，见 config.LLMConfig）选择，
+  **不再按 base_url 是不是内网判断**：
+  - "prefill" → thinking_mode=disabled 时 QwenPrefill（注入空 <think> 块
+    跳过思考）；enabled* 时 ExtraBody 不注入（保持模型默认思考——本地
+    无法控制思考强度，warning 说明）
+  - "api" → ExtraBody（DeepSeek 等支持 thinking 参数的在线 API）
+  - "none"/缺省 → Noop（模型本身不思考，或部署端已关闭——不改请求）
   - llm_cfg 非 dict / base_url 空 → Noop（无法判断服务商，不改请求，兜底）
-  - base_url 含内网地址（localhost/127.0.0.1/192.168./10./172.16-31.）
-    → thinking_mode=disabled → QwenPrefill（本地关闭思考的实测有效方案）
-    → thinking_mode=enabled* → ExtraBody（不注入 prefill，保持模型默认
-      思考；reasoning_effort 对 LM Studio 无效会被忽略，warning 日志说明
-      "本地模型不支持思考强度控制"）
-  - 在线 API（api.deepseek.com 等）→ ExtraBody（原行为，DeepSeek 路径
-    完全不变，disabled → {"thinking": {"type": "disabled"}}）
+  为什么换判据（2026-09-18 实测）：旧判据"内网地址即注入 prefill"误伤两类
+  模型——① 部署端已关思考的非思考模型（vLLM + Qwen3.5-9B，注入后回答
+  231→131 字、出图 3/3→0/3）；② 内网 DeepSeek 网关（prefill 对它完全无效，
+  思考照跑）。而真正需要 prefill 的只有"Qwen 系 chat template + 部署端
+  忽略 API 参数"这一种（LM Studio 上的 Qwen3 思考模型：注入 3.5s，
+  不注入 53~286s 且可能因思考吃光 token 答空白）。
 
 接入点（知识图谱抽取 / 上下文摘要 / 查询实体抽取 / 聊天问答）：
 组装 {"messages":[...]} → strategy.apply(payload) →
@@ -45,7 +51,6 @@ thinking_mode（默认 disabled）按同一选择函数应用策略；注入属�
 from __future__ import annotations
 
 import logging
-import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -146,23 +151,17 @@ class NoopStrategy(ThinkingStrategy):
 
 # ---- 策略选择 ----
 
-# 内网/本地部署地址特征（LM Studio/Ollama 等）：localhost、127.0.0.1、
-# 192.168.x、10.x、172.16~31.x 私有段（(?<!\d) 防止 110.x 等公网误匹配）
-_LOCAL_URL_RE = re.compile(
-    r"(localhost|127\.0\.0\.1|192\.168\.|(?<!\d)10\.|172\.(1[6-9]|2\d|3[01])\.)")
-
-
 def get_thinking_strategy(llm_cfg, thinking_mode: Optional[str] = None) -> ThinkingStrategy:
-    """按模型服务商/部署方式选择思考关闭策略（纯函数，供测试直测）
+    """按模型配置的 thinking_control 选择思考控制策略（纯函数，供测试直测）
 
-    - llm_cfg 非 dict / base_url 为空 → Noop（无法判断服务商，不改请求兜底）
-    - base_url 含内网地址（localhost/127.0.0.1/192.168./10./172.16-31.）
-      → thinking_mode=disabled → QwenPrefill（本地关闭思考的实测有效方案）
-      → thinking_mode=enabled* → ExtraBody（不注入 prefill，保持模型默认
-        思考——本地 LM Studio 无法控制思考强度，reasoning_effort 无效，
-        warning 日志说明）
-    - 在线 API（api.deepseek.com 等）→ ExtraBody（原行为，DeepSeek 路径
-      完全不变，disabled → {"thinking": {"type": "disabled"}}）
+    - "prefill"：注入空 <think> 块跳过思考——Qwen 系（chat template 含
+      <think> 结构）且部署端忽略 API 参数的场景（LM Studio）；
+      thinking_mode=disabled 时注入，enabled* 时不注入（保持模型默认思考）
+    - "api"：extra_body 传 thinking 参数——支持它的在线 API（DeepSeek 等）
+    - "none"/缺省：Noop 不改请求——模型本身不思考，或部署端已关闭
+      （如 vLLM 启动参数关了思考）；对这类模型注入 prefill 会把回答压短、
+      丢图片，对 DeepSeek 一类模型则完全无效
+    - llm_cfg 非 dict / base_url 空 → Noop 兜底（无法判断服务商）
     """
     if not isinstance(llm_cfg, dict):
         return NoopStrategy()
@@ -170,12 +169,15 @@ def get_thinking_strategy(llm_cfg, thinking_mode: Optional[str] = None) -> Think
     if not base_url:
         return NoopStrategy()
     mode = thinking_mode or "disabled"
-    if _LOCAL_URL_RE.search(base_url):
+    control = (llm_cfg.get("thinking_control") or "none").strip().lower()
+    if control == "prefill":
         if mode != "disabled":
             logger.warning(
-                "本地模型（base_url=%s）不支持思考强度控制（LM Studio 忽略 "
-                "reasoning_effort），thinking_mode=%s 时保持模型默认思考",
+                "模型思考控制方式为 prefill（base_url=%s），thinking_mode=%s "
+                "时不注入 prefill：注入只用于跳过思考，无法控制思考强度",
                 base_url, mode)
         return (QwenPrefillStrategy() if mode == "disabled"
                 else ExtraBodyStrategy(mode))
-    return ExtraBodyStrategy(mode)
+    if control == "api":
+        return ExtraBodyStrategy(mode)
+    return NoopStrategy()
