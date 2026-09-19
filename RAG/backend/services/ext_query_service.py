@@ -62,6 +62,8 @@ CONFIG_FIELDS: Dict[str, Tuple[str, float | None, float | None]] = {
     "similarity_threshold": ("float", 0.0, 1.0),
     "enable_multi_turn": ("bool", None, None),
     "history_rounds": ("int", 1, 20),
+    # 是否允许外部页展示知识库图片（文档截图可能含敏感信息，超管可按配置关闭）
+    "enable_images": ("bool", None, None),
 }
 
 # 字段中文名（校验错误信息用）
@@ -74,6 +76,7 @@ _FIELD_LABELS = {
     "similarity_threshold": "相似度阈值",
     "enable_multi_turn": "多轮对话",
     "history_rounds": "历史轮数",
+    "enable_images": "显示图片",
 }
 
 
@@ -100,10 +103,11 @@ def coerce_config(raw: Optional[dict]) -> dict:
         v = src.get(field)
         if v is None:
             # 缺省默认值：system_prompt=""（空=内置默认模板），
-            # enable_multi_turn=True（与聊天配置语义一致），其余 None=跟随全局
+            # enable_multi_turn / enable_images=True（与聊天配置语义一致），
+            # 其余 None=跟随全局
             if field == "system_prompt":
                 out[field] = ""
-            elif field == "enable_multi_turn":
+            elif field in ("enable_multi_turn", "enable_images"):
                 out[field] = True
             else:
                 out[field] = None

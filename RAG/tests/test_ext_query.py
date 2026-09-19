@@ -397,3 +397,119 @@ class TestExtChat:
         assert lines[0]["hit_count"] >= 1, "命中库应有命中数"
         assert lines[1]["config_id"] == item_miss["id"]
         assert lines[1]["hit_count"] == 0, "空库应记未命中"
+
+    def test_chat_sources_image_rewritten(self, client, admin_headers,
+                                          mock_embedding, mock_llm):
+        """meta 下发的 sources 图片链接已改写为 ext 端点（外部页据此渲染图片）
+
+        内部 /api/files/images/ 按登录用户 + 库权限鉴权，外部用户没有账号，
+        原链接在外部页只会加载失败——故必须在下发前改写。
+        """
+        content = "# Python\n\n![图1](/api/files/images/doc001/图1.png) 说明。"
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"], content=content)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        mock_llm()
+        r = self._chat(client, item["id"], item["token"], "Python 是什么？")
+        assert r.status_code == 200, r.text
+        meta_block = r.text.split("event: meta", 1)[1].split("\n\n", 1)[0]
+        meta = json.loads(meta_block.split("data: ", 1)[1].strip())
+        text = meta["sources"][0]["text"]
+        assert f"/api/ext/{item['id']}/images/doc001/图1.png" in text
+        assert f"token={item['token']}" in text
+        assert "/api/files/images/" not in text, "内部链接必须全部改写"
+
+
+class TestExtImages:
+    """外部图片代理 /api/ext/{id}/images/{doc_id}/{name}
+
+    外部用户与 Agent 都没有系统账号，内部图片接口一律 401，故对外提供本端点；
+    鉴权与防探测口径同 info：错 token/停用/不存在 → 401「链接无效或已失效」，
+    越权（文档不属于暴露的库）/开关关闭/文件名非法 → 404「图片不存在」。
+    """
+
+    def _get(self, client, config_id, doc_id, name, token=None):
+        params = {"token": token} if token is not None else {}
+        return client.get(f"/api/ext/{config_id}/images/{doc_id}/{name}",
+                          params=params)
+
+    def test_auth_failures(self, client, admin_headers, mock_embedding):
+        """无 token / 错 token / 配置不存在 / 停用 → 统一 401（防探测）"""
+        kb = create_kb(client)
+        doc = upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        assert self._get(client, item["id"], doc["id"],
+                         "a.png").status_code == 401
+        assert self._get(client, item["id"], doc["id"], "a.png",
+                         token="wrong").status_code == 401
+        assert self._get(client, "nonexist", doc["id"], "a.png",
+                         token=item["token"]).status_code == 401
+        client.post(f"/api/ext-queries/{item['id']}/toggle",
+                    headers=admin_headers)
+        r = self._get(client, item["id"], doc["id"], "a.png",
+                      token=item["token"])
+        assert r.status_code == 401
+        assert "链接无效" in r.json()["detail"]
+
+    def test_cross_kb_denied(self, client, admin_headers, mock_embedding):
+        """文档不属于本配置暴露的库 → 404 伪装（越权读其他库图片在此拦截）"""
+        kb_a = create_kb(client, name="库A")
+        kb_b = create_kb(client, name="库B")
+        doc_b = upload_and_ingest(client, kb_b["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb_a["id"]])
+        r = self._get(client, item["id"], doc_b["id"], "a.png",
+                      token=item["token"])
+        assert r.status_code == 404
+        assert "图片不存在" in r.json()["detail"]
+
+    def test_disabled_returns_404(self, client, admin_headers, mock_embedding):
+        """关闭图片展示 → 404（与"图片不存在"同款伪装，不泄露开关状态）"""
+        kb = create_kb(client)
+        doc = upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          config={"enable_images": False})
+        r = self._get(client, item["id"], doc["id"], "a.png",
+                      token=item["token"])
+        assert r.status_code == 404
+
+    def test_bad_name_returns_404(self, client, admin_headers, mock_embedding):
+        """文件名非法（路径穿越 / 特殊字符）→ 404 伪装"""
+        kb = create_kb(client)
+        doc = upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        for bad in ("a b", "a*b", "a;b"):
+            r = self._get(client, item["id"], doc["id"], bad,
+                          token=item["token"])
+            assert r.status_code == 404, f"{bad} 应 404"
+
+    def test_unknown_doc_returns_404(self, client, admin_headers,
+                                     mock_embedding):
+        """文档不存在 → 404 伪装"""
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        r = self._get(client, item["id"], "nonexistent-doc", "a.png",
+                      token=item["token"])
+        assert r.status_code == 404
+
+    def test_image_ok(self, client, admin_headers, mock_embedding,
+                      monkeypatch):
+        """正常读取：200 + image/* content_type（存储以假实现注入，全程离线）"""
+        kb = create_kb(client)
+        doc = upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        from backend.routers import ext_query as ext_router
+
+        class _FakeStorage:
+            async def download_to(self, key, dest_path):
+                assert key == f"images/{doc['id']}/a.png"
+                with open(dest_path, "wb") as f:
+                    f.write(b"\x89PNG\r\n\x1a\n")
+
+        monkeypatch.setattr(ext_router, "get_storage_service",
+                            lambda: _FakeStorage())
+        r = self._get(client, item["id"], doc["id"], "a.png",
+                      token=item["token"])
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("image/")
+        assert r.content.startswith(b"\x89PNG")

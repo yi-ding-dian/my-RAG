@@ -53,6 +53,7 @@ interface ConfigFormValues {
   similarity_threshold?: number | null;
   enable_multi_turn?: boolean;
   history_rounds?: number | null;
+  enable_images?: boolean;
 }
 
 interface FormValues {
@@ -71,6 +72,7 @@ const configToPayload = (c: ConfigFormValues): ExtQueryConfig => ({
   similarity_threshold: c.similarity_threshold ?? null,
   enable_multi_turn: c.enable_multi_turn ?? true,
   history_rounds: c.history_rounds ?? null,
+  enable_images: c.enable_images ?? true,
 });
 
 /** 默认配置表单值 */
@@ -83,6 +85,7 @@ const defaultConfigForm = (config: ExtQueryConfig = {}): ConfigFormValues => ({
   similarity_threshold: config.similarity_threshold ?? null,
   enable_multi_turn: config.enable_multi_turn ?? true,
   history_rounds: config.history_rounds ?? null,
+  enable_images: config.enable_images ?? true,
 });
 
 /**
@@ -472,6 +475,19 @@ const ExtQueriesPage: React.FC = () => {
             <Form.Item
               name={['config', 'enable_multi_turn']}
               label="多轮对话"
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              name={['config', 'enable_images']}
+              label={
+                <Tooltip title="开启后外部页会展示文档中的示意图与截图（并引导模型在回答中原样输出图片）。文档含敏感信息时建议关闭——关闭后图片不会展示，也不会留下裂图或死链。">
+                  <span style={{ cursor: 'help', borderBottom: '1px dashed #d9d9d9' }}>
+                    显示图片
+                  </span>
+                </Tooltip>
+              }
               valuePropName="checked"
             >
               <Switch />

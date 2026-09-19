@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -16,6 +16,42 @@ import {
   BookOutlined,
   SendOutlined,
 } from '@ant-design/icons';
+import MdImages from '../../shared/components/common/MdImages';
+
+/**
+ * 引用来源（meta 事件下发的检索片段）
+ *
+ * 图片链接已由后端改写为本配置的专用端点（/api/ext/{id}/images/...?token=xxx），
+ * 带 ext token 可直接加载——MdImages 的 withImageToken 只认内部图片代理前缀
+ * （/api/files/images/），对 ext 链接原样返回，不会误加登录 JWT。
+ */
+interface ExtSource {
+  document_name: string;
+  kb_name?: string;
+  text?: string;
+  parent_text?: string | null;
+}
+
+/**
+ * Markdown 图片语法探测（局部非全局正则：全局正则的 lastIndex 是共享可变
+ * 状态，并发渲染下会互相改写导致匹配错乱）
+ */
+const HAS_IMAGE_RE = /!\[[^\]]*\]\([^)]*\)/;
+
+/**
+ * 兜底还原模型"简化"过的图片链接
+ *
+ * 实测：提示词已明确要求"图片链接必须原样保留"，模型仍会把
+ * /api/ext/{config_id}/images/{doc_id}/{name} 压成 /api/ext/{doc_id}/{name}
+ * （丢掉 config_id 与 images 段），浏览器里必然 404。流式回答无法在后端拦截
+ * （delta 已逐块下发），故在渲染前统一还原；已是标准形式的链接不受影响。
+ */
+const normalizeAnswerImages = (text: string, configId: string): string =>
+  text.replace(
+    /\/api\/ext\/(?![^\s/?#]+\/images\/)([^\s/?#]+)\/([^\s/?#]+)/g,
+    (_m, docId: string, name: string) =>
+      `/api/ext/${configId}/images/${docId}/${name}`,
+  );
 
 /**
  * 外部查询页（公开，无需登录）：/ext-query/:id?token=xxx
@@ -24,6 +60,8 @@ import {
  * - 挂载时用 token 调 GET /api/ext/{id}/info 校验；401 → 「链接无效或已失效」
  * - 流式请求直接 fetch（不走 axios：外部请求必须携带 ext token 而非登录 JWT）
  * - 样式取舍：独立浅色卡片样式，不耦合主后台主题系统（外部用户无主题偏好）
+ * - 图片：回答正文与引用来源均经 MdImages 渲染（仅当配置开启图片时，
+ *   后端才会下发 ext 图片链接；关闭时图片语法已在后端剥除）
  */
 const ExtQueryPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -36,8 +74,10 @@ const ExtQueryPage: React.FC = () => {
   const [query, setQuery] = useState('');
   const [sending, setSending] = useState(false);
   const [answer, setAnswer] = useState('');
-  const [sources, setSources] = useState<{ document_name: string; kb_name?: string }[]>([]);
+  const [sources, setSources] = useState<ExtSource[]>([]);
   const [streamError, setStreamError] = useState<string | null>(null);
+  // 引用来源默认收起时不渲染内容（父块可达上万字，展开才付出渲染开销）
+  const [refsOpen, setRefsOpen] = useState(false);
 
   // 会话 id：页面内生成一次（刷新即新会话）；多轮上下文由后端按 session_id 续接
   const sessionIdRef = useRef<string | null>(null);
@@ -82,6 +122,7 @@ const ExtQueryPage: React.FC = () => {
     setAnswer('');
     setSources([]);
     setStreamError(null);
+    setRefsOpen(false);
     const body = { query: q, session_id: getSessionId() };
 
     try {
@@ -130,8 +171,8 @@ const ExtQueryPage: React.FC = () => {
           }
           if (eventType === 'meta') {
             const list = Array.isArray(data)
-              ? (data as { document_name: string }[])
-              : ((data as { sources?: { document_name: string }[] })?.sources ?? []);
+              ? (data as ExtSource[])
+              : ((data as { sources?: ExtSource[] })?.sources ?? []);
             setSources(prev => [...prev, ...list]);
           } else if (eventType === 'delta') {
             const text = typeof data === 'string' ? data : (data as { text?: string })?.text;
@@ -165,10 +206,30 @@ const ExtQueryPage: React.FC = () => {
     }
   }, [id, token, query, sending]);
 
-  // 来源文档名去重（简化展示：仅文档名列表，不带溯源弹窗）
-  const sourceNames = Array.from(
-    new Map(sources.map(s => [s.document_name, s])).values(),
+  // 回答里的图片链接兜底修复（模型可能简化路径）；仅 answer/id 变化时重算
+  const renderedAnswer = useMemo(
+    () => normalizeAnswerImages(answer, id ?? ''),
+    [answer, id],
   );
+
+  // 引用来源按文档分组（同一文档命中多个块时合并，各自独立展示图片）
+  const sourceGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { document_name: string; kb_name?: string; texts: string[] }
+    >();
+    for (const s of sources) {
+      const g = groups.get(s.document_name)
+        ?? { document_name: s.document_name, kb_name: s.kb_name, texts: [] };
+      // 优先用命中子块（聚焦命中位置、体量小，实测多数已含图）；
+      // 子块不含图片语法时才回退父块——父块是完整章节、图更全但可能上万字
+      const hit = s.text ?? '';
+      const text = HAS_IMAGE_RE.test(hit) ? hit : (s.parent_text || hit);
+      if (text.trim()) g.texts.push(text);
+      groups.set(s.document_name, g);
+    }
+    return Array.from(groups.values());
+  }, [sources]);
 
   // 独立浅色样式（不耦合主主题系统）
   const pageStyle: React.CSSProperties = {
@@ -272,31 +333,54 @@ const ExtQueryPage: React.FC = () => {
                   <Typography.Paragraph
                     style={{ whiteSpace: 'pre-wrap', marginBottom: 12, fontSize: 15, lineHeight: 1.8 }}
                   >
-                    {answer}
+                    {/* 回答里的图片由模型原样输出（后端已改写为 ext 端点链接） */}
+                    <MdImages text={renderedAnswer} maxWidth="100%" maxHeight={420} />
                   </Typography.Paragraph>
                 )}
                 {sources.length > 0 && (
                   <Collapse
                     size="small"
+                    activeKey={refsOpen ? ['refs'] : []}
+                    onChange={keys => setRefsOpen(keys.length > 0)}
                     items={[
                       {
                         key: 'refs',
-                        label: `引用来源（${sourceNames.length} 个文档）`,
-                        children: (
-                          <ul style={{ margin: 0, paddingLeft: 20 }}>
-                            {sourceNames.map(s => (
-                              <li key={s.document_name}>
-                                {s.document_name}
-                                {s.kb_name && (
-                                  <Typography.Text type="secondary">
-                                    {' '}
-                                    （{s.kb_name}）
+                        label: `引用来源（${sourceGroups.length} 个文档）`,
+                        // 收起时不渲染内容：父块可达上万字，展开才付出渲染开销
+                        children: refsOpen ? (
+                          <div style={{ maxHeight: 460, overflowY: 'auto' }}>
+                            {sourceGroups.map(g => (
+                              <div key={g.document_name} style={{ marginBottom: 14 }}>
+                                <Typography.Text strong style={{ fontSize: 13 }}>
+                                  {g.document_name}
+                                </Typography.Text>
+                                {g.kb_name && (
+                                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                    {' '}（{g.kb_name}）
                                   </Typography.Text>
                                 )}
-                              </li>
+                                {g.texts.map((t, i) => (
+                                  <div
+                                    key={i}
+                                    style={{
+                                      marginTop: 6,
+                                      padding: '8px 10px',
+                                      borderRadius: 8,
+                                      background: '#f8fafc',
+                                      border: '1px solid #eef2f7',
+                                      fontSize: 13,
+                                      lineHeight: 1.7,
+                                      whiteSpace: 'pre-wrap',
+                                      wordBreak: 'break-word',
+                                    }}
+                                  >
+                                    <MdImages text={t} maxWidth="100%" maxHeight={300} />
+                                  </div>
+                                ))}
+                              </div>
                             ))}
-                          </ul>
-                        ),
+                          </div>
+                        ) : null,
                       },
                     ]}
                   />

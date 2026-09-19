@@ -1,15 +1,18 @@
 """外部查询 API（知识库对外开放查询）
 
 管理（仅 super_admin，prefix /api/ext-queries）：
-- GET    /api/ext-queries                列表（附加 kb_names，含完整 token——内网管理端）
+- GET    /api/ext-queries                列表（附加 kb_names；token 打码回传）
+- GET    /api/ext-queries/{id}/token     取完整 token（复制分发链接用，落审计）
 - POST   /api/ext-queries                新建 {name, kb_ids, config} → 完整配置（含 token）
-- PUT    /api/ext-queries/{id}           编辑 name/kb_ids/config
+- PUT    /api/ext-queries/{id}           编辑 name/kb_ids/config（token 不变）
 - POST   /api/ext-queries/{id}/reset-token  重置 token（旧链接立即失效）→ {token}
 - POST   /api/ext-queries/{id}/toggle    启用/停用切换
 - DELETE /api/ext-queries/{id}           删除
 
 外部（公开，prefix /api/ext，token 鉴权，无需系统账号）：
 - GET  /api/ext/{config_id}/info?token=xxx   页面挂载校验 → {name, kb_names}
+- GET  /api/ext/{config_id}/images/{doc_id}/{name}?token=xxx
+  图片代理：读取本配置暴露知识库内的解析图片（外部无 JWT，内部图片接口必 401）
 - POST /api/ext/{config_id}/chat              Bearer token；body {query, session_id?}
   → SSE 流式（meta(sources) → delta → done / error），复用 chat_service 的
     system 组装与 LLM 流式能力（_build_system_content/_build_knowledge/
@@ -17,6 +20,13 @@
     多库检索（每库 top_k 候选 → 合并按 score 降序取全局 top_k）；
     无命中直接告知不调 LLM；每次查询落审计日志（ext_query_logs.jsonl）；
     每 config 每分钟限流（超限 429）。
+- POST /api/ext/{config_id}/query            Bearer token；同步非流式（MCP/Agent 接入）
+
+图片（config.enable_images，默认开）：
+- 检索后由 _adapt_images 统一适配：开 → 内部链接 /api/files/images/... 改写为
+  本配置的 /api/ext/{id}/images/...?token=xxx（meta 下发与注入 LLM 同一份文本，
+  故回答正文里模型输出的也是外部可直接加载的链接）；关 → 整体剥除图片语法。
+- 关闭时后端同时不再追加 _IMAGE_OUTPUT_RULE，模型自然不会输出图片。
 
 安全设计（对外统一防探测）：
 - 配置不存在 / token 不匹配 / 已停用 → 一律 401「链接无效或已失效」（不区分
@@ -29,13 +39,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
+import os
 import re
+import tempfile
+from pathlib import Path
 from typing import List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from backend.config import get_active_config
 from backend.db import get_db
@@ -44,11 +60,13 @@ from backend.models.user_models import UserPublic
 from backend.services import audit_service
 from backend.services.chat_service import ChatService, _llm_to_dict, \
     get_chat_service, sse_event
+from backend.services.document_service import get_document_service
 from backend.services.ext_query_service import (get_ext_query_service,
                                                 coerce_config)
 from backend.services.kb_service import get_kb_service
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
+from backend.services.storage_service import get_storage_service
 
 from backend.logger import AppLog
 
@@ -68,6 +86,7 @@ class ExtQueryConfigIn(BaseModel):
     similarity_threshold: Optional[float] = None
     enable_multi_turn: Optional[bool] = None
     history_rounds: Optional[int] = None
+    enable_images: Optional[bool] = None
 
 
 class ExtQueryCreateRequest(BaseModel):
@@ -142,6 +161,66 @@ def _bearer_token(request: Request) -> Optional[str]:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return None
+
+
+# ==================== 图片适配（外部场景） ====================
+#
+# 背景：知识块文本里的图片是内部代理链接 /api/files/images/{doc_id}/{name}，
+# 该端点按「登录用户 + 知识库权限」鉴权——外部用户与 Agent 都没有系统账号，
+# 原链接一律 401，图片必然加载失败。故对外统一改写为本配置的专用图片端点
+# （复用 ext token 鉴权，见 ext_image），外链与内部聊天链路均不受影响。
+
+# 内部图片代理链接（知识块文本中的形态）：doc_id 与文件名同 files.py 白名单
+_INTERNAL_IMAGE_RE = re.compile(
+    r"/api/files/images/([\w.-]+)/([\w.-]+)")
+# Markdown 图片语法（关闭图片展示时整体剥除）
+_IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+# 外部图片端点链接（同步接口提取 image_urls 用）
+_EXT_IMAGE_RE = re.compile(r"/api/ext/[\w-]+/images/[^\s)\"']+")
+# 图片文件名白名单（与 files.py 同款，防路径穿越）
+_IMAGE_NAME_RE = re.compile(r"^[\w.-]+$")
+
+# 图片输出引导：模型默认倾向用文字"描述"图片而不输出图片语法。实测知识块里
+# 图片注入到位（image492.png 等）、sources 的 image_urls 提取正常，但回答仍是
+# 纯文字——不显式引导，前端的图片渲染能力等于空转。
+_IMAGE_OUTPUT_RULE = (
+    "\n\n[图片展示规则]\n"
+    "引用的知识片段中若含 Markdown 图片（形如 ![](/api/files/images/xxx.png)），"
+    "且该图片与问题相关，请在回答的相应位置原样输出该图片语法，"
+    "以便展示原文档中的示意图；图片链接必须原样保留，不要改写、补全或省略。"
+)
+
+
+def _ext_image_url(config_id: str, token: str, doc_id: str, name: str) -> str:
+    """知识库图片 → 外部查询专用图片链接（带 ext token，外部页/Agent 直接可用）"""
+    return (f"/api/ext/{config_id}/images/{doc_id}/{name}"
+            f"?token={quote(token or '')}")
+
+
+def _adapt_images(text: str, config_id: str, token: str, enabled: bool) -> str:
+    """知识块文本中的图片适配外部场景
+
+    - 开启图片：内部图片链接改写为本配置的专用端点（外部可直接加载）
+    - 关闭图片：整体剥除图片语法（外部无 JWT，留着只会渲染成裂图或死链）
+    """
+    if not text:
+        return text
+    if enabled:
+        return _INTERNAL_IMAGE_RE.sub(
+            lambda m: _ext_image_url(config_id, token, m.group(1), m.group(2)),
+            text)
+    return _IMAGE_MD_RE.sub("", text)
+
+
+def _adapt_sources_images(sources: List, config_id: str, token: str,
+                          conf: dict) -> None:
+    """就地适配引用片段的图片链接（meta 下发与注入 LLM 用同一份文本）"""
+    enabled = bool(conf.get("enable_images", True))
+    for s in sources:
+        s.text = _adapt_images(s.text, config_id, token, enabled)
+        if s.parent_text:
+            s.parent_text = _adapt_images(s.parent_text, config_id, token,
+                                          enabled)
 
 
 # ==================== 管理 API（仅 super_admin） ====================
@@ -302,6 +381,55 @@ async def ext_info(config_id: str, token: str = Query(default=""),
             "kb_names": [kb_map[k] for k in ext["kb_ids"] if k in kb_map]}
 
 
+@ext_router.get("/{config_id}/images/{doc_id}/{name}")
+async def ext_image(config_id: str, doc_id: str, name: str,
+                    token: str = Query(default="")):
+    """外部图片代理：读取本配置暴露知识库内的解析图片（外部用户无 JWT）
+
+    - 鉴权：?token=（与 /info 一致，`<img>` 无法带 header）；
+      配置不存在 / 错 token / 已停用 → 统一 401
+    - 防探测：未开启图片 / name 非法 / 文档不存在 / 文档已删除 /
+      **文档不属于本配置暴露的知识库** → 一律 404「图片不存在」，
+      不区分「不存在」与「无权限」（越权读取其他库图片在此拦截）
+    - 不校验部门权限：暴露范围由 ext 配置的 kb_ids 定义（超管视角可选任意部门库）
+    """
+    ext = _auth_ext(config_id, token)
+    if not ext["config"].get("enable_images", True):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    # name 白名单（同 files.py，防路径穿越；与"图片不存在"同款 404 伪装）
+    if (not name or ".." in name or not _IMAGE_NAME_RE.fullmatch(name)):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    doc = get_document_service().get(doc_id)
+    if not doc or doc.deleted or doc.kb_id not in ext["kb_ids"]:
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    key = f"images/{doc_id}/{name}"
+    # 临时文件（后缀保留便于识别；下载后由 BackgroundTask 清理）
+    fd, tmp_path = tempfile.mkstemp(suffix=Path(name).suffix or ".img")
+    os.close(fd)
+    try:
+        await get_storage_service().download_to(key, tmp_path)
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        log.system_error("外部查询图片读取失败 %s: %s", key, str(e)[:150])
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+    def _cleanup():
+        try:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return FileResponse(tmp_path, media_type=content_type,
+                        background=BackgroundTask(_cleanup))
+
+
 @ext_router.post("/{config_id}/chat")
 async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                    request: Request,
@@ -352,6 +480,9 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
             for s in sources:
                 if s.kb_id in kb_map:
                     s.kb_name = kb_map[s.kb_id]["name"]
+            # 图片适配：内部图片链接 → 本配置专用端点（关闭则剥除）；
+            # meta 下发的文本与注入 LLM 的知识文本保持同一份
+            _adapt_sources_images(sources, config_id, ext["token"], conf)
             yield sse_event("meta", {
                 "sources": [s.model_dump(mode="json") for s in sources],
             })
@@ -371,6 +502,10 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
             knowledge = ChatService._build_knowledge(sources)
             system_content = ChatService._build_system_content(
                 conf.get("system_prompt"), refs, knowledge)
+            # 图片引导追加在组装结果之后：内置默认模板与自定义模板两条路径
+            # 都能覆盖，且不改动 chat_service 的共用组装逻辑（内部聊天零影响）
+            if conf.get("enable_images", True):
+                system_content += _IMAGE_OUTPUT_RULE
             messages: List[dict] = [{"role": "system", "content": system_content}]
             if conf.get("enable_multi_turn", True):
                 rounds = int(conf.get("history_rounds") or cfg.chat.history_rounds)
@@ -440,10 +575,6 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
 
 # ==================== 外部同步查询（MCP 接入，非流式） ====================
 
-# 图片链接正则：/api/files/images/{doc_id}/{name}（文件名白名单 \w.- 含中文；
-# 链接到空白/引号/右括号为止，兼容 markdown ![](url) 语法）
-_IMAGE_URL_RE = re.compile(r"/api/files/images/[^\s)\"']+")
-
 # 回答/引用文本长度上限（对齐外部接入 6000 字规范；单条引用 2000 字）
 ANSWER_MAX_LEN = 6000
 SOURCE_MAX_LEN = 2000
@@ -460,14 +591,40 @@ def _truncate(text: str, max_len: int) -> str:
 
 
 def _extract_image_urls(text: str) -> List[str]:
-    """从引用文本提取图片链接（/api/files/images/...，去重保序；无则空数组）"""
+    """从引用文本提取图片链接（外部图片端点，去重保序；无则空数组）
+
+    文本在检索后已经过 _adapt_images 改写：开启图片时链接为本配置的
+    /api/ext/{config_id}/images/{doc_id}/{name}?token=xxx（Agent 拼上
+    KB_EXT_URL 即可直接加载）；关闭图片时图片语法已被剥除，此处自然为空。
+    """
     seen = set()
     urls = []
-    for m in _IMAGE_URL_RE.findall(text or ""):
+    for m in _EXT_IMAGE_RE.findall(text or ""):
         if m not in seen:
             seen.add(m)
             urls.append(m)
     return urls
+
+
+# 模型"简化"过的图片链接：/api/ext/{doc_id}/{name}
+# （negative lookahead 排除标准形式，避免误伤已正确的链接）
+_SIMPLIFIED_EXT_IMAGE_RE = re.compile(
+    r"/api/ext/(?![^\s/?#]+/images/)([^\s/?#]+)/([^\s/?#]+)")
+
+
+def _fix_answer_images(answer: str, config_id: str) -> str:
+    """兜底还原模型简化的图片链接
+
+    实测：提示词已明确要求"链接必须原样保留"，模型仍会把
+    /api/ext/{config_id}/images/{doc_id}/{name} 压缩成 /api/ext/{doc_id}/{name}
+    （丢掉 config_id 与 images 段），直接下发在浏览器里必然 404。此处按标准
+    形式还原；已是标准形式的链接原样放行。
+    """
+    if not answer or "/api/ext/" not in answer:
+        return answer
+    return _SIMPLIFIED_EXT_IMAGE_RE.sub(
+        lambda m: f"/api/ext/{config_id}/images/{m.group(1)}/{m.group(2)}",
+        answer)
 
 
 @ext_router.post("/{config_id}/query")
@@ -523,6 +680,9 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
         raise HTTPException(status_code=400, detail=f"检索失败: {e}")
     merged.sort(key=lambda s: s.score, reverse=True)
     sources = merged[:top_k]
+    # 图片适配：内部图片链接 → 本配置专用端点（关闭则剥除）。Agent 侧同样
+    # 没有系统账号，返回内部链接的话 image_urls 拿过去必然 401
+    _adapt_sources_images(sources, config_id, ext["token"], conf)
 
     # 2) 无命中：固定文案直接返回，不调用 LLM（日志 hit_count=0）
     if not sources:
@@ -536,6 +696,8 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
     knowledge = ChatService._build_knowledge(sources)
     system_content = ChatService._build_system_content(
         conf.get("system_prompt"), refs, knowledge)
+    if conf.get("enable_images", True):
+        system_content += _IMAGE_OUTPUT_RULE
     messages: List[dict] = [{"role": "system", "content": system_content},
                             {"role": "user", "content": question}]
 
@@ -565,9 +727,9 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
         log.system_error("外部同步查询 LLM 调用失败: %s", e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"LLM 调用失败: {e}")
 
-    # 5) 截断与响应组装：answer ≤6000；sources 每条 text ≤2000，
-    #    附图片 URL 列表（无图片 → 空数组）；审计日志落盘
-    answer = _truncate(answer, ANSWER_MAX_LEN)
+    # 5) 截断与响应组装：answer 先兜底还原模型简化的图片链接、再 ≤6000 截断；
+    #    sources 每条 text ≤2000，附图片 URL 列表（无图片 → 空数组）；审计日志落盘
+    answer = _truncate(_fix_answer_images(answer, config_id), ANSWER_MAX_LEN)
     out_sources = []
     for s in sources:
         text = s.parent_text or s.text

@@ -68,11 +68,17 @@ Content-Type: application/json
     {
       "document_name": "CWBS-SCA调试说明书1-1.pdf",
       "text": "引用片段…（≤2000 字）",
-      "image_urls": ["/api/files/images/xxx.jpg"]
+      "image_urls": ["/api/ext/{configId}/images/{docId}/xxx.jpg?token=…"]
     }
   ]
 }
 ```
+
+> **图片链接**：`text` 与 `answer` 中的图片均已改写为知识库侧的外部图片端点，
+> 带访问 token，**拼上 `origin` 即可直接加载**（无需系统账号，也无需再附加
+> `Authorization`）。链接含访问凭证，请勿外传或写入面向终端用户的日志。
+> 配置里关闭「显示图片」时，图片语法会被整体剥除（不会留下裂图或死链），
+> 此时 `image_urls` 恒为空数组。
 
 ### 配置校验（测试连接用）
 

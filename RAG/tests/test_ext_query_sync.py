@@ -120,7 +120,9 @@ class TestSyncResponse:
 
     def test_image_urls_extracted(self, client, admin_headers, mock_embedding,
                                   mock_llm):
-        """含 /api/files/images/ 链接的 chunk → image_urls 提取（去重保序）"""
+        """含图片的 chunk → image_urls 提取（去重保序），且链接已改写为本配置的
+        ext 图片端点——内部 /api/files/images/ 按登录用户鉴权，Agent 与外部
+        用户都没有系统账号，原样返回必然 401"""
         content = ("# Python 简介\n\nPython 是一种高级编程语言，"
                    "由 Guido 于 1991 年发布。\n\n"
                    "![图1](/api/files/images/doc001/图1.png) 架构说明。\n"
@@ -134,13 +136,67 @@ class TestSyncResponse:
         assert r.status_code == 200, r.text
         urls = [s["image_urls"] for s in r.json()["sources"]]
         all_urls = [u for sub in urls for u in sub]
-        assert "/api/files/images/doc001/图1.png" in all_urls
-        assert "/api/files/images/doc001/图2.png" in all_urls
-        hit = next(s for s in r.json()["sources"]
-                   if "/api/files/images" in s["text"])
-        assert hit["image_urls"] == ["/api/files/images/doc001/图1.png",
-                                     "/api/files/images/doc001/图2.png"], \
-            "图片链接去重保序，且 image_urls 只含该条引用文本内的链接"
+        prefix = f"/api/ext/{item['id']}/images/doc001/"
+        assert all(u.startswith(prefix) for u in all_urls), all_urls
+        assert any("图1.png" in u for u in all_urls)
+        assert any("图2.png" in u for u in all_urls)
+        # 带访问 token（<img> 无法带 header，外部页与 Agent 直接拼 origin 可用）
+        assert all(f"token={item['token']}" in u for u in all_urls)
+        hit = next(s for s in r.json()["sources"] if "images" in s["text"])
+        assert len(hit["image_urls"]) == 2, "同一条引用内去重保序"
+        assert "图1.png" in hit["image_urls"][0]
+        assert "图2.png" in hit["image_urls"][1]
+        # 内部链接已全部改写（残留的话外部必然加载失败）
+        assert "/api/files/images/" not in hit["text"]
+
+    def test_images_disabled_strips_syntax(self, client, admin_headers,
+                                           mock_embedding, mock_llm):
+        """enable_images=False：图片语法整体剥除（不留死链/裂图），image_urls 为空"""
+        content = ("# Python 简介\n\nPython 是一种高级编程语言。\n\n"
+                   "![图1](/api/files/images/doc001/图1.png) 架构说明。")
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"], content=content)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          config={"enable_images": False})
+        assert item["config"]["enable_images"] is False
+        mock_llm()
+        r = sync_query(client, item["id"], item["token"], "Python 是什么？")
+        assert r.status_code == 200, r.text
+        for s in r.json()["sources"]:
+            assert s["image_urls"] == []
+            assert "/api/files/images/" not in s["text"]
+            assert "![" not in s["text"], "关闭时图片语法应被整体剥除"
+
+    def test_images_default_enabled(self, client, admin_headers):
+        """enable_images 缺省 = 默认开启（旧配置无需迁移即生效）"""
+        kb = create_kb(client)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        assert item["config"]["enable_images"] is True
+
+    def test_simplified_image_url_repaired(self, client, admin_headers,
+                                           mock_embedding, mock_llm):
+        """模型简化过的图片链接（丢 config_id 与 images 段）→ 下发前还原
+
+        实测：提示词已明确要求"图片链接必须原样保留"，模型仍会把
+        /api/ext/{config_id}/images/{doc_id}/{name} 压成 /api/ext/{doc_id}/{name}，
+        不还原的话外部页与 Agent 拿到的链接必然 404。
+        """
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        mock_llm(parts=[
+            "见图：![](/api/ext/doc001/图1.png?token=abc)\n"
+            f"以及 ![](/api/ext/{item['id']}/images/doc002/图2.png?token=abc)",
+        ])
+        r = sync_query(client, item["id"], item["token"], "Python 是什么？")
+        assert r.status_code == 200, r.text
+        answer = r.json()["answer"]
+        assert (f"/api/ext/{item['id']}/images/doc001/图1.png?token=abc"
+                in answer), f"简化链接未还原: {answer}"
+        # 已是标准形式的链接不被二次改写（不重复插入路径段）
+        assert (f"/api/ext/{item['id']}/images/doc002/图2.png?token=abc"
+                in answer)
+        assert "/api/ext/doc001/" not in answer
 
     def test_answer_truncated(self, client, admin_headers, mock_embedding,
                               mock_llm):

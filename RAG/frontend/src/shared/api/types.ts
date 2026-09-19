@@ -1502,6 +1502,8 @@ export interface ExtQueryConfig {
   enable_multi_turn?: boolean;
   /** 历史轮数 1-20（默认跟随全局配置） */
   history_rounds?: number | null;
+  /** 展示知识库图片（默认 true；关闭时不显示文档截图，图片语法会被剥除） */
+  enable_images?: boolean;
 }
 
 /** 暴露的知识库摘要（列表接口附加，前端展示库名/部门） */
