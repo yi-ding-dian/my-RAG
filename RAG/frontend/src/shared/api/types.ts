@@ -1521,6 +1521,8 @@ export interface ExtQuery {
   /** 访问凭证（即链接密钥）：仅内网管理端返回明文，外部请求用 Bearer 携带 */
   token: string;
   enabled: boolean;
+  /** 到期时间 "YYYY-MM-DD HH:MM:SS"；null = 永久有效（到期后外部访问 401） */
+  expires_at?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -1528,10 +1530,59 @@ export interface ExtQuery {
   kb_names?: ExtQueryKbInfo[];
 }
 
+/** 外部查询访问记录（外部无需账号，IP 是追溯来源的唯一线索） */
+export interface ExtQueryLog {
+  id: number;
+  config_id: string;
+  /** 配置名（冗余存储：配置删除后记录仍可读） */
+  config_name: string;
+  query: string;
+  hit_count: number;
+  /** chat=对外网页 / query=MCP、Agent 接入 */
+  source: string;
+  client_ip: string;
+  user_agent: string;
+  created_at: string;
+}
+
+/** 记录列表分页响应 */
+export interface ExtQueryLogPage {
+  items: ExtQueryLog[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** 外部查询总览统计（总览页卡片用） */
+export interface ExtQueryOverview {
+  links: {
+    total: number;
+    enabled: number;
+    /** 即将到期（阈值见 expiring_soon_days） */
+    expiring_soon: number;
+    expired: number;
+  };
+  logs: {
+    today: number;
+    total: number;
+    /** 最近一次访问时间（空 = 从未有人查过） */
+    last_at: string;
+    /** 记录保留天数（超期自动清理） */
+    retain_days: number;
+  };
+  /** config_id → 该链接的查询次数与最近访问（无记录的链接不出现） */
+  link_stats: Record<string, { count: number; last_at: string }>;
+  /** 近 7 天每日查询数（升序含今天；无记录的日期为 0） */
+  daily: { date: string; count: number }[];
+  expiring_soon_days: number;
+}
+
 export interface ExtQueryCreateInput {
   name: string;
   kb_ids: string[];
   config?: ExtQueryConfig;
+  /** 到期时间 "YYYY-MM-DD HH:MM:SS"；不传/null = 永久有效 */
+  expires_at?: string | null;
 }
 
 export type ExtQueryUpdateInput = Partial<Omit<ExtQueryCreateInput, 'token'>>;

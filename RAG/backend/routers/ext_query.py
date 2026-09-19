@@ -62,7 +62,7 @@ from backend.services.chat_service import ChatService, _llm_to_dict, \
     get_chat_service, sse_event
 from backend.services.document_service import get_document_service
 from backend.services.ext_query_service import (get_ext_query_service,
-                                                coerce_config)
+                                                coerce_config, is_expired)
 from backend.services.kb_service import get_kb_service
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
@@ -93,12 +93,21 @@ class ExtQueryCreateRequest(BaseModel):
     name: str = Field(..., description="外部查询名称（1~50 字）")
     kb_ids: List[str] = Field(..., description="暴露的知识库 ID 列表（1~10 个，超管视角全部门）")
     config: Optional[ExtQueryConfigIn] = None
+    expires_at: Optional[str] = Field(
+        None, description='到期时间 "YYYY-MM-DD HH:MM:SS"；空/缺省 = 永久有效')
 
 
 class ExtQueryUpdateRequest(BaseModel):
     name: Optional[str] = None
     kb_ids: Optional[List[str]] = None
     config: Optional[ExtQueryConfigIn] = None
+    expires_at: Optional[str] = Field(
+        None, description='到期时间；空串 = 清除有效期（改永久）；不传 = 保持不变')
+
+
+class ExtQueryRenewRequest(BaseModel):
+    """续期请求（从 max(现在, 原到期时间) 顺延，未过期时不损失剩余天数）"""
+    days: int = Field(30, description="续期天数（1~3650）")
 
 
 class ExtQueryChatRequest(BaseModel):
@@ -145,12 +154,14 @@ async def _validate_kb_ids(db: AsyncSession, kb_ids: List[str]) -> None:
 
 
 def _auth_ext(config_id: str, token: str) -> dict:
-    """外部鉴权：配置存在 + token 匹配 + 已启用，任一不满足 → 统一 401
+    """外部鉴权：配置存在 + token 匹配 + 已启用 + 未过期，任一不满足 → 统一 401
 
-    防探测：不区分「配置不存在 / token 错误 / 已停用」的响应差异。
+    防探测：不区分「配置不存在 / token 错误 / 已停用 / 已过期」的响应差异——
+    外部无法据此判断链接是"过期了"还是"压根不存在"。
     """
     ext = get_ext_query_service().get(config_id)
-    if not ext or not token or ext.get("token") != token or not ext.get("enabled", True):
+    if (not ext or not token or ext.get("token") != token
+            or not ext.get("enabled", True) or is_expired(ext)):
         raise HTTPException(status_code=401, detail="链接无效或已失效")
     return ext
 
@@ -249,6 +260,37 @@ async def list_ext_queries(db: AsyncSession = Depends(get_db),
     return items
 
 
+@admin_router.get("/overview")
+async def ext_query_overview(user: UserPublic = Depends(require_super_admin)):
+    """总览统计：链接数 / 启用数 / 即将到期数 / 已过期数 + 记录今日与累计数
+
+    供总览页卡片展示。注意路由须定义在字面量路径上——与 /{config_id}/xxx
+    段数不同，不会互相抢占。
+    """
+    return await get_ext_query_service().overview()
+
+
+@admin_router.get("/logs")
+async def list_ext_query_logs(
+        config_id: Optional[str] = Query(None, description="按链接筛选"),
+        ip: Optional[str] = Query(None, description="按来源 IP 模糊筛选"),
+        start: Optional[str] = Query(
+            None, description='起始时间 "YYYY-MM-DD HH:MM:SS"（含）'),
+        end: Optional[str] = Query(
+            None, description='结束时间 "YYYY-MM-DD HH:MM:SS"（含）'),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=200),
+        user: UserPublic = Depends(require_super_admin)):
+    """外部查询记录（按链接 / IP / 时间段筛选，时间倒序分页）
+
+    记录含来源 IP 与接入方式——外部查询无需账号，IP 是追溯来源的唯一线索。
+    记录在配置被删除后仍保留（config_name 冗余存储，审计价值）。
+    """
+    return await get_ext_query_service().list_logs(
+        config_id=config_id, ip=ip, start=start, end=end,
+        page=page, page_size=page_size)
+
+
 @admin_router.get("/{ext_id}/token")
 async def get_ext_query_token(request: Request, ext_id: str,
                               db: AsyncSession = Depends(get_db),
@@ -274,7 +316,7 @@ async def create_ext_query(request: Request, body: ExtQueryCreateRequest,
         item = get_ext_query_service().create(
             body.name, body.kb_ids,
             coerce_config(body.config.model_dump() if body.config else {}),
-            user_id=user.id)
+            user_id=user.id, expires_at=body.expires_at)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await audit_service.record_action(
@@ -298,7 +340,8 @@ async def update_ext_query(request: Request, config_id: str,
             config_id,
             name=body.name,
             kb_ids=body.kb_ids,
-            config=coerce_config(body.config.model_dump()) if body.config else None)
+            config=coerce_config(body.config.model_dump()) if body.config else None,
+            expires_at=body.expires_at)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not item:
@@ -328,6 +371,32 @@ async def reset_ext_token(request: Request, config_id: str,
         target_id=config_id, target_name=(ext["name"] or "")[:100],
         request=request)
     return {"token": token, "message": "访问令牌已重置，旧链接已失效"}
+
+
+@admin_router.post("/{config_id}/renew")
+async def renew_ext_query(request: Request, config_id: str,
+                          body: ExtQueryRenewRequest,
+                          user: UserPublic = Depends(require_super_admin)):
+    """续期：从 max(现在, 原到期时间) 顺延 days 天 → 完整配置
+
+    未过期时从原到期时间顺延（不损失剩余天数）；已过期则从当前时间重新起算。
+    续期只改到期时间，token 不变（链接继续有效）。
+    """
+    ext_svc = get_ext_query_service()
+    try:
+        item = ext_svc.renew(config_id, body.days)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not item:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND_MSG)
+    await audit_service.record_action(
+        user, action="ext.renew", target_type="ext_query", target_id=config_id,
+        target_name=(item["name"] or "")[:100],
+        detail={"days": body.days, "expires_at": item.get("expires_at")},
+        request=request)
+    if item.get("token"):
+        item["token"] = _mask_token(item["token"])
+    return item
 
 
 @admin_router.post("/{config_id}/toggle")
@@ -489,7 +558,8 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
 
             # 2) 无命中：直接告知，不调用 LLM（日志 hit_count=0）
             if not sources:
-                ext_svc.log_query(config_id, question, 0)
+                await ext_svc.log_query(config_id, ext.get("name", ""), question,
+                                        0, request=request, source="chat")
                 yield sse_event("delta", {"text": _NO_HIT_TIP})
                 yield sse_event("done", {"session_id": body.session_id or "",
                                          "message_count": 0})
@@ -548,14 +618,18 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                 err_msg = f"LLM 调用失败: {e}"
                 ext_svc.append_context(config_id, body.session_id or "",
                                        question, err_msg)
-                ext_svc.log_query(config_id, question, len(sources))
+                await ext_svc.log_query(config_id, ext.get("name", ""), question,
+                                        len(sources), request=request,
+                                        source="chat")
                 yield sse_event("error", {"message": err_msg})
                 return
 
-            # 5) done + 上下文追加 + 审计日志
+            # 5) done + 上下文追加 + 记录落库
             ext_svc.append_context(config_id, body.session_id or "",
                                    question, "".join(answer_parts))
-            ext_svc.log_query(config_id, question, len(sources))
+            await ext_svc.log_query(config_id, ext.get("name", ""), question,
+                                    len(sources), request=request,
+                                    source="chat")
             yield sse_event("done", {"session_id": body.session_id or "",
                                      "message_count": len(answer_parts)})
         except Exception as e:
@@ -686,7 +760,8 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
 
     # 2) 无命中：固定文案直接返回，不调用 LLM（日志 hit_count=0）
     if not sources:
-        ext_svc.log_query(config_id, question, 0)
+        await ext_svc.log_query(config_id, ext.get("name", ""), question, 0,
+                                request=request, source="query")
         return {"answer": _NO_HIT_TIP, "sources": []}
 
     # 3) 组装 prompt（复用 chat_service 的 system 组装：config.system_prompt
@@ -738,5 +813,6 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
             "text": _truncate(text, SOURCE_MAX_LEN),
             "image_urls": _extract_image_urls(text),
         })
-    ext_svc.log_query(config_id, question, len(sources))
+    await ext_svc.log_query(config_id, ext.get("name", ""), question,
+                            len(sources), request=request, source="query")
     return {"answer": answer, "sources": out_sources}

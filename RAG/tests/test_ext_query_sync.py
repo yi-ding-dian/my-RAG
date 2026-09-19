@@ -14,10 +14,7 @@
 """
 from __future__ import annotations
 
-import json
-
 from conftest import create_kb, upload_and_ingest
-from backend.config import DATA_DIR
 
 
 def create_ext(client, headers, name="外部查询", kb_ids=None, config=None):
@@ -286,23 +283,21 @@ class TestSyncRateLimitAndLog:
         r = sync_query(client, item2["id"], item2["token"], "x")
         assert r.status_code == 200
 
-    def test_query_log_written_same_file(self, client, admin_headers,
-                                         mock_embedding, mock_llm):
-        """/query 审计日志与 /chat 同一文件落盘（命中记录 hit_count）"""
+    def test_query_log_written_same_table(self, client, admin_headers,
+                                          mock_embedding, mock_llm):
+        """/query 与 /chat 的记录进同一张表，并以 source 区分接入方式"""
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])
         item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
         mock_llm()
-        # 先 /chat 再 /query，验证同文件追加
         client.post(f"/api/ext/{item['id']}/chat", json={"query": "Python 是什么？"},
                     headers={"Authorization": f"Bearer {item['token']}"})
         r = sync_query(client, item["id"], item["token"], "Python 是什么？")
         assert r.status_code == 200, r.text
-        log_path = DATA_DIR / "ext_query_logs.jsonl"
-        assert log_path.exists()
-        lines = [json.loads(l) for l in
-                 log_path.read_text(encoding="utf-8").strip().splitlines()]
-        assert len(lines) == 2, "chat 与 query 应同文件各记一行"
-        assert lines[1]["config_id"] == item["id"]
-        assert lines[1]["query"] == "Python 是什么？"
-        assert lines[1]["hit_count"] >= 1
+        data = client.get("/api/ext-queries/logs", headers=admin_headers).json()
+        assert data["total"] == 2, "chat 与 query 应各记一条"
+        assert {l["source"] for l in data["items"]} == {"chat", "query"}, \
+            "应以 source 区分是网页还是 Agent 接入"
+        assert all(l["config_id"] == item["id"] for l in data["items"])
+        assert all(l["hit_count"] >= 1 for l in data["items"])
+        assert all(l["client_ip"] for l in data["items"]), "两条都应记来源 IP"

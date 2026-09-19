@@ -1,383 +1,295 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import AppModal from '../../shared/components/common/AppModal';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import {
-  App as AntApp, 
-  Button, 
-  Form, 
-  Input, 
-  InputNumber, 
-  Popconfirm, 
-  Select, 
-  Space, 
-  Switch, 
-  Table, 
-  Tag, 
-  Tooltip, 
-  Typography} from 'antd';
+  App as AntApp,
+  Button,
+  Card,
+  Col,
+  Empty,
+  Row,
+  Space,
+  Spin,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
 import {
-  CopyOutlined,
-  LinkOutlined,
-  PlusOutlined,
+  BarChartOutlined,
+  ProfileOutlined,
   ReloadOutlined,
-  StopOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
+import * as echarts from 'echarts/core';
+import { BarChart } from 'echarts/charts';
+import { GridComponent, TooltipComponent } from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
+import type { ECharts, EChartsCoreOption } from 'echarts/core';
 import {
-  asApiError,
   ExtQuery,
-  ExtQueryConfig,
-  KnowledgeBase,
-  createExtQuery,
-  deleteExtQuery,
-  extQueryLink,
-  getExtQueryToken,
-  listDepartments,
+  ExtQueryLog,
+  ExtQueryOverview,
+  getExtQueryOverview,
   listExtQueries,
-  listKbs,
-  resetExtQueryToken,
-  toggleExtQuery,
-  updateExtQuery,
+  listExtQueryLogs,
 } from '../../shared/api/client';
 import PageHeader from '../../shared/components/layout/PageHeader';
-import ResizableTitle from '../../shared/components/common/ResizableTitle';
-import { useResizableColumns } from '../../shared/hooks/useResizableColumns';
+import { expiryColor, expiryState, expiryText } from './expiry';
 
-const { TextArea } = Input;
+echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
-/** 查询配置表单值（空 = 跟随全局，提交时转 null） */
-interface ConfigFormValues {
-  system_prompt?: string;
-  temperature?: number | null;
-  top_p?: number | null;
-  max_tokens?: number | null;
-  top_k?: number | null;
-  similarity_threshold?: number | null;
-  enable_multi_turn?: boolean;
-  history_rounds?: number | null;
-  enable_images?: boolean;
-}
-
-interface FormValues {
-  name: string;
-  kb_ids: string[];
-  config: ConfigFormValues;
-}
-
-/** 表单配置 → 提交载荷（空值转 null = 跟随全局；system_prompt 空串 = 默认模板） */
-const configToPayload = (c: ConfigFormValues): ExtQueryConfig => ({
-  system_prompt: c.system_prompt ?? '',
-  temperature: c.temperature ?? null,
-  top_p: c.top_p ?? null,
-  max_tokens: c.max_tokens ?? null,
-  top_k: c.top_k ?? null,
-  similarity_threshold: c.similarity_threshold ?? null,
-  enable_multi_turn: c.enable_multi_turn ?? true,
-  history_rounds: c.history_rounds ?? null,
-  enable_images: c.enable_images ?? true,
-});
-
-/** 默认配置表单值 */
-const defaultConfigForm = (config: ExtQueryConfig = {}): ConfigFormValues => ({
-  system_prompt: config.system_prompt ?? '',
-  temperature: config.temperature ?? null,
-  top_p: config.top_p ?? null,
-  max_tokens: config.max_tokens ?? null,
-  top_k: config.top_k ?? null,
-  similarity_threshold: config.similarity_threshold ?? null,
-  enable_multi_turn: config.enable_multi_turn ?? true,
-  history_rounds: config.history_rounds ?? null,
-  enable_images: config.enable_images ?? true,
-});
+/** 图表坐标轴配色（与日志总览/知识图谱保持一致） */
+const AXIS_COLOR = 'rgba(128, 128, 128, 0.85)';
+const SPLIT_COLOR = 'rgba(128, 128, 128, 0.18)';
 
 /**
- * 外部查询管理（仅 super_admin）：将选定的知识库暴露为带 token 的查询链接，
- * 外部人员无需账号即可查询。链接 = 访问凭证，可复制分发/随时重置/停用。
+ * 两块内容区的高度上限：数据再多也不把趋势图顶出屏幕——总览只做概览，
+ * 完整明细分别去「管理链接」「查看全部」的子页面看（那里有表格与分页）
  */
-const ExtQueriesPage: React.FC = () => {
+const PANEL_BODY_HEIGHT = 300;
+/** antd small 表格表头高度（左侧表体限高后，右侧列表据此对齐总高） */
+const TABLE_HEADER_HEIGHT = 40;
+
+/** 最近访问列表拉取条数（超过高度上限可滚动查看） */
+const RECENT_LIMIT = 20;
+
+interface StatItem {
+  label: string;
+  value: React.ReactNode;
+  /** 需要引起注意的统计（即将到期/已过期）用告警色 */
+  tone?: 'warn' | 'danger';
+}
+
+interface EntryCardProps {
+  icon: React.ReactNode;
+  gradient: string;
+  title: string;
+  description: string;
+  stats: StatItem[];
+  onClick: () => void;
+}
+
+const toneColor: Record<string, string> = {
+  warn: '#d97706',
+  danger: '#dc2626',
+};
+
+/** 总览入口卡片（渐变色块图标 + 标题说明 + 统计条） */
+const EntryCard: React.FC<EntryCardProps> = ({
+  icon, gradient, title, description, stats, onClick,
+}) => (
+  <Card
+    hoverable
+    onClick={onClick}
+    style={{ borderRadius: 14, height: '100%' }}
+    styles={{ body: { padding: 20 } }}
+  >
+    <Space align="start" size={14} style={{ width: '100%' }}>
+      <div
+        style={{
+          width: 48,
+          height: 48,
+          flex: '0 0 48px',
+          borderRadius: 12,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 22,
+          color: '#fff',
+          background: gradient,
+          boxShadow: '0 6px 16px rgba(37, 99, 235, 0.22)',
+        }}
+      >
+        {icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Typography.Text strong style={{ fontSize: 16 }}>{title}</Typography.Text>
+          <RightOutlined style={{ fontSize: 11, color: '#94a3b8' }} />
+        </div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {description}
+        </Typography.Text>
+        <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: '8px 20px' }}>
+          {stats.map(s => (
+            <div key={s.label}>
+              <div
+                style={{
+                  fontSize: 20,
+                  fontWeight: 600,
+                  lineHeight: 1.2,
+                  color: s.tone ? toneColor[s.tone] : undefined,
+                }}
+              >
+                {s.value}
+              </div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {s.label}
+              </Typography.Text>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Space>
+  </Card>
+);
+
+/** 链接启用状态：停用 / 已过期 / 启用中（停用与过期是两回事，都要显式提示） */
+const linkStateTag = (link: ExtQuery) => {
+  if (!link.enabled) return <Tag color="default">已停用</Tag>;
+  if (expiryState(link.expires_at) === 'expired') return <Tag color="red">已过期</Tag>;
+  return <Tag color="green">启用中</Tag>;
+};
+
+/**
+ * 近 7 天查询趋势（手写 echarts 集成：init / ResizeObserver 自适应 / dispose，
+ * 与日志总览、知识图谱同款接入方式；按需引入避免打进整个 echarts）
+ */
+const TrendChart: React.FC<{ daily: { date: string; count: number }[] }> = ({
+  daily,
+}) => {
+  const elRef = useRef<HTMLDivElement>(null);
+  const [chart, setChart] = useState<ECharts | null>(null);
+
+  useEffect(() => {
+    if (!elRef.current) return;
+    const instance = echarts.init(elRef.current);
+    setChart(instance);
+    const ro = new ResizeObserver(() => instance.resize());
+    ro.observe(elRef.current);
+    return () => {
+      ro.disconnect();
+      instance.dispose();
+      setChart(null);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!chart) return;
+    const option: EChartsCoreOption = {
+      grid: { left: 8, right: 12, top: 16, bottom: 4, containLabel: true },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      xAxis: {
+        type: 'category',
+        data: daily.map(d => d.date.slice(5)),
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: SPLIT_COLOR } },
+        axisLabel: { color: AXIS_COLOR },
+      },
+      yAxis: {
+        type: 'value',
+        minInterval: 1, // 次数为整数，避免出现 0.5 这类刻度
+        splitLine: { lineStyle: { color: SPLIT_COLOR } },
+        axisLabel: { color: AXIS_COLOR },
+      },
+      series: [{
+        name: '查询次数',
+        type: 'bar',
+        barMaxWidth: 36,
+        itemStyle: { color: '#2563eb', borderRadius: [4, 4, 0, 0] },
+        data: daily.map(d => d.count),
+      }],
+    };
+    chart.setOption(option, true);
+  }, [chart, daily]);
+
+  return <div ref={elRef} style={{ width: '100%', height: 160 }} />;
+};
+
+/**
+ * 外部查询总览（仅 super_admin）
+ *
+ * 模块入口页：上方两张卡片分别进「外部查询配置」与「外部查询记录」；
+ * 下方「链接速览 + 最近访问」让首页一眼可见当前状态——哪些链接快到期、
+ * 哪些没人用、外部最近在问什么，不必再点进去翻。
+ */
+const ExtQueries: React.FC = () => {
+  const navigate = useNavigate();
   const { message } = AntApp.useApp();
-
-  // 列宽拖拽：拖拽后的列宽存 colWidths（按列 key），scroll.x 动态对齐列宽和
-  const { colWidths, handleResize, tableWidth } = useResizableColumns<ExtQuery>();
-
-  const [items, setItems] = useState<ExtQuery[]>([]);
+  const [overview, setOverview] = useState<ExtQueryOverview | null>(null);
+  const [links, setLinks] = useState<ExtQuery[]>([]);
+  const [recent, setRecent] = useState<ExtQueryLog[]>([]);
   const [loading, setLoading] = useState(false);
-  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
-  const [deptName, setDeptName] = useState<Record<string, string>>({});
-
-  // 新建/编辑弹窗
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState<ExtQuery | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [form] = Form.useForm<FormValues>();
-
-  // 创建/重置后展示链接（含新 token）
-  const [linkModal, setLinkModal] = useState<{ title: string; link: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await listExtQueries();
-      setItems(res.data);
+      const [ovRes, linkRes, logRes] = await Promise.all([
+        getExtQueryOverview(),
+        listExtQueries(),
+        listExtQueryLogs({ page: 1, page_size: RECENT_LIMIT }),
+      ]);
+      setOverview(ovRes.data);
+      setLinks(linkRes.data);
+      setRecent(logRes.data.items);
     } catch {
-      message.error('加载外部查询列表失败');
+      message.error('加载总览数据失败');
     } finally {
       setLoading(false);
     }
   }, [message]);
 
-  // 数据源：全部门知识库（超管视角）+ 部门名映射
-  const loadOptions = useCallback(async () => {
-    try {
-      const [kbRes, deptRes] = await Promise.all([listKbs(), listDepartments()]);
-      setKbs(kbRes.data);
-      const map: Record<string, string> = {};
-      deptRes.data.forEach(d => {
-        map[d.id] = d.name;
-      });
-      setDeptName(map);
-    } catch {
-      // 选项加载失败不阻塞页面（下拉留空可刷新重试）
-    }
-  }, []);
-
   useEffect(() => {
     load();
-    loadOptions();
-  }, [load, loadOptions]);
+  }, [load]);
 
-  // 知识库下拉选项：库名 + （部门名 / 全局）
-  const kbOptions = useMemo(
-    () =>
-      kbs.map(k => ({
-        value: k.id,
-        label: `${k.name}（${k.department_id ? deptName[k.department_id] ?? '未知部门' : '全局'}）`,
-      })),
-    [kbs, deptName],
-  );
+  const linkStats = overview?.link_stats ?? {};
+  const summary = overview?.links;
+  const logs = overview?.logs;
 
-  const kbNameOf = useCallback(
-    (item: ExtQuery) =>
-      (item.kb_names ?? []).map(
-        k => `${k.name}${k.department_id ? `（${deptName[k.department_id] ?? '未知部门'}）` : '（全局）'}`,
-      ),
-    [deptName],
-  );
-
-  const openCreate = () => {
-    setEditing(null);
-    form.resetFields();
-    form.setFieldsValue({ config: defaultConfigForm() });
-    setModalOpen(true);
-  };
-
-  const openEdit = (item: ExtQuery) => {
-    setEditing(item);
-    form.setFieldsValue({
-      name: item.name,
-      kb_ids: item.kb_ids,
-      config: defaultConfigForm(item.config),
-    });
-    setModalOpen(true);
-  };
-
-  const copyLink = async (link: string) => {
-    try {
-      await navigator.clipboard.writeText(link);
-      message.success('链接已复制');
-    } catch {
-      message.error('复制失败，请手动复制');
-    }
-  };
-
-  const handleSubmit = async () => {
-    let values: FormValues;
-    try {
-      values = await form.validateFields();
-    } catch {
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const payload = {
-        name: values.name.trim(),
-        kb_ids: values.kb_ids,
-        config: configToPayload(values.config),
-      };
-      if (editing) {
-        await updateExtQuery(editing.id, payload);
-        message.success('外部查询已更新');
-        setModalOpen(false);
-        await load();
-        // 编辑不展示链接（token 不变，原链接继续有效）
-      } else {
-        const res = await createExtQuery(payload);
-        setModalOpen(false);
-        await load();
-        setLinkModal({
-          title: '外部查询链接已生成',
-          link: extQueryLink(res.data.id, res.data.token),
-        });
-      }
-    } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || (editing ? '更新失败' : '创建失败'));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleResetToken = async (item: ExtQuery) => {
-    try {
-      const res = await resetExtQueryToken(item.id);
-      await load();
-      setLinkModal({
-        title: '访问令牌已重置（旧链接已失效）',
-        link: extQueryLink(item.id, res.data.token),
-      });
-    } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || '重置令牌失败');
-    }
-  };
-
-  const handleToggle = async (item: ExtQuery) => {
-    try {
-      const res = await toggleExtQuery(item.id);
-      message.success(res.data.enabled ? '已启用' : '已停用（链接立即失效）');
-      await load();
-    } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || '操作失败');
-    }
-  };
-
-  const handleDelete = async (item: ExtQuery) => {
-    try {
-      await deleteExtQuery(item.id);
-      message.success(`外部查询「${item.name}」已删除`);
-      await load();
-    } catch (e: unknown) {
-      message.error(asApiError(e).response?.data?.detail || '删除失败');
-    }
-  };
-
-  const columns = [
+  const linkColumns = [
     {
       title: '名称',
       dataIndex: 'name',
-      width: colWidths.name ?? 220,
-      onHeaderCell: () => ({ width: colWidths.name ?? 220, onResize: handleResize('name'), title: '名称' }),
-      render: (name: string) => (
-        <Typography.Text strong>{name}</Typography.Text>
-      ),
-    },
-    {
-      title: '暴露的知识库',
-      dataIndex: 'kb_ids',
-      width: colWidths.kb_ids ?? 260,
-      onHeaderCell: () => ({ width: colWidths.kb_ids ?? 260, onResize: handleResize('kb_ids'), title: '暴露的知识库' }),
-      render: (_: unknown, item: ExtQuery) => (
-        <Space size={[4, 4]} wrap>
-          {kbNameOf(item).map(n => (
-            <Tag key={n}>{n}</Tag>
-          ))}
-        </Space>
+      ellipsis: true,
+      render: (name: string, row: ExtQuery) => (
+        <Link to={`/ext-queries/logs/${row.id}`}>{name}</Link>
       ),
     },
     {
       title: '状态',
-      dataIndex: 'enabled',
-      width: colWidths.enabled ?? 90,
-      onHeaderCell: () => ({ width: colWidths.enabled ?? 90, onResize: handleResize('enabled'), title: '状态' }),
-      render: (enabled: boolean) =>
-        enabled ? <Tag color="green">启用</Tag> : <Tag color="default">已停用</Tag>,
+      key: 'state',
+      width: 76,
+      render: (_: unknown, row: ExtQuery) => linkStateTag(row),
     },
     {
-      title: '链接',
-      dataIndex: 'token',
-      // 列宽 210：需容纳「/ext-query/+id 前 8 位」共 19 个等宽字符（12px 下约 137px）
-      // + 复制按钮 + 单元格 padding；原先 130 装不下，连前缀都被截成 /ext-quer...
-      width: colWidths.token ?? 210,
-      onHeaderCell: () => ({ width: colWidths.token ?? 210, onResize: handleResize('token'), title: '链接' }),
-      render: (_: unknown, item: ExtQuery) => (
-        <Space size={4}>
-          {/* 悬浮展示完整路径；令牌是访问凭证，不在此明文展示，复制走右侧按钮 */}
-          <Tooltip
-            title={
-              <>
-                <div>/ext-query/{item.id}</div>
-                <div style={{ opacity: 0.8 }}>含令牌的完整链接请点右侧按钮复制</div>
-              </>
-            }
-          >
-            <Typography.Text code ellipsis style={{ maxWidth: 145, fontSize: 12 }}>
-              /ext-query/{item.id.slice(0, 8)}
+      title: '有效期',
+      dataIndex: 'expires_at',
+      width: 96,
+      render: (v: string | null) => (
+        <Tag color={expiryColor(v)}>{expiryText(v)}</Tag>
+      ),
+    },
+    {
+      title: '查询次数',
+      key: 'count',
+      width: 72,
+      align: 'right' as const,
+      render: (_: unknown, row: ExtQuery) => {
+        const n = linkStats[row.id]?.count ?? 0;
+        return n > 0 ? n : <Typography.Text type="secondary">0</Typography.Text>;
+      },
+    },
+    {
+      title: '最近访问',
+      key: 'last_at',
+      width: 98,
+      render: (_: unknown, row: ExtQuery) => {
+        const t = linkStats[row.id]?.last_at;
+        if (!t) {
+          return (
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              从未访问
             </Typography.Text>
+          );
+        }
+        // 列宽有限：只显示「月-日 时:分」，完整时间放 tooltip
+        return (
+          <Tooltip title={t}>
+            <Typography.Text style={{ fontSize: 13 }}>{t.slice(5, 16)}</Typography.Text>
           </Tooltip>
-          <Tooltip title={item.enabled ? '复制分享链接' : '已停用，无法查询'}>
-            <Button
-              type="text"
-              size="small"
-              icon={<CopyOutlined />}
-              disabled={!item.enabled}
-              onClick={async () => {
-                try {
-                  // 列表只回传打码 token：复制时走独立接口取完整凭证（带审计）
-                  const res = await getExtQueryToken(item.id);
-                  await copyLink(extQueryLink(item.id, res.data.token));
-                } catch {
-                  message.error('获取访问令牌失败，请重试');
-                }
-              }}
-            />
-          </Tooltip>
-        </Space>
-      ),
-    },
-    {
-      title: '更新时间',
-      dataIndex: 'updated_at',
-      width: colWidths.updated_at ?? 170,
-      onHeaderCell: () => ({ width: colWidths.updated_at ?? 170, onResize: handleResize('updated_at'), title: '更新时间' }),
-      render: (t: string) => <Typography.Text type="secondary">{t}</Typography.Text>,
-    },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 230,
-      render: (_: unknown, item: ExtQuery) => (
-        <Space size={0}>
-          <Button type="link" size="small" onClick={() => openEdit(item)}>
-            编辑
-          </Button>
-          <Popconfirm
-            title="重置访问令牌"
-            description="旧链接将立即失效，并生成新链接。确定重置？"
-            okText="重置"
-            cancelText="取消"
-            onConfirm={() => handleResetToken(item)}
-          >
-            <Button type="link" size="small">重置令牌</Button>
-          </Popconfirm>
-          <Button
-            type="link"
-            size="small"
-            danger={item.enabled}
-            icon={item.enabled ? <StopOutlined /> : undefined}
-            onClick={() => handleToggle(item)}
-          >
-            {item.enabled ? '停用' : '启用'}
-          </Button>
-          <Popconfirm
-            title="删除外部查询"
-            description="删除后链接立即失效，无法恢复。确定删除？"
-            okText="删除"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-            onConfirm={() => handleDelete(item)}
-          >
-            <Button type="link" size="small" danger>
-              删除
-            </Button>
-          </Popconfirm>
-        </Space>
-      ),
+        );
+      },
     },
   ];
 
@@ -385,148 +297,157 @@ const ExtQueriesPage: React.FC = () => {
     <div>
       <PageHeader
         title="外部查询"
-        description="将知识库开放给外部人员查询（无需系统账号）：选择暴露的知识库并配置查询参数后生成带令牌的链接，外部人员打开链接即可提问。链接即访问凭证，请妥善保管；泄露可随时重置或停用。"
+        description="将知识库开放给外部人员查询（无需系统账号）：管理带令牌的对外链接，并查看外部访问记录"
         extra={
-          <>
-            <Button icon={<ReloadOutlined />} onClick={() => { load(); loadOptions(); }}>
-              刷新
-            </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新建外部查询
-            </Button>
-          </>
-        }
-      />
-
-      <Table
-        rowKey="id"
-        loading={loading}
-        dataSource={items}
-        columns={columns}
-        pagination={false}
-        components={{ header: { cell: ResizableTitle } }}
-        scroll={{ x: tableWidth(columns) }}
-        locale={{ emptyText: '暂无外部查询配置，点击右上角「新建外部查询」创建' }}
-      />
-
-      {/* 新建 / 编辑弹窗 */}
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 640, h: 420 }}
-        rememberKey="extq-1"
-        title={editing ? '编辑外部查询' : '新建外部查询'}
-        open={modalOpen}
-        onOk={handleSubmit}
-        onCancel={() => setModalOpen(false)}
-        confirmLoading={submitting}
-        okText={editing ? '保存' : '生成链接'}
-        cancelText="取消"
-        width={640}
-      >
-        <Form form={form} layout="vertical">
-          <Form.Item
-            name="name"
-            label="名称"
-            rules={[{ required: true, whitespace: true, message: '请输入名称' }]}
-          >
-            <Input placeholder="例如：产品知识对外查询" maxLength={50} showCount />
-          </Form.Item>
-          <Form.Item
-            name="kb_ids"
-            label="暴露的知识库（多选，1-10 个）"
-            rules={[{ required: true, message: '请至少选择一个知识库' }]}
-          >
-            <Select
-              mode="multiple"
-              placeholder="选择要对外的知识库（跨部门可见）"
-              options={kbOptions}
-              optionFilterProp="label"
-              maxTagCount={5}
-            />
-          </Form.Item>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            查询参数（留空 = 跟随全局配置）
-          </Typography.Text>
-          <Form.Item name={['config', 'system_prompt']} label="系统提示词" style={{ marginTop: 8 }}>
-            <TextArea
-              rows={3}
-              placeholder="留空使用默认提示词；可含 {knowledge} 占位符（检索原文逐字注入）或 {refs}（带来源标注的引用内容）"
-            />
-          </Form.Item>
-          <Space size={16} wrap>
-            <Form.Item name={['config', 'temperature']} label="温度（0-2）">
-              <InputNumber min={0} max={2} step={0.1} style={{ width: 140 }} placeholder="跟随全局" />
-            </Form.Item>
-            <Form.Item name={['config', 'top_p']} label="Top P（0-1）">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: 140 }} placeholder="跟随全局" />
-            </Form.Item>
-            <Form.Item name={['config', 'top_k']} label="检索条数（1-20）">
-              <InputNumber min={1} max={20} step={1} style={{ width: 140 }} placeholder="跟随全局" />
-            </Form.Item>
-            <Form.Item name={['config', 'similarity_threshold']} label="相似度阈值（0-1）">
-              <InputNumber min={0} max={1} step={0.05} style={{ width: 140 }} placeholder="跟随全局" />
-            </Form.Item>
-            <Form.Item name={['config', 'max_tokens']} label="最大输出 Token">
-              <InputNumber min={1} max={16384} step={128} style={{ width: 140 }} placeholder="跟随全局" />
-            </Form.Item>
-            <Form.Item name={['config', 'history_rounds']} label="历史轮数（1-20）">
-              <InputNumber min={1} max={20} step={1} style={{ width: 140 }} placeholder="跟随全局" />
-            </Form.Item>
-            <Form.Item
-              name={['config', 'enable_multi_turn']}
-              label="多轮对话"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              name={['config', 'enable_images']}
-              label={
-                <Tooltip title="开启后外部页会展示文档中的示意图与截图（并引导模型在回答中原样输出图片）。文档含敏感信息时建议关闭——关闭后图片不会展示，也不会留下裂图或死链。">
-                  <span style={{ cursor: 'help', borderBottom: '1px dashed #d9d9d9' }}>
-                    显示图片
-                  </span>
-                </Tooltip>
-              }
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-          </Space>
-        </Form>
-      </AppModal>
-
-      {/* 链接展示（创建/重置后）：含访问凭证，仅展示一次 */}
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 680, h: 420 }}
-        rememberKey="extq-2"
-        title={linkModal?.title}
-        open={!!linkModal}
-        onCancel={() => setLinkModal(null)}
-        footer={
-          <Button
-            type="primary"
-            icon={<LinkOutlined />}
-            onClick={() => linkModal && copyLink(linkModal.link)}
-          >
-            复制链接
+          <Button icon={<ReloadOutlined />} onClick={load}>
+            刷新
           </Button>
         }
-      >
-        <Typography.Paragraph type="warning" style={{ marginBottom: 8 }}>
-          链接内含访问令牌，凭此链接即可查询，请妥善保管，仅发给需要的外部人员。
-        </Typography.Paragraph>
-        <Typography.Paragraph
-          copyable={{ tooltips: ['复制', '已复制'], text: linkModal?.link }}
-          code
-          style={{ wordBreak: 'break-all', marginBottom: 0 }}
-        >
-          {linkModal?.link}
-        </Typography.Paragraph>
-      </AppModal>
+      />
+
+      {loading && !overview ? (
+        <div style={{ textAlign: 'center', padding: '48px 0' }}>
+          <Spin />
+        </div>
+      ) : (
+        <>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
+              gap: 16,
+            }}
+          >
+            <EntryCard
+              icon={<ProfileOutlined />}
+              gradient="linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)"
+              title="外部查询配置"
+              description="新建链接、配置查询参数与有效期、重置令牌 / 停用"
+              stats={[
+                { label: '链接总数', value: summary?.total ?? 0 },
+                { label: '启用中', value: summary?.enabled ?? 0 },
+                {
+                  label: '即将到期',
+                  value: summary?.expiring_soon ?? 0,
+                  tone: (summary?.expiring_soon ?? 0) > 0 ? 'warn' : undefined,
+                },
+                {
+                  label: '已过期',
+                  value: summary?.expired ?? 0,
+                  tone: (summary?.expired ?? 0) > 0 ? 'danger' : undefined,
+                },
+              ]}
+              onClick={() => navigate('/ext-queries/config')}
+            />
+
+            <EntryCard
+              icon={<BarChartOutlined />}
+              gradient="linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)"
+              title="外部查询记录"
+              description={`外部链接的访问日志（含来源 IP），保留 ${logs?.retain_days ?? 90} 天`}
+              stats={[
+                { label: '今日查询', value: logs?.today ?? 0 },
+                { label: '累计查询', value: logs?.total ?? 0 },
+                { label: '最近访问', value: logs?.last_at ? logs.last_at.slice(5, 16) : '—' },
+              ]}
+              onClick={() => navigate('/ext-queries/logs')}
+            />
+          </div>
+
+          {summary && summary.expiring_soon > 0 && (
+            <Typography.Paragraph type="warning" style={{ marginTop: 12, marginBottom: 0 }}>
+              有 {summary.expiring_soon} 条链接将在 {overview?.expiring_soon_days ?? 7} 天内到期，
+              到期后外部访问一律返回「链接无效或已失效」，可在「外部查询配置」中续期。
+            </Typography.Paragraph>
+          )}
+
+          {/* 下方两块：链接速览（谁快到期 / 谁没人用）+ 最近访问（外部在问什么）
+              左右列宽与上方入口卡一致（12/12）——上下分栏线对齐，视觉成组：
+              左列=配置相关、右列=记录相关 */}
+          <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+            <Col xs={24} xl={12}>
+              <Card
+                size="small"
+                title="链接速览"
+                extra={<Link to="/ext-queries/config">管理链接</Link>}
+                styles={{ body: { padding: 0 } }}
+              >
+                <Table
+                  rowKey="id"
+                  size="small"
+                  dataSource={links}
+                  columns={linkColumns}
+                  pagination={false}
+                  scroll={{ y: PANEL_BODY_HEIGHT }}
+                  locale={{ emptyText: '暂无外部查询链接' }}
+                />
+              </Card>
+            </Col>
+            <Col xs={24} xl={12}>
+              <Card
+                size="small"
+                title="最近访问"
+                extra={<Link to="/ext-queries/logs">查看全部</Link>}
+                styles={{ body: { padding: recent.length ? '8px 0' : 24 } }}
+              >
+                {recent.length === 0 ? (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无访问记录" />
+                ) : (
+                  // 限高与左侧表体对齐（含表头高度），超出滚动
+                  <div
+                    style={{
+                      maxHeight: PANEL_BODY_HEIGHT + TABLE_HEADER_HEIGHT,
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {recent.map((r, idx) => (
+                      <div
+                        key={r.id}
+                        style={{
+                          padding: '8px 16px',
+                          borderTop: idx ? '1px solid #f1f5f9' : 'none',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <Typography.Text style={{ fontSize: 13 }} ellipsis>
+                            {r.config_name || '(已删除的链接)'}
+                          </Typography.Text>
+                          <Typography.Text type="secondary" style={{ fontSize: 12, flex: '0 0 auto' }}>
+                            {r.created_at.slice(5, 16)}
+                          </Typography.Text>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 2 }}>
+                          <Typography.Text
+                            type="secondary"
+                            style={{ fontSize: 12 }}
+                            ellipsis={{ tooltip: r.query }}
+                          >
+                            {r.query}
+                          </Typography.Text>
+                          <Typography.Text type="secondary" style={{ fontSize: 12, flex: '0 0 auto' }}>
+                            {r.client_ip || '-'}
+                          </Typography.Text>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </Col>
+            <Col span={24}>
+              <Card
+                size="small"
+                title="近 7 天查询趋势"
+                styles={{ body: { padding: '8px 12px 0' } }}
+              >
+                <TrendChart daily={overview?.daily ?? []} />
+              </Card>
+            </Col>
+          </Row>
+        </>
+      )}
     </div>
   );
 };
 
-export default ExtQueriesPage;
+export default ExtQueries;

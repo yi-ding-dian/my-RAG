@@ -59,6 +59,9 @@ const UsersPage = lazy(() => import('./modules/users/Users'));
 const ProfilePage = lazy(() => import('./modules/profile/Profile'));
 const LoginPage = lazy(() => import('./modules/auth/Login'));
 const ExtQueriesPage = lazy(() => import('./modules/ext-queries/ExtQueries'));
+const ExtQueryConfigPage = lazy(() => import('./modules/ext-queries/ExtQueryConfig'));
+const ExtQueryLogsPage = lazy(() => import('./modules/ext-queries/ExtQueryLogs'));
+const ExtQueryLogDetailPage = lazy(() => import('./modules/ext-queries/ExtQueryLogDetail'));
 const LogsPage = lazy(() => import('./modules/logs/Logs'));
 /* 外部查询公开页（无登录，独立于布局） */
 const ExtQueryPage = lazy(() => import('./modules/ext-queries/ExtQueryPage'));
@@ -516,12 +519,38 @@ const AppLayout: React.FC = () => {
                     </ProtectedRoute>
                   }
                 />
-                {/* 外部查询管理（仅 super_admin）：知识库对外开放配置 */}
+                {/* 外部查询模块（仅 super_admin）：总览卡片 → 配置 / 记录
+                    子路由用 startsWith 命中父级菜单 key（见 menuKeyOf），
+                    故 /ext-queries/* 下侧栏「外部查询」保持高亮 */}
                 <Route
                   path="/ext-queries"
                   element={
                     <ProtectedRoute roles={['super_admin']}>
                       <ExtQueriesPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ext-queries/config"
+                  element={
+                    <ProtectedRoute roles={['super_admin']}>
+                      <ExtQueryConfigPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ext-queries/logs"
+                  element={
+                    <ProtectedRoute roles={['super_admin']}>
+                      <ExtQueryLogsPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/ext-queries/logs/:configId"
+                  element={
+                    <ProtectedRoute roles={['super_admin']}>
+                      <ExtQueryLogDetailPage />
                     </ProtectedRoute>
                   }
                 />

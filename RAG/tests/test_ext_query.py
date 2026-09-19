@@ -3,26 +3,33 @@
 覆盖：
 - 管理 API（仅 super_admin）：创建（含 token/kb_names）/列表/校验（空名、
   库数 1~10、库存在性、config 白名单与范围）/权限 403/404/编辑（token 不变）/
-  重置 token（旧链接失效）/停用启用/删除
-- 外部 API（公开 token 鉴权）：info 校验、错 token/停用/不存在统一 401、
-  SSE 事件流（meta→delta→done）、无命中不调 LLM、system_prompt 覆盖与
-  {knowledge} 占位符、默认模板、多库检索 kb_name、多轮上下文、限流 429、
-  审计日志落盘
+  重置 token（旧链接失效）/停用启用/删除/有效期设置与续期
+- 外部 API（公开 token 鉴权）：info 校验、错 token/停用/**已过期**/不存在
+  统一 401、SSE 事件流（meta→delta→done）、无命中不调 LLM、system_prompt
+  覆盖与 {knowledge} 占位符、默认模板、多库检索 kb_name、多轮上下文、
+  限流 429、记录落库（含来源 IP）
+- 图片代理：鉴权 / 越权（非暴露库）/ 开关 / 路径穿越 / 正常读取
+- 记录接口：筛选（链接、IP、时间段）/ 分页 / 总览统计
 全部离线（mock embedding + LLM）。
 """
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 from conftest import create_kb, upload_and_ingest
-from backend.config import DATA_DIR
+
+# 到期时间格式（与实现约定一致；此处写字面量避免与实现常量耦合）
+EXPIRES_FMT = "%Y-%m-%d %H:%M:%S"
 
 
-def create_ext(client, headers, name="外部查询", kb_ids=None, config=None):
+def create_ext(client, headers, name="外部查询", kb_ids=None, config=None,
+               expires_at=None):
     """创建外部查询（默认 admin 登录态），断言 201 并返回完整配置"""
-    resp = client.post("/api/ext-queries", json={
-        "name": name, "kb_ids": kb_ids or [], "config": config,
-    }, headers=headers)
+    payload = {"name": name, "kb_ids": kb_ids or [], "config": config}
+    if expires_at is not None:
+        payload["expires_at"] = expires_at
+    resp = client.post("/api/ext-queries", json=payload, headers=headers)
     assert resp.status_code == 201, resp.text
     return resp.json()
 
@@ -375,7 +382,7 @@ class TestExtChat:
 
     def test_query_log_written(self, client, admin_headers, mock_embedding,
                                mock_llm):
-        """外部查询审计日志落盘 jsonl：命中与未命中都记录（命中数区分）"""
+        """外部查询记录落库：命中与未命中都记录（命中数区分，含来源 IP）"""
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])
         empty_kb = create_kb(client, name="空库")
@@ -386,17 +393,20 @@ class TestExtChat:
         mock_llm()
         self._chat(client, item_hit["id"], item_hit["token"], "Python 是什么？")
         self._chat(client, item_miss["id"], item_miss["token"], "任何问题")
-        log_path = DATA_DIR / "ext_query_logs.jsonl"
-        assert log_path.exists()
-        lines = [json.loads(l) for l in
-                 log_path.read_text(encoding="utf-8").strip().splitlines()]
-        assert len(lines) == 2
-        assert all(l["ts"] for l in lines)
-        assert lines[0]["config_id"] == item_hit["id"]
-        assert lines[0]["query"] == "Python 是什么？"
-        assert lines[0]["hit_count"] >= 1, "命中库应有命中数"
-        assert lines[1]["config_id"] == item_miss["id"]
-        assert lines[1]["hit_count"] == 0, "空库应记未命中"
+        r = client.get("/api/ext-queries/logs", headers=admin_headers)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["total"] == 2
+        logs = data["items"]  # 时间倒序：后查的空库在前
+        assert logs[0]["config_id"] == item_miss["id"]
+        assert logs[0]["config_name"] == "空库", "配置名冗余存储"
+        assert logs[0]["hit_count"] == 0, "空库应记未命中"
+        assert logs[1]["config_id"] == item_hit["id"]
+        assert logs[1]["query"] == "Python 是什么？"
+        assert logs[1]["hit_count"] >= 1, "命中库应有命中数"
+        assert logs[1]["source"] == "chat"
+        assert logs[1]["client_ip"], "应记录来源 IP（外部无账号，IP 是追溯线索）"
+        assert logs[1]["created_at"], "应记录发生时间"
 
     def test_chat_sources_image_rewritten(self, client, admin_headers,
                                           mock_embedding, mock_llm):
@@ -513,3 +523,186 @@ class TestExtImages:
         assert r.status_code == 200, r.text
         assert r.headers["content-type"].startswith("image/")
         assert r.content.startswith(b"\x89PNG")
+
+
+class TestExpiry:
+    """链接有效期：到期失效 / 续期 / 防探测口径"""
+
+    def test_expired_returns_401(self, client, admin_headers, mock_embedding):
+        """已过期 → 外部请求统一 401（与错 token 同文案，不暴露"已过期"状态）"""
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        past = (datetime.now() - timedelta(days=1)).strftime(EXPIRES_FMT)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          expires_at=past)
+        assert item["expires_at"] == past
+        r = client.post(f"/api/ext/{item['id']}/chat", json={"query": "x"},
+                        headers={"Authorization": f"Bearer {item['token']}"})
+        assert r.status_code == 401
+        assert "链接无效" in r.json()["detail"], "不得暴露是过期还是不存在"
+        # 其余外部端点口径一致
+        assert client.get(f"/api/ext/{item['id']}/info",
+                          params={"token": item["token"]}).status_code == 401
+        assert client.get(
+            f"/api/ext/{item['id']}/images/{kb['id']}/a.png",
+            params={"token": item["token"]}).status_code == 401
+
+    def test_not_expired_usable(self, client, admin_headers, mock_embedding,
+                                mock_llm):
+        """未到期 → 正常可用"""
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        future = (datetime.now() + timedelta(days=30)).strftime(EXPIRES_FMT)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          expires_at=future)
+        mock_llm()
+        r = client.post(f"/api/ext/{item['id']}/chat",
+                        json={"query": "Python 是什么？"},
+                        headers={"Authorization": f"Bearer {item['token']}"})
+        assert r.status_code == 200, r.text
+
+    def test_default_permanent(self, client, admin_headers):
+        """不传有效期 = 永久有效（存量配置零迁移）"""
+        kb = create_kb(client)
+        assert create_ext(client, admin_headers,
+                          kb_ids=[kb["id"]])["expires_at"] is None
+
+    def test_bad_format_rejected(self, client, admin_headers):
+        """格式非法 → 400 中文提示"""
+        kb = create_kb(client)
+        r = client.post("/api/ext-queries", json={
+            "name": "x", "kb_ids": [kb["id"]], "expires_at": "2026/12/31",
+        }, headers=admin_headers)
+        assert r.status_code == 400
+        assert "到期时间" in r.json()["detail"]
+
+    def test_renew_extends_from_original_expiry(self, client, admin_headers):
+        """续期：未过期时从**原到期时间**顺延，不损失剩余天数"""
+        kb = create_kb(client)
+        future = (datetime.now() + timedelta(days=10)).strftime(EXPIRES_FMT)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          expires_at=future)
+        r = client.post(f"/api/ext-queries/{item['id']}/renew",
+                        json={"days": 30}, headers=admin_headers)
+        assert r.status_code == 200, r.text
+        expected = (datetime.strptime(future, EXPIRES_FMT)
+                    + timedelta(days=30)).strftime(EXPIRES_FMT)
+        assert r.json()["expires_at"] == expected, "应从原到期时间顺延"
+
+    def test_renew_expired_from_now(self, client, admin_headers):
+        """续期：已过期时从当前时间重新起算"""
+        kb = create_kb(client)
+        past = (datetime.now() - timedelta(days=100)).strftime(EXPIRES_FMT)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          expires_at=past)
+        r = client.post(f"/api/ext-queries/{item['id']}/renew",
+                        json={"days": 7}, headers=admin_headers)
+        assert r.status_code == 200
+        left = (datetime.strptime(r.json()["expires_at"], EXPIRES_FMT)
+                - datetime.now()).days
+        assert 6 <= left <= 7, f"应从当前起算约 7 天，实际 {left}"
+
+    def test_renew_days_out_of_range(self, client, admin_headers):
+        """续期天数越界 → 400"""
+        kb = create_kb(client)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        for days in (0, -1, 9999):
+            r = client.post(f"/api/ext-queries/{item['id']}/renew",
+                            json={"days": days}, headers=admin_headers)
+            assert r.status_code == 400, f"days={days} 应被拒"
+
+    def test_update_can_clear_expiry(self, client, admin_headers):
+        """编辑不传 expires_at = 保持不变；传空串 = 清除（改永久）"""
+        kb = create_kb(client)
+        future = (datetime.now() + timedelta(days=10)).strftime(EXPIRES_FMT)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          expires_at=future)
+        r = client.put(f"/api/ext-queries/{item['id']}", json={"name": "改名"},
+                       headers=admin_headers)
+        assert r.json()["expires_at"] == future, "不传应保持不变"
+        r = client.put(f"/api/ext-queries/{item['id']}",
+                       json={"expires_at": ""}, headers=admin_headers)
+        assert r.json()["expires_at"] is None, "空串应清除有效期"
+
+
+class TestLogsApi:
+    """记录接口：总览统计 / 筛选 / 分页"""
+
+    def _produce(self, client, config_id, token, query="问题"):
+        """产生一条记录（空库查询无命中也会记录，无需 mock LLM）"""
+        return client.post(f"/api/ext/{config_id}/chat", json={"query": query},
+                           headers={"Authorization": f"Bearer {token}"})
+
+    def test_overview(self, client, admin_headers, mock_embedding):
+        """总览：链接维度与记录维度统计正确"""
+        kb = create_kb(client)
+        future = (datetime.now() + timedelta(days=3)).strftime(EXPIRES_FMT)
+        past = (datetime.now() - timedelta(days=1)).strftime(EXPIRES_FMT)
+        a = create_ext(client, admin_headers, kb_ids=[kb["id"]], name="甲")
+        create_ext(client, admin_headers, kb_ids=[kb["id"]], name="乙",
+                   expires_at=future)   # 3 天后到期 → 计入"即将到期"
+        create_ext(client, admin_headers, kb_ids=[kb["id"]], name="丙",
+                   expires_at=past)     # 已过期
+        # 先查询产生记录（停用后请求会 401、不再记录），再停用
+        self._produce(client, a["id"], a["token"])
+        client.post(f"/api/ext-queries/{a['id']}/toggle", headers=admin_headers)
+        r = client.get("/api/ext-queries/overview", headers=admin_headers)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["links"]["total"] == 3
+        assert d["links"]["enabled"] == 2, "甲已停用"
+        assert d["links"]["expiring_soon"] == 1
+        assert d["links"]["expired"] == 1
+        assert d["logs"]["today"] >= 1
+        assert d["logs"]["total"] >= 1
+        assert d["logs"]["last_at"], "应给出最近一次访问时间"
+        assert d["logs"]["retain_days"] == 90
+
+    def test_filter_by_config(self, client, admin_headers, mock_embedding):
+        """按链接筛选；config_name 冗余存储供展示"""
+        kb = create_kb(client)
+        a = create_ext(client, admin_headers, kb_ids=[kb["id"]], name="甲")
+        b = create_ext(client, admin_headers, kb_ids=[kb["id"]], name="乙")
+        self._produce(client, a["id"], a["token"], "甲的问题")
+        self._produce(client, b["id"], b["token"], "乙的问题")
+        d = client.get("/api/ext-queries/logs", params={"config_id": a["id"]},
+                       headers=admin_headers).json()
+        assert d["total"] == 1
+        assert d["items"][0]["query"] == "甲的问题"
+        assert d["items"][0]["config_name"] == "甲"
+
+    def test_filter_by_ip(self, client, admin_headers, mock_embedding):
+        """按来源 IP 模糊筛选（测试客户端的 IP 为 testclient）"""
+        kb = create_kb(client)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        self._produce(client, item["id"], item["token"])
+        hit = client.get("/api/ext-queries/logs", params={"ip": "testclient"},
+                         headers=admin_headers).json()
+        assert hit["total"] == 1
+        miss = client.get("/api/ext-queries/logs", params={"ip": "10.99.99"},
+                          headers=admin_headers).json()
+        assert miss["total"] == 0
+
+    def test_pagination(self, client, admin_headers, mock_embedding):
+        """分页：total 为筛选后总数，items 按时间倒序"""
+        kb = create_kb(client)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        for i in range(5):
+            self._produce(client, item["id"], item["token"], f"问题{i}")
+        d = client.get("/api/ext-queries/logs",
+                       params={"page": 1, "page_size": 2},
+                       headers=admin_headers).json()
+        assert d["total"] == 5
+        assert len(d["items"]) == 2
+        assert d["items"][0]["query"] == "问题4", "应时间倒序"
+        d2 = client.get("/api/ext-queries/logs",
+                        params={"page": 3, "page_size": 2},
+                        headers=admin_headers).json()
+        assert len(d2["items"]) == 1
+
+    def test_non_admin_denied(self, client, user_headers):
+        """普通用户访问记录/总览接口 → 404 伪装（与其余管理接口一致）"""
+        assert client.get("/api/ext-queries/logs",
+                          headers=user_headers).status_code == 404
+        assert client.get("/api/ext-queries/overview",
+                          headers=user_headers).status_code == 404

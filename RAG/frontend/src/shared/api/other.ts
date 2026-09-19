@@ -11,6 +11,8 @@ import type {
   ExtQuery,
   ExtQueryCreateInput,
   ExtQueryUpdateInput,
+  ExtQueryLogPage,
+  ExtQueryOverview,
   LogFileInfo,
   LogHealth,
   LogOverview,
@@ -264,6 +266,24 @@ export const resetExtQueryToken = (id: string) =>
 
 export const toggleExtQuery = (id: string) =>
   api.post<ExtQuery>(`/ext-queries/${id}/toggle`);
+
+/** 续期：从 max(现在, 原到期时间) 顺延 N 天（未过期时不损失剩余天数），token 不变 */
+export const renewExtQuery = (id: string, days: number) =>
+  api.post<ExtQuery>(`/ext-queries/${id}/renew`, { days });
+
+/** 总览统计（链接维度 + 记录维度），总览页卡片用 */
+export const getExtQueryOverview = () =>
+  api.get<ExtQueryOverview>('/ext-queries/overview');
+
+/** 外部查询记录（按链接 / IP / 时间段筛选，时间倒序分页） */
+export const listExtQueryLogs = (params: {
+  config_id?: string;
+  ip?: string;
+  start?: string;
+  end?: string;
+  page?: number;
+  page_size?: number;
+}) => api.get<ExtQueryLogPage>('/ext-queries/logs', { params });
 
 export const deleteExtQuery = (id: string) =>
   api.delete<{ message: string }>(`/ext-queries/${id}`);

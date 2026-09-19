@@ -279,6 +279,7 @@ async def init_db() -> dict:
 
     # 2. 建表（import ORM 模型确保注册到 Base.metadata）
     from backend.models import user_models  # noqa: F401
+    from backend.models import ext_query_models  # noqa: F401
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

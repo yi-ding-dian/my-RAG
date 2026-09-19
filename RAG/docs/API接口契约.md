@@ -368,3 +368,47 @@ MinerU 解析图片鉴权代理（不暴露预签名 URL，图片存 MinIO/local
 | `thinking_mode` | str | `disabled` / `enabled_low` / `enabled_high` / `enabled_max` | `disabled` | 聊天问答思考模式：`disabled`=关闭思考（更快更省 token，推荐）；`enabled_*`=开启思考并指定强度。注入方式按服务商区分：在线 API（api.deepseek.com 等）经请求 `extra_body` 控制（disabled → `{"thinking": {"type": "disabled"}}`；enabled → `{"thinking": {"type": "enabled"}, "reasoning_effort": low/high/max}`）；本地 Qwen 思考模型（base_url 含 localhost/127.0.0.1/192.168./10./172.16-31.）`disabled` 时在 messages 末尾注入空 `<think>` prefill 跳过思考，`enabled_*` 时不注入（保持模型默认思考，本地无法控制强度）。该注入为请求层变换，SSE `prompt` 事件内容仍为组装后原始 messages（不含注入/extra_body） |
 
 `retrieval` 段：`top_k`（1~20）、`similarity_threshold`（0~1，0=不过滤）。`llm` 段：激活模型 `base_url/api_key/model/temperature/max_tokens/timeout` 6 字段（部门 LLM 覆盖）。
+
+### 7.8 外部查询 /api/ext-queries（管理）+ /api/ext（对外）
+
+把指定知识库以**带令牌的链接**开放给外部人员，无需系统账号即可提问。链接即访问凭证（32 字节随机 token），可重置 / 停用 / 设有效期；访问记录落库可追溯。
+
+#### 管理端 `/api/ext-queries`（仅 super_admin；其余角色 404 伪装）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/ext-queries` | 列表（token **打码**回传，附加 `kb_names`） |
+| POST | `/api/ext-queries` | 新建 `{name, kb_ids, config?, expires_at?}` → 完整配置（含明文 token） |
+| GET | `/api/ext-queries/overview` | 总览统计（链接维度 + 记录维度） |
+| GET | `/api/ext-queries/logs` | 访问记录（筛选 + 分页） |
+| GET | `/api/ext-queries/{id}/token` | 取完整 token（复制分发链接用，落审计 `ext.token-view`） |
+| PUT | `/api/ext-queries/{id}` | 编辑名称 / 库 / 查询参数 / 有效期（token 不变，链接继续有效） |
+| POST | `/api/ext-queries/{id}/reset-token` | 重置 token（旧链接立即失效） |
+| POST | `/api/ext-queries/{id}/renew` | 续期 `{days: 1~3650}` |
+| POST | `/api/ext-queries/{id}/toggle` | 启用 / 停用切换 |
+| DELETE | `/api/ext-queries/{id}` | 删除（记录保留） |
+
+**有效期 `expires_at`**：`"YYYY-MM-DD HH:MM:SS"`；空 / 缺省 / null = **永久有效**（存量配置无需迁移）。到期后对外一律 401。编辑时**传空串 = 清除有效期**（改永久），不传 = 保持不变。格式非法 → 400。
+
+**续期**：从 `max(现在, 原到期时间)` 顺延 `days` 天 —— 未过期时续期**不损失剩余天数**。
+
+**记录筛选参数**：`config_id`（按链接）/ `ip`（模糊匹配，支持片段）/ `start`·`end`（时间段，含边界）/ `page`·`page_size`（≤200）。返回 `{items, total, page, page_size}`，按时间倒序。每条记录含 `client_ip` / `user_agent` / `source`（`chat`=对外网页、`query`=MCP·Agent）/ `hit_count`。
+
+**`overview` 返回**：`links`（total / enabled / expiring_soon / expired）+ `logs`（today / total / last_at / retain_days）+ `link_stats`（config_id → `{count, last_at}`，无记录的链接不出现）+ `daily`（近 7 天每日查询数，升序含今天，无记录补 0）+ `expiring_soon_days`。
+
+#### 对外 `/api/ext/{config_id}`（token 鉴权，无需系统账号）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/ext/{id}/info?token=` | 页面挂载校验 → `{name, kb_names}` |
+| POST | `/api/ext/{id}/chat` | SSE 流式问答（`Authorization: Bearer {token}`） |
+| POST | `/api/ext/{id}/query` | 同步非流式（MCP / Agent 接入，一次返回 answer + sources） |
+| GET | `/api/ext/{id}/images/{doc_id}/{name}?token=` | 图片代理（仅放行该配置暴露库内的图片） |
+
+**统一 401 防探测**：配置不存在 / token 不匹配 / 已停用 / **已过期** → 一律 `401 {"detail": "链接无效或已失效"}`，不区分原因（外部无法据此判断链接是过期还是根本不存在）。
+
+**图片**：由 `config.enable_images` 控制（默认开）。开启时知识块中的内部图片链接会改写为 `/api/ext/{id}/images/...?token=xxx`（外部页与 Agent 拼上 origin 即可直接加载），并在提示词中引导模型原样输出图片；关闭时图片语法整体剥除（不留裂图 / 死链）。
+
+**限流**：每 config 每分钟 20 次（`/chat` 与 `/query` 共用同一个桶）。
+
+**访问记录**：每次外部查询落库到 `ext_query_logs` 表，保留 **90 天**自动清理；配置删除后记录仍保留（`config_name` 冗余存储）。

@@ -59,6 +59,8 @@ AUDIT_ACTION_LABELS: dict[str, str] = {
     "ext.delete": "删除外部查询",
     "ext.reset-token": "重置外部查询 Token",
     "ext.toggle": "切换外部查询状态",
+    "ext.token-view": "查看外部查询 Token",
+    "ext.renew": "外部查询续期",
     "ragas.evaluate": "RAGAS 评估发起",
 }
 
