@@ -311,9 +311,11 @@ const AppModal: React.FC<AppModalProps> = ({
   // 高度下限：自适应模式只保"内容区最小可见高"。
   // **不能套 minSize.h**——它是"拖拽能拖到多小"的下限，拿来当内容下限会把内容少的
   // 弹窗撑高、中间留出空白。拖过之后才按 minSize 钳制，保证拖不出畸形容器。
+  // 下限本身也得小：原先是 96，两行字的确认框会被撑出一大片空白（用户反馈过）；
+  // 40 够放一行正文 + 上下呼吸，内容多的弹窗本来就由内容决定，不受影响。
   const bodyFloor = (dimension === 'auto' && !manualH)
-    ? 96
-    : Math.max(minSize.h - nonBodyH, 96);
+    ? 40
+    : Math.max(minSize.h - nonBodyH, 40);
   // 上限先与下限取大：clamp 在 lo > hi 时返回 lo，会反而突破视口（极小窗口下
   // minSize.h 可能比视口还高）。取舍——**优先保内容区的最小可见高，允许整体出屏**：
   // 内容被压成一条缝比溢出更难用，出屏由外层滚动/调窗口解决

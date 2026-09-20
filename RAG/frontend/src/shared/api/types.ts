@@ -1163,6 +1163,36 @@ export interface MinIOConfigProfile {
   region: string;
 }
 
+/** 一个引用方：谁在用某个配置项（删除前"谁在用"检测的返回单元） */
+export interface ConfigReference {
+  /** self=当前激活档案自己 / department=部门配置 / ext_query=外部查询链接 */
+  kind: 'self' | 'department' | 'ext_query';
+  /** 引用方 id（档案 / 部门 / 外部查询） */
+  id: string;
+  /** 可直接展示的名字，如 部门「研发部」、外部查询「产品知识对外查询」 */
+  label: string;
+}
+
+/** 配置引用关系（GET /api/settings/references） */
+export interface SettingsReferences {
+  /** 提示词条目名 → 引用它的地方 */
+  prompts: Record<string, ConfigReference[]>;
+  /** LLM 模型名 → 引用它的地方 */
+  llm_models: Record<string, ConfigReference[]>;
+  /** 图片解析模型名 → 引用它的地方 */
+  vision_models: Record<string, ConfigReference[]>;
+  /**
+   * 当前激活档案。删激活档案时后端会自动切到剩余第一个，**所有**部门与
+   * 外部查询链接的行为都会跟着变——所以这里给的是计数而非"引用方"。
+   */
+  active_profile: {
+    id: string;
+    name: string;
+    department_count: number;
+    ext_query_count: number;
+  } | null;
+}
+
 export interface ServiceProfile {
   id: string;
   name: string;

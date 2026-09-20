@@ -5,6 +5,20 @@ import type {
   ServiceProfileInput,
   VisionModelItem,
 } from '../../shared/api/client';
+import type { CSSProperties } from 'react';
+
+/** 配置 JSON 展示样式：pre-wrap + break-all 让超长字段（如 system_prompt
+    1200+ 字符）自动折行——比横向截断直观，也比悬浮 Tooltip 好读。
+    提示词详情、部门配置查看两处弹窗共用。 */
+export const PRE_STYLE: CSSProperties = {
+  maxHeight: 380,
+  overflow: 'auto',
+  fontSize: 12,
+  padding: 8,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  background: '#fafafa',
+};
 
 /** 配置域快捷导航定义（方案 A）：标题 + 当前值摘要 + 对应编辑折叠 key */
 export const DOMAIN_CARDS: Array<{

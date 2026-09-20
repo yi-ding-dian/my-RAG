@@ -201,6 +201,23 @@ async def get_department_chat_config(db: AsyncSession,
     return out
 
 
+async def list_department_configs(db: AsyncSession) -> List[tuple]:
+    """一次取出全部部门的 (id, name, 完整配置)
+
+    引用检测（references.collect_references）要扫**所有**部门的配置看谁引用了
+    某个提示词 / 模型，逐个调 get_department_config 就是 N 次查库；这里一次
+    取回、本地解析。解析口径与 get_department_config 完全一致（含旧 chat_config
+    列回退），避免两处对"部门到底配了什么"给出不同答案。
+    """
+    rows = (await db.execute(select(DepartmentORM))).scalars().all()
+    return [
+        (orm.id, orm.name,
+         _merge_legacy_config(_parse_config(orm.department_config),
+                              _parse_chat_config(orm.chat_config)))
+        for orm in rows
+    ]
+
+
 def _coerce_field(section: str, key: str, value):
     """部门配置字段类型归一化（与 settings.service._coerce chat 段语义一致）
 

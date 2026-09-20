@@ -12,10 +12,20 @@ import type {
   ProfileTestResult,
   ServiceProfile,
   ServiceProfileInput,
+  SettingsReferences,
   VisionModelItem,
 } from './types';
 
 export const listProfiles = () => api.get<ServiceProfile[]>('/settings/profiles');
+
+/**
+ * 配置引用关系：删配置项前查"谁在用它"
+ *
+ * 打开配置弹窗时拉一次，点删除时本地查表——不用为每次删除再等一次网络。
+ * 检测逻辑见后端 services/settings/references.py。
+ */
+export const getSettingsReferences = () =>
+  api.get<SettingsReferences>('/settings/references');
 
 export const getActiveProfile = () => api.get<ServiceProfile>('/settings/profiles/active');
 

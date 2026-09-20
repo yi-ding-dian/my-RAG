@@ -47,6 +47,7 @@ from backend.services.settings.service import (LLM_TEST_TIMEOUT,
                                                resolve_prompt_ref,
                                                merge_department_llm)
 from backend.services.settings.merge import chat_payload
+from backend.services.settings.references import collect_references
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["系统配置"])
@@ -273,6 +274,19 @@ def _validate_chat_payload(body: dict) -> dict:
 async def list_profiles(user=Depends(require_user_admin)):
     """所有配置档案（密钥字段已脱敏，active 标记活跃档案）；管理员只读"""
     return get_settings_service().list_profiles()
+
+
+@router.get("/references")
+async def list_references(
+        db: AsyncSession = Depends(get_db),
+        user: UserPublic = Depends(require_super_admin)):
+    """配置引用关系：删配置项前查"谁在用它"
+
+    一次返回提示词条目 / LLM 模型 / 图片模型各自被谁引用，外加当前激活档案
+    的信息（删档案时按它算影响面）。前端打开配置弹窗时拉一次，点删除时
+    本地查表即时弹确认，不再等网络。检测逻辑见 services/settings/references.py。
+    """
+    return await collect_references(db)
 
 
 @router.get("/profiles/active")

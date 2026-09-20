@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Empty, Popconfirm, Radio, Space, Tag, Tooltip, Typography, theme } from 'antd';
+import { Alert, Button, Empty, Radio, Space, Tag, Tooltip, Typography, theme } from 'antd';
 import {
   CheckOutlined,
   DeleteOutlined,
@@ -88,12 +88,12 @@ const VisionPanel: React.FC<Props> = ({ visionModels, visionActive, visionTestin
             <Space size="small">
               <Button size="small" icon={<EditOutlined />}
                 onClick={() => openModelEdit(i)} />
-              <Popconfirm title="确定删除该模型?" onConfirm={() => deleteModel(i)}>
-                <Tooltip title={visionModels.length <= 1 ? '至少保留 1 个模型' : '删除'}>
-                  <Button size="small" danger icon={<DeleteOutlined />}
-                    disabled={visionModels.length <= 1} />
-                </Tooltip>
-              </Popconfirm>
+              {/* 确认框由上层统一弹（会先列出哪些部门在用它），这里只发出删除请求 */}
+              <Tooltip title={visionModels.length <= 1 ? '至少保留 1 个模型' : '删除'}>
+                <Button size="small" danger icon={<DeleteOutlined />}
+                  disabled={visionModels.length <= 1}
+                  onClick={() => deleteModel(i)} />
+              </Tooltip>
             </Space>
           </div>
         ))
