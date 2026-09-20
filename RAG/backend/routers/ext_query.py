@@ -16,7 +16,8 @@
 - POST /api/ext/{config_id}/chat              Bearer token；body {query, session_id?}
   → SSE 流式（meta(sources) → delta → done / error），复用 chat_service 的
     system 组装与 LLM 流式能力（_build_system_content/_build_knowledge/
-    _build_refs/_get_client），LLM 用全局活跃配置、生成参数由 config 覆盖；
+    _build_refs/_get_client），LLM 模型由 config.llm_model 指定（空 = 全局
+    激活模型，指定但已不存在也回退全局）、生成参数由 config 覆盖；
     多库检索（每库 top_k 候选 → 合并按 score 降序取全局 top_k）；
     无命中直接告知不调 LLM；每次查询落审计日志（ext_query_logs.jsonl）；
     每 config 每分钟限流（超限 429）。
@@ -58,11 +59,15 @@ from backend.db import get_db
 from backend.deps import require_super_admin
 from backend.models.user_models import UserPublic
 from backend.services import audit_service
-from backend.services.chat_service import ChatService, _llm_to_dict, \
+from backend.services.chat_service import ChatService, \
     get_chat_service, sse_event
 from backend.services.document_service import get_document_service
 from backend.services.ext_query_service import (get_ext_query_service,
-                                                coerce_config, is_expired)
+                                                coerce_config, is_expired,
+                                                resolve_llm_config,
+                                                resolve_system_prompt,
+                                                resolve_top_p)
+from backend.services.settings.service import list_prompt_items
 from backend.services.kb_service import get_kb_service
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
@@ -77,16 +82,21 @@ log = AppLog(__name__)
 
 # 管理端 config 提交（字段全可选：None/缺省 = 跟随全局活跃配置；
 # system_prompt 空串 = 内置默认模板，与聊天配置语义一致）
+# 注意：这里必须与 ext_query_service.CONFIG_FIELDS 一一对应——pydantic 会
+# 静默丢弃未声明的字段，漏加会导致该配置项"改了没反应"（曾踩过 enable_images）
 class ExtQueryConfigIn(BaseModel):
     system_prompt: Optional[str] = None
+    # 引用的提示词库条目名（配置档案 prompts 段）；与 system_prompt 二选一，自定义优先
+    system_prompt_ref: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     max_tokens: Optional[int] = None
     top_k: Optional[int] = None
     similarity_threshold: Optional[float] = None
     enable_multi_turn: Optional[bool] = None
-    history_rounds: Optional[int] = None
     enable_images: Optional[bool] = None
+    # 指定 LLM 模型（全局活跃档案模型列表里的名称）；空串/缺省 = 跟随全局激活模型
+    llm_model: Optional[str] = None
 
 
 class ExtQueryCreateRequest(BaseModel):
@@ -268,6 +278,39 @@ async def ext_query_overview(user: UserPublic = Depends(require_super_admin)):
     段数不同，不会互相抢占。
     """
     return await get_ext_query_service().overview()
+
+
+@admin_router.get("/defaults")
+async def ext_query_defaults(user: UserPublic = Depends(require_super_admin)):
+    """表单留空（"跟随全局"）时各项实际会用到的值
+
+    供前端在 placeholder 里显示「跟随全局（0.2）」这类文案——此前只写
+    "跟随全局"，超管看不到真正生效的数字，等于盲填。取值口径与 /chat、
+    /query 里的 fallback 完全一致（模型相关项取全局激活模型自己的值）。
+    """
+    cfg = get_active_config()
+    llm_cfg = resolve_llm_config({})  # 未指定模型 = 全局激活模型
+    # "跟随全局"时实际会用到的提示词：全局聊天设置里配了就用它，没有才回落到
+    # 内置模板（{refs} 处运行时注入引用内容）
+    from backend.services.chat_service import _SYSTEM_PROMPT_TEMPLATE
+    default_prompt = resolve_system_prompt({}, cfg.chat.system_prompt) or \
+        _SYSTEM_PROMPT_TEMPLATE.format(
+            refs="【此处运行时注入本次检索到的引用内容】")
+    return {
+        "llm_model": llm_cfg.get("model") or "",
+        "temperature": llm_cfg.get("temperature"),
+        "max_tokens": llm_cfg.get("max_tokens"),
+        # Top P：本配置 → 模型配置（LLMConfig.top_p，默认 0.9）
+        "top_p": resolve_top_p({}, resolve_llm_config({})),
+        "top_k": cfg.retrieval.top_k,
+        "similarity_threshold": cfg.retrieval.similarity_threshold,
+        "enable_multi_turn": False,
+        "enable_images": True,
+        # 提示词库条目（外部链接的表单下拉可选项，来源=当前激活档案）
+        "prompt_options": list_prompt_items(),
+        # "跟随全局"时实际会用到的提示词全文（全局聊天设置优先，否则内置模板）
+        "default_system_prompt": default_prompt,
+    }
 
 
 @admin_router.get("/logs")
@@ -523,7 +566,11 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
     conf = ext["config"]
     cfg = get_active_config()
     top_k = int(conf.get("top_k") or cfg.retrieval.top_k)
-    min_score = conf.get("similarity_threshold")
+    # 阈值同样跟随全局：此前只判 None 就直接不过滤，与表单上"跟随全局"的
+    # 文案并不相符（写的是跟随全局，实际是关掉阈值）
+    min_score = (conf.get("similarity_threshold")
+                 if conf.get("similarity_threshold") is not None
+                 else cfg.retrieval.similarity_threshold)
     # kb_name 映射在请求生命周期内查好，闭包给事件生成器使用（StreamingResponse
     # 生成器执行时 db session 已不可用）
     kb_map = await _list_kb_map(db)
@@ -571,21 +618,25 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
             refs = ChatService._build_refs(sources)
             knowledge = ChatService._build_knowledge(sources)
             system_content = ChatService._build_system_content(
-                conf.get("system_prompt"), refs, knowledge)
+                resolve_system_prompt(conf, cfg.chat.system_prompt),
+                refs, knowledge)
             # 图片引导追加在组装结果之后：内置默认模板与自定义模板两条路径
             # 都能覆盖，且不改动 chat_service 的共用组装逻辑（内部聊天零影响）
             if conf.get("enable_images", True):
                 system_content += _IMAGE_OUTPUT_RULE
             messages: List[dict] = [{"role": "system", "content": system_content}]
-            if conf.get("enable_multi_turn", True):
-                rounds = int(conf.get("history_rounds") or cfg.chat.history_rounds)
+            if conf.get("enable_multi_turn", False):
+                # 历史轮数不再单独配置（外部场景没人会去调这个数）：固定跟随
+                # 全局聊天设置；且 Agent 接入（/query）本就无会话概念，只有
+                # 网页版 /chat 走得到这里
                 history = ext_svc.get_context(config_id, body.session_id or "",
-                                              rounds)
+                                              cfg.chat.history_rounds)
                 messages.extend(history)
             messages.append({"role": "user", "content": question})
 
-            # 4) LLM 流式（全局活跃 LLM 配置；生成参数 config 非 None 覆盖）
-            llm_cfg = _llm_to_dict(get_active_config().llm)
+            # 4) LLM 流式（模型由 config.llm_model 指定，空=全局激活模型；
+            #    生成参数 config 非 None 覆盖）
+            llm_cfg = resolve_llm_config(conf)
             client = get_chat_service()._get_client(llm_cfg)
             request_kwargs: dict = {
                 "model": llm_cfg["model"],
@@ -598,8 +649,9 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                                else llm_cfg["max_tokens"]),
                 "stream": True,
             }
-            if conf.get("top_p") is not None:
-                request_kwargs["top_p"] = conf["top_p"]
+            # Top P 始终下发（本配置 → 模型配置 → 0.9），避免不传时
+            # 采样范围随各模型服务端默认漂移
+            request_kwargs["top_p"] = resolve_top_p(conf, llm_cfg)
             answer_parts: List[str] = []
             try:
                 stream = await client.chat.completions.create(**request_kwargs)
@@ -738,7 +790,10 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
         top_k = body.top_k
     else:
         top_k = int(conf.get("top_k") or cfg.retrieval.top_k)
-    min_score = conf.get("similarity_threshold")
+    # 阈值跟随全局（同 /chat，见其注释）
+    min_score = (conf.get("similarity_threshold")
+                 if conf.get("similarity_threshold") is not None
+                 else cfg.retrieval.similarity_threshold)
 
     # 1) 多库检索：每库 top_k 候选 → 合并按 score 降序取全局 top_k
     merged: List = []
@@ -770,15 +825,15 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
     refs = ChatService._build_refs(sources)
     knowledge = ChatService._build_knowledge(sources)
     system_content = ChatService._build_system_content(
-        conf.get("system_prompt"), refs, knowledge)
+        resolve_system_prompt(conf, cfg.chat.system_prompt), refs, knowledge)
     if conf.get("enable_images", True):
         system_content += _IMAGE_OUTPUT_RULE
     messages: List[dict] = [{"role": "system", "content": system_content},
                             {"role": "user", "content": question}]
 
-    # 4) 非流式 LLM（stream=False 一次返回完整回答；生成参数 config 非 None
-    #    覆盖全局 LLM 配置）
-    llm_cfg = _llm_to_dict(get_active_config().llm)
+    # 4) 非流式 LLM（stream=False 一次返回完整回答；模型由 config.llm_model
+    #    指定、空=全局激活模型；生成参数 config 非 None 覆盖）
+    llm_cfg = resolve_llm_config(conf)
     client = get_chat_service()._get_client(llm_cfg)
     request_kwargs: dict = {
         "model": llm_cfg["model"],
@@ -791,8 +846,8 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
                        else llm_cfg["max_tokens"]),
         "stream": False,
     }
-    if conf.get("top_p") is not None:
-        request_kwargs["top_p"] = conf["top_p"]
+    # Top P 始终下发（同 /chat，见其注释）
+    request_kwargs["top_p"] = resolve_top_p(conf, llm_cfg)
     try:
         resp = await client.chat.completions.create(**request_kwargs)
         answer = ""

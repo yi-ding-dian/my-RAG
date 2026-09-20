@@ -26,7 +26,10 @@ GLOBAL = {
              "enable_multi_turn": True, "history_rounds": 8,
              "system_prompt": "全局提示词", "kg_enhance": True,
              "query_rewrite": True, "query_rewrite_rounds": 3,
-             "thinking_mode": "disabled"},
+             "thinking_mode": "disabled",
+             # 引用的提示词库条目名（空 = 不引用）；chat_payload 是硬编码
+             # 字段表，新增字段必须两处同步，否则全局值拿不到
+             "system_prompt_ref": ""},
     "retrieval": {"top_k": 5, "similarity_threshold": 0.0},
 }
 
@@ -242,6 +245,34 @@ class TestDeptSettingsApi:
         # 超管（无部门）→ dept=None
         assert client.get("/api/settings/chat",
                           headers=admin_headers).json()["dept"] is None
+
+    def test_dept_can_pick_prompt_from_library(self, client, admin_headers,
+                                               dept_admin_headers,
+                                               monkeypatch):
+        """部门管理员可从提示词库选一条（存引用名，不是内容副本）
+
+        库由超管在配置档案里维护，部门只"选"不改——所以只需读得到即可。
+        """
+        # 注意 patch 的是 router 里**已导入的引用**：from X import f 之后，
+        # patch X.f 不会影响 router 模块里绑定的那个名字
+        monkeypatch.setattr(
+            "backend.routers.settings.list_prompt_items",
+            lambda: [{"name": "严谨引用", "content": "库里的正文"}],
+        )
+        # GET 能拿到库条目（部门管理员可读）
+        data = client.get("/api/settings/chat",
+                          headers=dept_admin_headers).json()
+        assert any(p["name"] == "严谨引用"
+                   for p in data.get("prompt_options", [])), \
+            "部门管理员应能读到提示词库条目"
+        # 提交引用名 → 回读一致
+        r = client.post("/api/settings/chat",
+                        json={"chat": {"system_prompt_ref": "严谨引用"}},
+                        headers=dept_admin_headers)
+        assert r.status_code == 200, r.text
+        got = client.get("/api/settings/chat",
+                         headers=dept_admin_headers).json()
+        assert got["chat"]["system_prompt_ref"] == "严谨引用"
 
     def test_super_admin_post_keeps_dept_untouched(self, client,
                                                    admin_headers,

@@ -49,7 +49,8 @@ class TestAdminCRUD:
                                      "department_id": None}]
         assert item["config"]["temperature"] == 0.5
         assert item["config"]["top_k"] == 3
-        assert item["config"]["enable_multi_turn"] is True
+        assert item["config"]["enable_multi_turn"] is False, \
+            "多轮对话默认关闭（外部以一次性问答为主）"
         items = client.get("/api/ext-queries", headers=admin_headers).json()
         assert len(items) == 1
         # 列表打码：与完整 token 不同且为"前4****后3"掩码格式
@@ -706,3 +707,188 @@ class TestLogsApi:
                           headers=user_headers).status_code == 404
         assert client.get("/api/ext-queries/overview",
                           headers=user_headers).status_code == 404
+
+
+class TestLlmModel:
+    """外部查询指定 LLM 模型：缺省跟随全局，指定则用该模型（不存在时回退）"""
+
+    def test_field_saved_default_empty(self, client, admin_headers):
+        """llm_model 可保存；缺省为空串 = 跟随全局"""
+        kb = create_kb(client)
+        a = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        assert a["config"]["llm_model"] == "", "缺省应为空串（跟随全局）"
+        b = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                       config={"llm_model": "model-b"})
+        assert b["config"]["llm_model"] == "model-b"
+        # 列表回读一致（该字段必须真的落库，不能被 pydantic 静默丢弃）
+        items = client.get("/api/ext-queries", headers=admin_headers).json()
+        got = next(x for x in items if x["id"] == b["id"])
+        assert got["config"]["llm_model"] == "model-b"
+
+    def test_resolve_uses_specified(self, monkeypatch):
+        """指定存在的模型 → 解析出该模型自己的连接与参数"""
+        import backend.services.ext_query_service as eqs
+        monkeypatch.setattr(
+            "backend.services.settings.service.find_llm_item",
+            lambda ident: {"name": ident, "model": f"m-{ident}",
+                           "base_url": "http://specified/v1", "api_key": "k",
+                           "temperature": 0.9, "max_tokens": 123},
+        )
+        cfg = eqs.resolve_llm_config({"llm_model": "model-a"})
+        assert cfg["model"] == "m-model-a"
+        assert cfg["base_url"] == "http://specified/v1"
+        assert cfg["temperature"] == 0.9
+        assert cfg["max_tokens"] == 123
+
+    def test_resolve_falls_back_to_global(self, monkeypatch):
+        """未指定 / 指定但已不存在 → 都回退全局激活模型（不报错）"""
+        import backend.services.ext_query_service as eqs
+        monkeypatch.setattr(
+            "backend.services.settings.service.find_llm_item",
+            lambda ident: None,   # 模拟模型已被改名/删除
+        )
+        none_cfg = eqs.resolve_llm_config({})
+        missing_cfg = eqs.resolve_llm_config({"llm_model": "已删除的模型"})
+        assert none_cfg["model"] == missing_cfg["model"], \
+            "两种情况都应回退到同一个全局激活模型"
+        assert none_cfg.get("base_url"), "回退后应带出可用的连接配置"
+
+    def test_external_query_runs_with_specified_model(self, client, admin_headers,
+                                                      mock_embedding, mock_llm,
+                                                      monkeypatch):
+        """端到端：指定模型后 /query 仍正常应答（模型切换不影响链路）"""
+        import backend.services.ext_query_service as eqs
+        monkeypatch.setattr(
+            "backend.services.settings.service.find_llm_item",
+            lambda ident: {"name": ident, "model": "specified-model",
+                           "base_url": "http://specified/v1", "api_key": "k",
+                           "temperature": 0.5, "max_tokens": 512},
+        )
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          config={"llm_model": "specified-model"})
+        mock_llm()
+        r = client.post(f"/api/ext/{item['id']}/query",
+                        json={"query": "Python 是什么？"},
+                        headers={"Authorization": f"Bearer {item['token']}"})
+        assert r.status_code == 200, r.text
+        assert r.json()["answer"]
+
+
+class TestConfigDefaults:
+    """配置项精简与"跟随全局"默认值接口"""
+
+    def test_history_rounds_removed(self, client, admin_headers):
+        """历史轮数已从白名单移除：提交也被忽略（固定跟随全局聊天设置）
+
+        该参数对外部场景是纯噪音——没人会去调"保留几轮"，且 Agent 接入
+        本就无会话概念，留着只会让配置面变复杂。
+        """
+        kb = create_kb(client)
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          config={"history_rounds": 10})
+        assert "history_rounds" not in item["config"]
+        # 存量数据里的该字段也会在读取时被 coerce_config 丢弃
+        items = client.get("/api/ext-queries", headers=admin_headers).json()
+        assert all("history_rounds" not in x["config"] for x in items)
+
+    def test_defaults_endpoint(self, client, admin_headers):
+        """默认值接口：让表单能显示「跟随全局（实际值）」而非空泛的"跟随全局" """
+        r = client.get("/api/ext-queries/defaults", headers=admin_headers)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert {"llm_model", "temperature", "max_tokens", "top_p", "top_k",
+                "similarity_threshold", "enable_multi_turn",
+                "enable_images"} <= set(d)
+        assert d["enable_multi_turn"] is False, "多轮默认关"
+        assert d["enable_images"] is True, "图片默认开"
+        assert isinstance(d["top_k"], int) and d["top_k"] >= 1
+        assert isinstance(d["similarity_threshold"], (int, float))
+
+    def test_defaults_requires_admin(self, client, user_headers):
+        """默认值接口同样仅超管（与其余管理接口一致）"""
+        assert client.get("/api/ext-queries/defaults",
+                          headers=user_headers).status_code == 404
+
+
+class TestPromptLibrary:
+    """系统提示词库：外部链接引用其中条目（存名字 → 改库正文即全生效）"""
+
+    def test_ref_field_saved(self, client, admin_headers):
+        """system_prompt_ref 可保存；缺省为空串（= 不引用库条目）"""
+        kb = create_kb(client)
+        a = create_ext(client, admin_headers, kb_ids=[kb["id"]])
+        assert a["config"]["system_prompt_ref"] == ""
+        b = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                       config={"system_prompt_ref": "严谨引用"})
+        assert b["config"]["system_prompt_ref"] == "严谨引用"
+        items = client.get("/api/ext-queries", headers=admin_headers).json()
+        got = next(x for x in items if x["id"] == b["id"])
+        assert got["config"]["system_prompt_ref"] == "严谨引用"
+
+    def test_resolve_chain(self, monkeypatch):
+        """解析链：自定义 → 引用库条目 → 全局聊天设置 → 空（内部落内置模板）"""
+        import backend.services.ext_query_service as eqs
+        # 库读取已归位到 settings 层，patch 那里（外部查询通过它解析引用）
+        monkeypatch.setattr(
+            "backend.services.settings.service.resolve_prompt_ref",
+            lambda ref: "库里的正文" if ref == "严谨引用" else None)
+        # 自定义优先于引用
+        assert eqs.resolve_system_prompt(
+            {"system_prompt": "自定义的", "system_prompt_ref": "严谨引用"},
+            "全局的") == "自定义的"
+        assert eqs.resolve_system_prompt(
+            {"system_prompt_ref": "严谨引用"}, "全局的") == "库里的正文"
+        # 引用的条目不存在（改名/删除）→ 回退全局，不报错
+        assert eqs.resolve_system_prompt(
+            {"system_prompt_ref": "已删除的"}, "全局的") == "全局的"
+        assert eqs.resolve_system_prompt({}, "全局的") == "全局的"
+        # 都没有 → 空串，由 _build_system_content 落到内置模板
+        assert eqs.resolve_system_prompt({}, "") == ""
+
+    def test_list_prompt_items_filters_invalid(self, monkeypatch):
+        """库条目读取：名或正文为空的半成品条目被过滤掉"""
+        import backend.services.ext_query_service as eqs
+
+        class _Svc:
+            @staticmethod
+            def get_active():
+                return {"prompts": {"items": [
+                    {"name": "有效", "content": "正文"},
+                    {"name": "", "content": "没名字"},
+                    {"name": "没正文", "content": "  "},
+                    "不是字典",
+                ]}}
+
+        monkeypatch.setattr(
+            "backend.services.settings.service.get_settings_service",
+            lambda: _Svc())
+        from backend.services.settings.service import list_prompt_items
+        items = list_prompt_items()
+        assert items == [{"name": "有效", "content": "正文"}]
+
+    def test_defaults_include_prompt_options(self, client, admin_headers):
+        """defaults 带 prompt_options（下拉数据源）与 default_system_prompt"""
+        d = client.get("/api/ext-queries/defaults",
+                       headers=admin_headers).json()
+        assert isinstance(d.get("prompt_options"), list)
+        assert d.get("default_system_prompt"), "应给出默认提示词全文"
+
+    def test_endpoint_uses_referenced_prompt(self, client, admin_headers,
+                                             mock_embedding, mock_llm,
+                                             monkeypatch):
+        """端到端：引用库条目后 /query 正常应答（提示词换来源不影响链路）"""
+        monkeypatch.setattr(
+            "backend.services.settings.service.resolve_prompt_ref",
+            lambda ref: "你是严谨的助手，只依据引用回答。" if ref else None)
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
+                          config={"system_prompt_ref": "严谨引用"})
+        mock_llm()
+        r = client.post(f"/api/ext/{item['id']}/query",
+                        json={"query": "Python 是什么？"},
+                        headers={"Authorization": f"Bearer {item['token']}"})
+        assert r.status_code == 200, r.text
+        assert r.json()["answer"]

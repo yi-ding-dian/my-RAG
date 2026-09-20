@@ -572,7 +572,11 @@ class ChatService:
             # 4) 组装 prompt（引用放在 system；history 截最近 N 轮，
             #    多轮开关 enable_multi_turn=False 时不带历史；
             #    合并后的聊天配置已在第 0 步计算（部门字段级覆盖），直接复用）
-            sys_prompt = merged_chat["system_prompt"]
+            # 提示词：引用的库条目**优先**，其次本配置的 system_prompt；
+            # 都为空则 _build_system_content 内部落到内置模板（既有语义）
+            from backend.services.settings.service import resolve_prompt_ref
+            sys_prompt = (resolve_prompt_ref(merged_chat.get("system_prompt_ref"))
+                          or merged_chat["system_prompt"])
             enable_multi_turn = merged_chat["enable_multi_turn"]
             history_rounds = merged_chat["history_rounds"]
             temperature = merged_chat["temperature"]

@@ -38,6 +38,7 @@ from backend.config import (AgenticConfig, ChatConfig, ChunkingConfig,
                             GotenbergConfig,
                             ImageSummaryConfig, IngestionConfig,
                             LLMConfig, MinerUConfig, MinIOConfig, MySQLConfig,
+                            PromptLibraryConfig,
                             RerankConfig, RetrievalConfig, ServiceConfig,
                             VectorStorageConfig, VisionModelConfig,
                             build_default_config)
@@ -239,6 +240,7 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                         "whitelist": True},
             "model": {"strip": True, "whitelist": True},
             "temperature": {"condition": "not_none", "whitelist": True},
+            "top_p": {"condition": "not_none", "whitelist": True},
             "max_tokens": {"condition": "truthy", "whitelist": True},
             "timeout": {"condition": "not_none", "whitelist": True},
             # 思考控制方式（none/prefill/api）：跟模型走——部门覆盖了模型，
@@ -357,6 +359,9 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             "enable_multi_turn": {"condition": "not_none", "whitelist": True},
             "system_prompt": {"condition": "not_none", "on_null": "restore",
                               "whitelist": True, "fill_missing": True},
+            # 引用的提示词库条目名（优先于 system_prompt）；部门可覆盖
+            "system_prompt_ref": {"condition": "not_none", "on_null": "restore",
+                                  "whitelist": True, "fill_missing": True},
             "kg_enhance": {"condition": "not_none", "whitelist": True,
                            "fill_missing": True},
             # 查询改写（多轮 LLM 改写检索词，默认开，见 config.ChatConfig）：
@@ -378,6 +383,18 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                               "fill_missing": True},
         },
         pass_null=True),
+    # 系统提示词库：外部查询可引用其中条目（存**名字** → 改库正文即全生效）。
+    # 全段 apply_to_config=False：它不写进运行时全局配置（get_active_config），
+    # 只作为「可选项来源」被外部查询接口读取；因无 whitelist 字段，也不进
+    # CHAT_SECTIONS（那里只收可经 /api/settings/chat 读写的段）
+    "prompts": _reflect_section(
+        "prompts", PromptLibraryConfig,
+        overrides={"items": {"apply_to_config": False,
+                             # 默认 condition=truthy 会把空列表当"未设置"丢掉，
+                             # 需保留 items: [] 作为合法初值
+                             "condition": "not_none"}},
+        # 旧档案没有这个段 → coerce 时补 items: []（否则前端读到 undefined）
+        fill_section=True),
     "agentic": _reflect_section("agentic", AgenticConfig,
         overrides={
             "enabled": {"condition": "not_none", "whitelist": True,

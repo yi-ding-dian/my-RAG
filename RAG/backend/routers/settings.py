@@ -41,6 +41,7 @@ from backend.services.settings.service import (LLM_TEST_TIMEOUT,
                                                find_llm_item,
                                                get_settings_service,
                                                is_masked,
+                                               list_prompt_items,
                                                mask_api_key,
                                                merge_chat_config,
                                                merge_department_llm)
@@ -166,7 +167,10 @@ def _effective_chat_payload(profile: dict,
         for m in vmodels if isinstance(m, dict)
     ]
     return {**merged, "llm": llm, "dept": dept,
-            "image_summary": img_summary, "vision_options": vision_options}
+            "image_summary": img_summary, "vision_options": vision_options,
+            # 提示词库条目：部门管理员可读（与 vision_options 同理，只给
+            # 名称与正文，供部门配置里选一条给自己部门用）
+            "prompt_options": list_prompt_items()}
 
 
 def _validate_numeric_field(k: str, v, cast: str) -> None:

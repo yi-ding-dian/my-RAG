@@ -380,6 +380,7 @@ MinerU 解析图片鉴权代理（不暴露预签名 URL，图片存 MinIO/local
 | GET | `/api/ext-queries` | 列表（token **打码**回传，附加 `kb_names`） |
 | POST | `/api/ext-queries` | 新建 `{name, kb_ids, config?, expires_at?}` → 完整配置（含明文 token） |
 | GET | `/api/ext-queries/overview` | 总览统计（链接维度 + 记录维度） |
+| GET | `/api/ext-queries/defaults` | 表单"跟随全局"时各项实际生效的值 |
 | GET | `/api/ext-queries/logs` | 访问记录（筛选 + 分页） |
 | GET | `/api/ext-queries/{id}/token` | 取完整 token（复制分发链接用，落审计 `ext.token-view`） |
 | PUT | `/api/ext-queries/{id}` | 编辑名称 / 库 / 查询参数 / 有效期（token 不变，链接继续有效） |
@@ -391,6 +392,20 @@ MinerU 解析图片鉴权代理（不暴露预签名 URL，图片存 MinIO/local
 **有效期 `expires_at`**：`"YYYY-MM-DD HH:MM:SS"`；空 / 缺省 / null = **永久有效**（存量配置无需迁移）。到期后对外一律 401。编辑时**传空串 = 清除有效期**（改永久），不传 = 保持不变。格式非法 → 400。
 
 **续期**：从 `max(现在, 原到期时间)` 顺延 `days` 天 —— 未过期时续期**不损失剩余天数**。
+
+**查询参数 `config`**（字段全可选，留空 = 跟随全局）：`system_prompt`（空串 = 内置默认模板，支持 `{knowledge}` / `{refs}` 占位符）、`temperature` / `top_p` / `max_tokens` / `top_k` / `similarity_threshold`、`enable_multi_turn`（**默认 false**：外部以一次性问答为主，且 Agent 接入本就无会话）、`enable_images`、`llm_model`。
+
+> `history_rounds` 已于 v1.3 移除——该参数对外部场景无实际意义，历史轮数固定跟随全局聊天设置。
+
+**`GET /api/ext-queries/defaults`**：返回表单留空时各项实际生效的值（`llm_model` / `temperature` / `max_tokens` / `top_p` / `top_k` / `similarity_threshold` / `enable_multi_turn` / `enable_images`），供前端在 placeholder 里显示「跟随全局（0.2）」这类文案——取值口径与 `/chat`、`/query` 的 fallback 完全一致。
+
+**`llm_model`（指定 LLM 模型）**：取值为**全局活跃档案模型列表里的名称**（可用 `GET /api/settings/llm/models` 取选项，该接口只返回 `{name, model}` 不含密钥）；空串 / 缺省 = 跟随全局激活模型。指定的模型若在全局配置里被改名或删除，**自动回退全局激活模型**（不报错，仅记 warning 日志）。指定模型只决定用哪一套连接（base_url / api_key）与默认参数，生成参数仍以本配置的 `temperature` / `top_p` / `max_tokens` 为准。
+
+**`system_prompt_ref`（引用提示词库）**：取值为配置档案 `prompts` 段里的条目名；非空时**优先于**同配置的 `system_prompt`。完整解析顺序：**外部链接自定义 → 引用库条目 → 全局聊天设置（`chat.system_prompt`）→ 内置模板**。引用的条目被改名或删除时自动回退到下一档，不报错（仅记 warning）。
+
+**提示词库（配置档案 `prompts` 段）**：`{"items": [{"name": "...", "content": "..."}]}`，由超管在「系统配置 → 编辑配置档案」维护。外部链接与部门配置引用的是**条目名（引用）**而非内容副本——改库里正文，所有引用处立刻生效。名或正文为空的半成品条目不会出现在可选项里。
+
+**`GET /api/settings/chat` 的 `prompt_options`**：部门管理员读到的库条目列表（只有 `name` / `content`，库本身仍归超管编辑），用途与既有的 `vision_options` 一致——部门只「选」不改。部门提交 `chat.system_prompt_ref` 即可引用；同段还支持 `system_prompt`（自定义），提交时二选一。
 
 **记录筛选参数**：`config_id`（按链接）/ `ip`（模糊匹配，支持片段）/ `start`·`end`（时间段，含边界）/ `page`·`page_size`（≤200）。返回 `{items, total, page, page_size}`，按时间倒序。每条记录含 `client_ip` / `user_agent` / `source`（`chat`=对外网页、`query`=MCP·Agent）/ `hit_count`。
 

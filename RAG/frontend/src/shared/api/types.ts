@@ -996,6 +996,8 @@ export interface LLMModelItem {
   api_key: string; // 服务端返回脱敏值（sk-****abcd）
   model: string;
   temperature: number;
+  /** Top P 采样范围（0~1）；旧数据缺失 = 后端默认 0.9 */
+  top_p?: number | null;
   max_tokens: number;
   timeout: number;
   /** 思考控制方式（模型级；旧数据缺失 = none 不处理） */
@@ -1133,6 +1135,8 @@ export interface ChatConfig {
   history_rounds?: number;
   /** 自定义系统提示词（空串=使用内置默认模板；可含 {refs} 占位符替换为检索引用内容） */
   system_prompt?: string;
+  /** 引用的提示词库条目名（配置档案 prompts 段）；非空时优先于 system_prompt */
+  system_prompt_ref?: string;
   /** 思考模式（聊天问答）：disabled=关闭思考（默认，更快更省 token）| enabled_low/high/max=开启思考并指定强度（在线 DeepSeek 生效；本地 Qwen 模型开启时保持模型默认思考） */
   thinking_mode?: ThinkingMode;
   /** 单条输入（问题/检索 query）最大长度（字，默认 2000） */
@@ -1184,6 +1188,8 @@ export interface ServiceProfile {
   image_summary?: ImageSummaryConfig;
   /** 会话参数段（旧后端可能缺失，前端做可选兼容） */
   chat?: ChatConfig;
+  /** 系统提示词库（供「外部查询」引用；旧档案可能缺失该段） */
+  prompts?: { items?: { name?: string; content?: string }[] };
   mysql: MySQLConfigProfile;
   minio: MinIOConfigProfile;
 }
@@ -1267,6 +1273,8 @@ export interface ChatSettingsPayload {
     history_rounds: number;
     /** 空串 = 使用内置默认模板 */
     system_prompt: string;
+    /** 引用的提示词库条目名；非空时优先于 system_prompt（部门管理员从库选） */
+    system_prompt_ref?: string;
     /** 知识图谱增强（默认 true；查询时图谱上下文作为「知识图谱」来源引用注入） */
     kg_enhance?: boolean;
     /** 查询改写（默认 true；多轮对话时 LLM 结合历史改写检索查询，消除指代） */
@@ -1486,8 +1494,10 @@ export interface LogOverview {
 
 /** 外部查询的检索/对话参数（复用聊天配置语义；null/缺省 = 跟随全局活跃配置） */
 export interface ExtQueryConfig {
-  /** 自定义系统提示词（空串 = 内置默认模板；支持 {knowledge}/{refs} 占位符） */
+  /** 自定义系统提示词（空串 = 未自定义，走引用或全局默认） */
   system_prompt?: string;
+  /** 引用的提示词库条目名（配置档案 prompts 段）；与 system_prompt 二选一，自定义优先 */
+  system_prompt_ref?: string;
   /** 温度 0-2（null=跟随模型默认） */
   temperature?: number | null;
   /** Top P 0-1（null=跟随模型默认） */
@@ -1496,14 +1506,17 @@ export interface ExtQueryConfig {
   max_tokens?: number | null;
   /** 检索条数 1-20（null=跟随全局配置） */
   top_k?: number | null;
-  /** 相似度阈值 0-1（null=跟随全局配置，0=不过滤） */
+  /** 相似度阈值 0-1（null=跟随全局配置） */
   similarity_threshold?: number | null;
-  /** 多轮对话（默认 true） */
+  /** 多轮对话（默认 false：外部以一次性问答为主，Agent 接入本就不带会话） */
   enable_multi_turn?: boolean;
-  /** 历史轮数 1-20（默认跟随全局配置） */
-  history_rounds?: number | null;
   /** 展示知识库图片（默认 true；关闭时不显示文档截图，图片语法会被剥除） */
   enable_images?: boolean;
+  /**
+   * 指定 LLM 模型（全局活跃档案模型列表里的名称）
+   * 空串/缺省 = 跟随全局激活模型；指定但该模型已不存在时同样回退全局
+   */
+  llm_model?: string;
 }
 
 /** 暴露的知识库摘要（列表接口附加，前端展示库名/部门） */
@@ -1511,6 +1524,25 @@ export interface ExtQueryKbInfo {
   id: string;
   name: string;
   department_id?: string | null;
+}
+
+/** GET /api/ext-queries/defaults：表单留空（"跟随全局"）时各项实际生效的值 */
+export interface ExtQueryDefaults {
+  /** 全局激活模型名 */
+  llm_model: string;
+  /** 全局激活模型的温度（null = 模型未设，由服务端默认） */
+  temperature: number | null;
+  max_tokens: number | null;
+  /** 全局 LLM 配置无此字段：留空 = 不下发，由模型服务端默认 */
+  top_p: number | null;
+  top_k: number;
+  similarity_threshold: number;
+  enable_multi_turn: boolean;
+  enable_images: boolean;
+  /** 提示词库条目（外部链接表单下拉的可选项） */
+  prompt_options: { name: string; content: string }[];
+  /** "跟随全局"时实际会用到的提示词全文（全局聊天设置优先，否则内置模板） */
+  default_system_prompt: string;
 }
 
 export interface ExtQuery {

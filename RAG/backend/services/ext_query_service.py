@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Tuple
 
-from backend.config import DATA_DIR
+from backend.config import DATA_DIR, get_active_config
 
 logger = logging.getLogger(__name__)
 
@@ -75,28 +75,35 @@ KB_IDS_MAX = 10
 # {字段名: (类型, 最小值, 最大值)}；system_prompt 为 str 不限范围
 CONFIG_FIELDS: Dict[str, Tuple[str, float | None, float | None]] = {
     "system_prompt": ("str", None, None),
+    # 引用的提示词库条目名（配置档案 prompts 段）：与 system_prompt 二选一，
+    # 自定义优先；存名字而非内容 → 改库正文，所有引用它的链接立刻生效
+    "system_prompt_ref": ("str", None, None),
     "temperature": ("float", 0.0, 2.0),
     "top_p": ("float", 0.0, 1.0),
     "max_tokens": ("int", 1, 16384),
     "top_k": ("int", 1, 20),
     "similarity_threshold": ("float", 0.0, 1.0),
+    # 多轮对话：外部场景以一次性问答为主，且 Agent 接入（/query）本就无会话概念，
+    # 故默认关闭（需要网页内连续追问时再由超管打开）
     "enable_multi_turn": ("bool", None, None),
-    "history_rounds": ("int", 1, 20),
     # 是否允许外部页展示知识库图片（文档截图可能含敏感信息，超管可按配置关闭）
     "enable_images": ("bool", None, None),
+    # 指定 LLM 模型（全局活跃档案模型列表里的 name）；空 = 跟随全局激活模型
+    "llm_model": ("str", None, None),
 }
 
 # 字段中文名（校验错误信息用）
 _FIELD_LABELS = {
     "system_prompt": "系统提示词",
+    "system_prompt_ref": "引用的系统提示词",
     "temperature": "温度",
     "top_p": "Top P",
     "max_tokens": "最大输出 Token",
     "top_k": "检索条数",
     "similarity_threshold": "相似度阈值",
     "enable_multi_turn": "多轮对话",
-    "history_rounds": "历史轮数",
     "enable_images": "显示图片",
+    "llm_model": "LLM 模型",
 }
 
 
@@ -151,13 +158,15 @@ def coerce_config(raw: Optional[dict]) -> dict:
     for field, (ctype, lo, hi) in CONFIG_FIELDS.items():
         v = src.get(field)
         if v is None:
-            # 缺省默认值：system_prompt=""（空=内置默认模板），
-            # enable_multi_turn / enable_images=True（与聊天配置语义一致），
+            # 缺省默认值：system_prompt / llm_model=""（空=内置默认模板 / 跟随全局），
+            # enable_images=True、enable_multi_turn=False（外部以一次性问答为主），
             # 其余 None=跟随全局
-            if field == "system_prompt":
+            if field in ("system_prompt", "system_prompt_ref", "llm_model"):
                 out[field] = ""
-            elif field in ("enable_multi_turn", "enable_images"):
+            elif field == "enable_images":
                 out[field] = True
+            elif field == "enable_multi_turn":
+                out[field] = False
             else:
                 out[field] = None
             continue
@@ -186,6 +195,77 @@ def coerce_config(raw: Optional[dict]) -> dict:
                 raise ValueError(f"{label} 需为 {lo}~{hi} 之间的数值") from None
             raise ValueError(f"{label} 格式非法") from None
     return out
+
+
+# 外部查询 Top P 兜底值（全局聊天设置也未配置时使用）
+DEFAULT_TOP_P = 0.9
+
+
+def resolve_top_p(conf: Optional[dict],
+                  llm_cfg: Optional[dict]) -> float:
+    """外部查询实际生效的 Top P：本配置 → 模型配置 → 默认 0.9
+
+    Top P 是**模型级**参数（`LLMConfig.top_p`，默认 0.9）：指定了模型就取该模型
+    的值，未指定则取全局激活模型的——与 temperature/max_tokens 同为"跟随模型"。
+    模型上再没有（None）时落到 DEFAULT_TOP_P，保证外部查询**始终下发**该参数，
+    不会因不传而让采样范围随各家服务端默认漂移。
+    """
+    v = (conf or {}).get("top_p")
+    if v is not None:
+        return float(v)
+    v = (llm_cfg or {}).get("top_p")
+    if v is not None:
+        return float(v)
+    return DEFAULT_TOP_P
+
+
+def resolve_system_prompt(conf: Optional[dict],
+                          chat_prompt: Optional[str] = None) -> str:
+    """外部查询实际使用的系统提示词
+
+    回退链：**外部链接自定义 → 引用的提示词库条目 → 全局聊天设置 → 内置模板**
+
+    最后一档返回空串——`ChatService._build_system_content` 收到空串即用内置
+    模板（其既有语义），所以这里不重复判断。引用的条目若已被删除或改名，
+    同样回退全局默认，只记 warning：不能让一条链接因为库里改了名字就答不出话。
+    """
+    custom = str((conf or {}).get("system_prompt") or "").strip()
+    if custom:
+        return custom
+    ref = str((conf or {}).get("system_prompt_ref") or "").strip()
+    if ref:
+        from backend.services.settings.service import resolve_prompt_ref
+        content = resolve_prompt_ref(ref)
+        if content:
+            return content
+        logger.warning("外部查询引用的提示词不存在，回退全局默认: %s", ref)
+    return str(chat_prompt or "").strip()
+
+
+def resolve_llm_config(conf: Optional[dict]) -> dict:
+    """取该外部查询实际生效的 LLM 配置（model / base_url / api_key / 上限等）
+
+    - `config.llm_model` 指定了模型 → 从**全局活跃档案的模型列表**按标识取该条
+      （复用 find_llm_item：name 优先、model 次之）
+    - 未指定 / 指定但已不存在（该模型在全局配置里被改名或删除）→ 回退全局激活模型
+
+    调用方拿到完整 LLM 配置后，再叠加外部查询 config 里的生成参数
+    （temperature / top_p / max_tokens）——与"可指定模型"引入前的口径一致，
+    即生成参数始终以外部查询的配置为准，模型只决定用哪一套连接与默认值。
+    """
+    from backend.services.llm_client import llm_to_dict
+
+    ident = ((conf or {}).get("llm_model") or "").strip()
+    if ident:
+        try:
+            from backend.services.settings.service import find_llm_item
+            item = find_llm_item(ident)
+            if item:
+                return llm_to_dict(item)
+            logger.warning("外部查询指定的模型不存在，回退全局激活模型: %s", ident)
+        except Exception as e:
+            logger.warning("解析外部查询指定模型失败(%s)，回退全局: %s", ident, e)
+    return llm_to_dict(get_active_config().llm)
 
 
 class ExtQueryService:

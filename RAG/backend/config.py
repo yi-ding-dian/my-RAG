@@ -164,6 +164,10 @@ class LLMConfig(BaseModel):
     temperature: float
     max_tokens: int
     timeout: float
+    # Top P 采样范围（模型级，0~1）：外部查询留空时即取此值；
+    # 默认 0.9——留 None 会让"跟随全局"无处可跟，采样范围随各服务端默认漂移，
+    # 同一个知识库换模型后回答风格会莫名其妙地变
+    top_p: float | None = 0.9
     # 思考控制方式（模型级，见 services/thinking_strategy）：
     #   none    不处理 —— 模型本身不思考，或部署端已关闭（如 vLLM 启动参数
     #           关了思考）；系统层不再做任何事
@@ -196,6 +200,9 @@ class LLMConfig(BaseModel):
             temperature=float(data.get("temperature") or 0.3),
             max_tokens=int(data.get("max_tokens") or 4096),
             timeout=float(data.get("timeout") or 60.0),
+            # 注意不能用 `or`：0 是合法的 top_p（只取最高概率 token）
+            top_p=(float(data["top_p"])
+                   if data.get("top_p") is not None else 0.9),
             thinking_control=data.get("thinking_control") or "none",
         )
 
@@ -280,6 +287,9 @@ class ChatConfig(BaseModel):
     enable_multi_turn: bool = True
     # 自定义系统提示词：空串 = 使用内置默认模板（chat_service._SYSTEM_PROMPT_TEMPLATE）
     system_prompt: str = ""
+    # 引用的提示词库条目名（配置档案 prompts 段）：非空时**优先于** system_prompt。
+    # 部门可覆盖（白名单）——部门管理员从库里选一条给自己部门用，存名字不存副本
+    system_prompt_ref: str = ""
     # 单条输入（问题/检索 query）最大长度（字，默认 2000）；超出返回 400
     # 友好提示——防超长粘贴耗尽上下文/费用
     max_query_len: int = 2000
@@ -309,6 +319,24 @@ class ChatConfig(BaseModel):
     # extra_body 控制；本地 Qwen 思考模型 disabled 时注入空 <think> prefill
     # 跳过思考（LM Studio 忽略 extra_body）
     thinking_mode: str = "disabled"
+
+
+class PromptItem(BaseModel):
+    """系统提示词库条目（外部查询下拉里的一个选项）"""
+    # 显示名：外部查询按它匹配引用（改名会让已引用的链接回退到全局默认）
+    name: str = ""
+    # 提示词正文；留空视为无效条目（下拉里不展示）
+    content: str = ""
+
+
+class PromptLibraryConfig(BaseModel):
+    """系统提示词库（供外部查询引用；不写进运行时全局配置）
+
+    放在配置档案里：切换档案时提示词库随之切换，与 LLM 模型列表同理。
+    外部查询存的是**条目名**（引用）而非内容副本——改库里的正文，所有
+    引用它的链接立刻生效，不会出现"N 条链接各存一份过期副本"。
+    """
+    items: list = Field(default_factory=list)
 
 
 class ContextualRetrievalConfig(BaseModel):
@@ -473,6 +501,9 @@ class ServiceConfig(BaseModel):
     vector_store: VectorStorageConfig = Field(default_factory=VectorStorageConfig)
     vision: VisionModelConfig = Field(default_factory=VisionModelConfig)
     image_summary: ImageSummaryConfig = Field(default_factory=ImageSummaryConfig)
+    # 系统提示词库（外部查询引用的可选项来源；内容不参与运行时行为，
+    # 挂在 ServiceConfig 上只是为了让配置档案的段能按 dataclass 名反射）
+    prompts: PromptLibraryConfig = Field(default_factory=PromptLibraryConfig)
 
 
 settings = Settings()

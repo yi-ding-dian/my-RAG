@@ -18,6 +18,7 @@ import {
   LinkOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RobotOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import {
@@ -209,7 +210,17 @@ const ExtQueryConfig: React.FC = () => {
       dataIndex: 'name',
       width: colWidths.name ?? 200,
       onHeaderCell: () => ({ width: colWidths.name ?? 200, onResize: handleResize('name'), title: '名称' }),
-      render: (name: string) => <Typography.Text strong>{name}</Typography.Text>,
+      render: (name: string, item: ExtQuery) => (
+        <Space size={4}>
+          <Typography.Text strong>{name}</Typography.Text>
+          {/* 单独指定了 LLM 模型的链接打个标：否则时间久了没人记得哪条用了别的模型 */}
+          {item.config?.llm_model && (
+            <Tooltip title={`LLM 模型：${item.config.llm_model}（未指定则跟随全局）`}>
+              <RobotOutlined style={{ color: '#2563eb', fontSize: 12 }} />
+            </Tooltip>
+          )}
+        </Space>
+      ),
     },
     {
       title: '暴露的知识库',

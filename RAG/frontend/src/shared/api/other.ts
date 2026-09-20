@@ -13,6 +13,7 @@ import type {
   ExtQueryUpdateInput,
   ExtQueryLogPage,
   ExtQueryOverview,
+  ExtQueryDefaults,
   LogFileInfo,
   LogHealth,
   LogOverview,
@@ -274,6 +275,10 @@ export const renewExtQuery = (id: string, days: number) =>
 /** 总览统计（链接维度 + 记录维度），总览页卡片用 */
 export const getExtQueryOverview = () =>
   api.get<ExtQueryOverview>('/ext-queries/overview');
+
+/** 表单留空（"跟随全局"）时各项实际生效的值，placeholder 里展示给超管看 */
+export const getExtQueryDefaults = () =>
+  api.get<ExtQueryDefaults>('/ext-queries/defaults');
 
 /** 外部查询记录（按链接 / IP / 时间段筛选，时间倒序分页） */
 export const listExtQueryLogs = (params: {

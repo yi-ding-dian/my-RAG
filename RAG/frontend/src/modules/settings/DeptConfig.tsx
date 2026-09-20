@@ -40,6 +40,9 @@ import type { ThinkingMode, ImageSummaryConfig } from '../../shared/api/client';
 const { TextArea } = Input;
 const { Text } = Typography;
 
+/** 系统提示词下拉里的"自定义"标记（取不可能撞上条目名的串） */
+const CUSTOM_PROMPT = '__custom__';
+
 /** 部门 LLM 表单字段 */
 interface DeptLlmValues {
   llm_base_url?: string;
@@ -55,6 +58,8 @@ interface DeptChatValues {
   chat_enable_multi_turn: boolean;
   chat_history_rounds: number;
   chat_system_prompt: string;
+  /** 引用的提示词库条目名（超管在配置档案里维护） */
+  chat_system_prompt_ref: string;
   use_default_temperature: boolean;
   chat_temperature: number;
   chat_top_p: number;
@@ -141,11 +146,15 @@ const DeptConfig: React.FC = () => {
   const [savingImg, setSavingImg] = useState(false);
   /** 超管配的图片解析模型（只有名字，不含连接信息与密钥） */
   const [visionOptions, setVisionOptions] = useState<Array<{ name: string; model: string }>>([]);
+  /** 超管配的系统提示词库条目（部门只"选"用哪条，不能编辑库本身） */
+  const [promptOptions, setPromptOptions] = useState<Array<{ name: string; content: string }>>([]);
   /** 提示词是否被手动改过：改过就不再被"选项变化"自动覆盖 */
   const [imgPromptTouched, setImgPromptTouched] = useState(false);
   // 选项 / 输出格式一变就实时重算默认提示词填进输入框（未手动改过时）——
   // 让部门管理员看得见"当前选项会生成什么"，而不是面对一个空框
   const imgFmt = Form.useWatch('img_output_format', imgForm);
+  // 系统提示词的当前选择（'' 跟随全局 / 条目名 / CUSTOM_PROMPT 自定义）
+  const chatPromptRef = Form.useWatch('chat_system_prompt_ref', chatForm);
   const imgOptLabel = Form.useWatch('img_opt_label_type', imgForm);
   const imgOptText = Form.useWatch('img_opt_read_text', imgForm);
   const imgOptScene = Form.useWatch('img_opt_describe_scene', imgForm);
@@ -194,6 +203,7 @@ const DeptConfig: React.FC = () => {
         chat_enable_multi_turn: chat?.enable_multi_turn ?? true,
         chat_history_rounds: chat?.history_rounds ?? 8,
         chat_system_prompt: chat?.system_prompt ?? '',
+        chat_system_prompt_ref: chat?.system_prompt_ref ?? '',
         use_default_temperature: chat?.temperature == null,
         chat_temperature: chat?.temperature ?? 0.7,
         chat_top_p: chat?.top_p ?? 0.9,
@@ -219,6 +229,8 @@ const DeptConfig: React.FC = () => {
         vision_options?: Array<{ name: string; model: string }>;
       });
       setVisionOptions(img.vision_options ?? []);
+      setPromptOptions((res.data as { prompt_options?: Array<{ name: string; content: string }> })
+        .prompt_options ?? []);
       const is = img.image_summary ?? {};
       const opts = is.options ?? {};
       imgForm.setFieldsValue({
@@ -274,12 +286,19 @@ const DeptConfig: React.FC = () => {
     const vals = await chatForm.validateFields();
     setSavingChat(true);
     try {
+      // 提示词二选一：自定义模式清掉引用名并带上正文，引用/默认模式清掉正文
+      // （后端解析顺序：引用 > system_prompt > 内置模板）
+      const isPromptCustom =
+        (vals.chat_system_prompt_ref ?? '') === CUSTOM_PROMPT;
       // 只提交 chat 段白名单字段（后端校验）；temperature 用 LLM 配置默认时提交 null
       await updateChatSettings({
         chat: {
           enable_multi_turn: vals.chat_enable_multi_turn,
           history_rounds: vals.chat_history_rounds,
-          system_prompt: vals.chat_system_prompt ?? '',
+          system_prompt: isPromptCustom ? (vals.chat_system_prompt ?? '') : '',
+          system_prompt_ref: isPromptCustom
+            ? ''
+            : (vals.chat_system_prompt_ref ?? ''),
           temperature: vals.use_default_temperature ? null : vals.chat_temperature,
           top_p: vals.chat_top_p,
           max_tokens: vals.chat_max_tokens ?? null,
@@ -498,10 +517,30 @@ const DeptConfig: React.FC = () => {
               </Row>
             )}
           </Form.Item>
-          <Form.Item name="chat_system_prompt" label="系统提示词"
-            extra="留空 = 使用内置默认模板；可含 {knowledge} / {refs} 占位符">
-            <TextArea rows={4} placeholder="留空 = 使用内置默认模板" />
+          {/* 系统提示词：可从超管维护的提示词库选一条（存名字 → 改库内容本部门
+              立即生效），也可给本部门临时自定义一条 */}
+          <Form.Item name="chat_system_prompt_ref" label="系统提示词"
+            extra="可引用超管维护的提示词库（改库内容本部门立即生效），或自定义一条；留空 = 用内置默认模板">
+            <Select
+              allowClear
+              style={{ width: 380 }}
+              placeholder="跟随全局默认"
+              options={[
+                { value: '', label: '跟随全局默认' },
+                ...promptOptions.map(p => ({
+                  value: p.name,
+                  label: `提示词库：${p.name}`,
+                })),
+                { value: CUSTOM_PROMPT, label: '自定义…' },
+              ]}
+            />
           </Form.Item>
+          {chatPromptRef === CUSTOM_PROMPT && (
+            <Form.Item name="chat_system_prompt" label="自定义系统提示词"
+              extra="可含 {knowledge} / {refs} 占位符">
+              <TextArea rows={4} placeholder="输入本部门专属的系统提示词…" />
+            </Form.Item>
+          )}
           <Row gutter={16}>
             <Col span={7}>
               <Form.Item name="chat_kg_enhance" label="知识图谱增强" valuePropName="checked"

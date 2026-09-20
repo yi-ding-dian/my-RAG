@@ -26,6 +26,8 @@ GLOBAL_LLM = {
     "api_key": "sk-global-1234567890",
     "model": "global-model",
     "temperature": 0.7,
+    # Top P：模型级采样参数（LLMConfig 默认 0.9），随模型走、部门可覆盖
+    "top_p": 0.9,
     "max_tokens": 4096,
     "timeout": 60.0,
     # 思考控制方式跟模型走：部门覆盖模型时也要能一并覆盖它

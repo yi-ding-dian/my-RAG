@@ -35,6 +35,9 @@ def chat_payload(profile: dict) -> dict:
             "top_p": chat.get("top_p"),
             "max_tokens": chat.get("max_tokens"),
             "system_prompt": chat.get("system_prompt", ""),
+            # 引用的提示词库条目名（空 = 不引用，直接用 system_prompt）；
+            # 漏了这行会让超管在全局设的引用拿不到（部门设了才进得来）
+            "system_prompt_ref": chat.get("system_prompt_ref", ""),
             "kg_enhance": chat.get("kg_enhance", True),
             # 查询改写（默认开，旧档案缺字段兜底；LLM 结合历史把问题改写为
             # 独立检索查询——口语→正式 + 指代消解，见 query_rewriter）

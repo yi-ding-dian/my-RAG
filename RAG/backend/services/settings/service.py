@@ -551,6 +551,47 @@ def llm_cfg_for_parser(ident) -> Optional[dict]:
     return find_llm_item(str(ident))
 
 
+def list_prompt_items() -> List[dict]:
+    """当前激活档案的提示词库条目
+
+    只返回 name / content **都有值**的条目——半填的条目在下拉里没有意义，
+    引用时也匹配不到内容，过滤掉比让用户选中后拿到空提示词好。
+    外部查询与部门配置（内部聊天）两处共用。
+    """
+    try:
+        profile = get_settings_service().get_active() or {}
+        raw = (profile.get("prompts") or {}).get("items")
+    except Exception as e:
+        logger.warning("读取提示词库失败: %s", e)
+        return []
+    if not isinstance(raw, list):
+        return []
+    out: List[dict] = []
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()
+        content = str(it.get("content") or "").strip()
+        if name and content:
+            out.append({"name": name, "content": content})
+    return out
+
+
+def resolve_prompt_ref(ref: Optional[str]) -> Optional[str]:
+    """按条目名取提示词正文；未指定 / 已不存在（改名或删除）→ None
+
+    调用方据此回退到自己的默认值，不清空也不报错——库里改个名字不该让
+    引用它的配置直接失效。
+    """
+    name = str(ref or "").strip()
+    if not name:
+        return None
+    for it in list_prompt_items():
+        if it["name"] == name:
+            return it["content"]
+    return None
+
+
 # 模块导入即创建单例并加载活跃档案（服务启动自动生效，无需改 main.py）
 _settings_service = SettingsService()
 

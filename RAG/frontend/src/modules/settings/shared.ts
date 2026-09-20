@@ -227,6 +227,8 @@ export interface ProfileFormValues {
   image_summary_opt_read_text: boolean;
   image_summary_opt_describe_scene: boolean;
   image_summary_opt_describe_layout: boolean;
+  /** 系统提示词库条目（Form.List 的嵌套路径，供外部查询引用） */
+  prompts?: { items?: { name?: string; content?: string }[] };
 }
 
 // 表单扁平字段 <-> 嵌套档案对象互转
@@ -328,6 +330,15 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
     max_query_len: vals.chat_max_query_len,
     citation_snippet_chars: vals.chat_citation_snippet_chars,
   },
+  // 系统提示词库：始终提交（空数组 = 清空库）；过滤掉没填名称的半成品条目
+  prompts: {
+    items: (vals.prompts?.items ?? [])
+      .filter(it => (it?.name ?? '').trim())
+      .map(it => ({
+        name: (it?.name ?? '').trim(),
+        content: (it?.content ?? '').trim(),
+      })),
+  },
 });
 
 export const toFormValues = (p: ServiceProfile) => ({
@@ -385,4 +396,6 @@ export const toFormValues = (p: ServiceProfile) => ({
   image_summary_opt_read_text: p.image_summary?.options?.read_text ?? true,
   image_summary_opt_describe_scene: p.image_summary?.options?.describe_scene ?? true,
   image_summary_opt_describe_layout: p.image_summary?.options?.describe_layout ?? false,
+  // 系统提示词库（旧档案无该段 → 空列表）
+  prompts: { items: p.prompts?.items ?? [] },
 });

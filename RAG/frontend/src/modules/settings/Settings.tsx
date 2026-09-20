@@ -218,12 +218,15 @@ const SettingsPage: React.FC = () => {
         model_api_key: m.api_key, model_model: m.model,
         model_temperature: m.temperature, model_max_tokens: m.max_tokens,
         model_timeout: m.timeout,
+        // 旧数据无该字段 → 回填 0.9（与后端 LLMConfig 默认一致）
+        model_top_p: m.top_p ?? 0.9,
         // 旧数据无该字段 → 回填 none（与后端默认一致）
         model_thinking_control: m.thinking_control ?? 'none',
       });
     } else {
       modelForm.setFieldsValue({
         model_temperature: 0.3, model_max_tokens: 4096, model_timeout: 120,
+        model_top_p: 0.9,
         model_thinking_control: 'none',
       });
     }
@@ -238,6 +241,7 @@ const SettingsPage: React.FC = () => {
       api_key: v.model_api_key || '',
       model: (v.model_model ?? '').trim(),
       temperature: v.model_temperature ?? 0.3,
+      top_p: v.model_top_p ?? 0.9,
       max_tokens: v.model_max_tokens ?? 4096,
       timeout: v.model_timeout ?? 120,
       thinking_control: (v.model_thinking_control ?? 'none') as ThinkingControl,
@@ -951,6 +955,84 @@ const SettingsPage: React.FC = () => {
                 children: <ChatPanel />,
               },
               {
+                key: 'prompts',
+                label: '系统提示词库',
+                children: (
+                  <div>
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      message="供「外部查询」引用"
+                      description={
+                        '外部链接选一条即可复用同一套提示词；改这里的正文，'
+                        + '所有引用它的链接立刻生效——外部链接存的是名称引用，'
+                        + '不是内容副本。'
+                      }
+                    />
+                    {/* 弹窗 body 是固定高度（见弹窗注释），条目多了必须自己滚动，
+                        否则"添加提示词"按钮会被 footer 盖住 */}
+                    <div style={{ maxHeight: 220, overflowY: 'auto', paddingRight: 4 }}>
+                      <Form.List name={['prompts', 'items']}>
+                        {(fields, { add, remove }) => (
+                          <>
+                            {fields.map(({ key, name, ...rest }) => (
+                              <Row key={key} gutter={8} style={{ marginBottom: 8 }}>
+                                <Col span={6}>
+                                  <Form.Item
+                                    {...rest}
+                                    name={[name, 'name']}
+                                    style={{ marginBottom: 0 }}
+                                    rules={[{
+                                      required: true, whitespace: true,
+                                      message: '请输入名称',
+                                    }]}
+                                  >
+                                    <Input placeholder="名称（如：严谨引用）" maxLength={50} />
+                                  </Form.Item>
+                                </Col>
+                                <Col span={16}>
+                                  <Form.Item
+                                    {...rest}
+                                    name={[name, 'content']}
+                                    style={{ marginBottom: 0 }}
+                                    rules={[{
+                                      required: true, whitespace: true,
+                                      message: '请输入提示词内容',
+                                    }]}
+                                  >
+                                    <Input.TextArea
+                                      rows={2}
+                                      placeholder="提示词正文，可含 {knowledge} / {refs} 占位符"
+                                    />
+                                  </Form.Item>
+                                </Col>
+                                <Col span={2}>
+                                  <Button
+                                    type="text"
+                                    danger
+                                    icon={<DeleteOutlined />}
+                                    onClick={() => remove(name)}
+                                  />
+                                </Col>
+                              </Row>
+                            ))}
+                            <Button
+                              type="dashed"
+                              block
+                              icon={<PlusOutlined />}
+                              onClick={() => add({ name: '', content: '' })}
+                            >
+                              添加提示词
+                            </Button>
+                          </>
+                        )}
+                      </Form.List>
+                    </div>
+                  </div>
+                ),
+              },
+              {
                 key: 'llm',
                 label: panelLabel('llm', 'LLM 对话模型（多模型管理）'),
                 children: (
@@ -1074,7 +1156,7 @@ const SettingsPage: React.FC = () => {
             </Col>
           </Row>
           <Row gutter={12}>
-            <Col span={8}>
+            <Col span={6}>
               <Form.Item
                 name="model_temperature"
                 label={
@@ -1101,7 +1183,38 @@ const SettingsPage: React.FC = () => {
                 <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
+              <Form.Item
+                name="model_top_p"
+                label={
+                  <Space size={4}>
+                    Top P
+                    <Tooltip
+                      overlayStyle={{ maxWidth: 380 }}
+                      title={
+                        <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                          核采样范围（0~1）：只从累计概率最高的这部分候选词里
+                          挑下一个字，越小越保守、越大越多样。
+                          <div style={{ marginTop: 6 }}>
+                            它与 Temperature 是两个独立的采样旋钮，通常
+                            只调其中一个：保持 Temperature 小而调 Top P，
+                            比单纯降温度更不容易陷入重复。
+                          </div>
+                          <div style={{ marginTop: 6 }}>
+                            外部查询「Top P 留空」时用的就是这个值，默认 0.9。
+                          </div>
+                        </div>
+                      }
+                    >
+                      <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                    </Tooltip>
+                  </Space>
+                }
+              >
+                <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
               <Form.Item
                 name="model_max_tokens"
                 label={
@@ -1137,7 +1250,7 @@ const SettingsPage: React.FC = () => {
                 <InputNumber min={64} max={32768} step={128} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Form.Item
                 name="model_timeout"
                 label={
