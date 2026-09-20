@@ -24,6 +24,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Popover,
   Row,
   Select,
   Slider,
@@ -148,6 +149,8 @@ const DeptConfig: React.FC = () => {
   const [visionOptions, setVisionOptions] = useState<Array<{ name: string; model: string }>>([]);
   /** 超管配的系统提示词库条目（部门只"选"用哪条，不能编辑库本身） */
   const [promptOptions, setPromptOptions] = useState<Array<{ name: string; content: string }>>([]);
+  /** 「跟随全局默认」实际会用到的提示词全文（供"查看提示词"展示） */
+  const [defaultSystemPrompt, setDefaultSystemPrompt] = useState('');
   /** 提示词是否被手动改过：改过就不再被"选项变化"自动覆盖 */
   const [imgPromptTouched, setImgPromptTouched] = useState(false);
   // 选项 / 输出格式一变就实时重算默认提示词填进输入框（未手动改过时）——
@@ -231,6 +234,8 @@ const DeptConfig: React.FC = () => {
       setVisionOptions(img.vision_options ?? []);
       setPromptOptions((res.data as { prompt_options?: Array<{ name: string; content: string }> })
         .prompt_options ?? []);
+      setDefaultSystemPrompt((res.data as { default_system_prompt?: string })
+        .default_system_prompt ?? '');
       const is = img.image_summary ?? {};
       const opts = is.options ?? {};
       imgForm.setFieldsValue({
@@ -520,7 +525,39 @@ const DeptConfig: React.FC = () => {
           {/* 系统提示词：可从超管维护的提示词库选一条（存名字 → 改库内容本部门
               立即生效），也可给本部门临时自定义一条 */}
           <Form.Item name="chat_system_prompt_ref" label="系统提示词"
-            extra="可引用超管维护的提示词库（改库内容本部门立即生效），或自定义一条；留空 = 用内置默认模板">
+            extra={
+              <Space size={8}>
+                <span>可引用超管维护的提示词库（改库内容本部门立即生效），或自定义一条；留空 = 用内置默认模板</span>
+                {/* 自定义模式下文本框就在下方，无需"查看" */}
+                {chatPromptRef !== CUSTOM_PROMPT && (
+                  <Popover
+                    title={chatPromptRef
+                      ? `提示词库条目：${chatPromptRef}`
+                      : '「跟随全局默认」实际使用的提示词'}
+                    trigger="click"
+                    content={
+                      <div style={{
+                        maxWidth: 460,
+                        maxHeight: 320,
+                        overflowY: 'auto',
+                        whiteSpace: 'pre-wrap',
+                        fontSize: 12,
+                        lineHeight: 1.7,
+                      }}>
+                        {chatPromptRef
+                          ? (promptOptions.find(p => p.name === chatPromptRef)?.content
+                            ?? '（该条目已不存在，运行时将回退全局默认）')
+                          : (defaultSystemPrompt || '加载中…')}
+                      </div>
+                    }
+                  >
+                    <Typography.Link style={{ fontSize: 12 }}>
+                      查看提示词
+                    </Typography.Link>
+                  </Popover>
+                )}
+              </Space>
+            }>
             <Select
               allowClear
               style={{ width: 380 }}

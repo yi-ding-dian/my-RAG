@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import AppModal from '../../shared/components/common/AppModal';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import AppModal, { AppModalFooter } from '../../shared/components/common/AppModal';
 import {
   App as AntApp,  Card,  Form,  Input,  InputNumber,  Button,  Typography,  Space,
   Row,  Col,  Skeleton,  Tag,  Alert,  Popconfirm,  Tooltip,  Collapse,
@@ -7,7 +7,8 @@ import {
 import {
   CheckCircleFilled, CloseCircleFilled, LoadingOutlined,
   PlusOutlined, DeleteOutlined, CheckOutlined, EditOutlined,
-  ThunderboltOutlined, QuestionCircleOutlined,
+  ThunderboltOutlined, QuestionCircleOutlined, EyeOutlined,
+  ExclamationCircleFilled,
 } from '@ant-design/icons';
 import {
   asApiError,
@@ -55,6 +56,23 @@ const PRE_STYLE: React.CSSProperties = {
   background: '#fafafa',
 };
 
+/**
+ * 提示词条目的标签列：固定宽度 + 右对齐，两个标签的冒号才能对齐成一条竖线；
+ * nowrap 防止窄屏下"提示词："被折成两行
+ */
+const LABEL_COL: React.CSSProperties = {
+  width: 62,
+  textAlign: 'right',
+  whiteSpace: 'nowrap',
+  lineHeight: '24px', // 与单行 Input（small）等高 → 垂直居中
+};
+
+/** 多行正文的标签：对齐正文**首行**（textarea 自带内边距，标签也补一点） */
+const LABEL_COL_MULTILINE: React.CSSProperties = {
+  lineHeight: '22px',
+  paddingTop: 4,
+};
+
 const SettingsPage: React.FC = () => {
   const { message, modal } = AntApp.useApp();
   const { token } = theme.useToken();
@@ -67,6 +85,9 @@ const SettingsPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   // 部门配置查询（超管只读）：部门列表 + 查看弹窗（null = 关闭）
   const [departments, setDepartments] = useState<Department[]>([]);
+  // 提示词详情弹窗（正文框窄，看全文/复制靠这个）
+  const [promptPreview, setPromptPreview] =
+    useState<{ name: string; content: string } | null>(null);
   const [deptView, setDeptView] = useState<{
     name: string;
     /** 部门显式覆盖的段（[段名, 字段dict]，只留有内容的） */
@@ -77,6 +98,10 @@ const SettingsPage: React.FC = () => {
 
   // 编辑弹窗
   const [modalOpen, setModalOpen] = useState(false);
+  /** 上次保存（或刚打开）时的内容指纹：关闭时拿它比，判断有没有未保存的改动 */
+  const baselineRef = useRef('');
+  /** 「有未保存改动」确认框（用 AppModal，与项目其余弹窗同一套样式） */
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   // 域卡测试连接 loading 键（"profileId:domainKey"）
   const [domainTesting, setDomainTesting] = useState('');
   // 编辑弹窗聚焦的配置域（方案 A：域卡 → 打开弹窗默认展开该域；
@@ -117,15 +142,22 @@ const SettingsPage: React.FC = () => {
   const [embeddingDim, setEmbeddingDim] = useState<number | null>(null);
   const [embeddingDimMsg, setEmbeddingDimMsg] = useState('');
 
-  const loadProfiles = useCallback(async () => {
-    setLoading(true);
+  /**
+   * 拉取档案列表（含当前 embedding 模型实测维度）。
+   *
+   * `silent` = 不亮骨架屏：保存/激活/删除后刷新时**必须**静默——那会把整页
+   * （包括正开着的编辑弹窗）换成骨架屏再换回来，画面抽一下、弹窗里的滚动
+   * 位置和展开的面板全丢。骨架屏只留给首次进页面。
+   */
+  const loadProfiles = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const res = await listProfiles();
       setProfiles(res.data);
     } catch {
       message.error('加载配置失败');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
     // 当前激活 embedding 模型实际输出维度（实测；更换模型后此处用于核对冲突）
     try {
@@ -181,6 +213,14 @@ const SettingsPage: React.FC = () => {
         () => message.success(`${label}已复制到剪贴板`),
         () => message.error('复制失败（浏览器未授权剪贴板）'),
       );
+  };
+
+  /** 复制纯文本到剪贴板（提示词详情用——JSON 序列化会把换行转义掉） */
+  const copyText = (text: string, label: string) => {
+    void navigator.clipboard.writeText(text).then(
+      () => message.success(`${label}已复制到剪贴板`),
+      () => message.error('复制失败（浏览器未授权剪贴板）'),
+    );
   };
 
   /** 打开某部门配置查看弹窗（只读）：展示**当前生效值**（全局 + 部门覆盖的
@@ -447,6 +487,39 @@ const SettingsPage: React.FC = () => {
     setModalOpen(true);
   };
 
+  /**
+   * 当前编辑内容的指纹：表单全部字段 + 两个模型列表。
+   * 后两者存在独立 state 里（不在 Form 中），漏掉它们就会「改了模型列表却
+   * 检测不出未保存」。
+   */
+  const editFingerprint = () => JSON.stringify({
+    form: form.getFieldsValue(true),
+    llm: llmModels, llmActive,
+    vision: visionModels, visionActive,
+  });
+
+  // 弹窗打开后记一份基线。表单值与模型列表都是异步 setState 填进去的，
+  // 要等这一轮渲染落地再读，否则记下的是空表单。
+  useEffect(() => {
+    if (!modalOpen) return undefined;
+    const timer = window.setTimeout(() => {
+      baselineRef.current = editFingerprint();
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // 只跟「打开 / 换了编辑对象」走。**不能**把 llmModels 等加进依赖：
+    // 它们每次编辑都会变，一进依赖基线就被重置，等于永远检测不出改动。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalOpen, editingId]);
+
+  /** 关闭弹窗：有未保存改动时二次确认（打开后没动过就直接关，不打扰） */
+  const requestClose = () => {
+    if (editFingerprint() === baselineRef.current) {
+      setModalOpen(false);
+      return;
+    }
+    setCloseConfirmOpen(true);
+  };
+
   const doSave = async (vals: ProfileFormValues) => {
     setSaving(true);
     try {
@@ -457,13 +530,18 @@ const SettingsPage: React.FC = () => {
       const data = toProfileInput(vals, llmSection, visionSection);
       if (editingId) {
         await updateProfile(editingId, data);
-        message.success('配置档案已更新');
+        message.success('配置档案已保存');
       } else {
-        await createProfile(data as ServiceProfileInput & { name: string });
+        // 新建后留在弹窗里继续编辑，但必须记住 id——否则再点一次保存会又建一份
+        const res = await createProfile(
+          data as ServiceProfileInput & { name: string });
+        setEditingId(res.data.id);
         message.success('配置档案已创建');
       }
-      setModalOpen(false);
-      await loadProfiles();
+      // 保存后**不关弹窗**：用户可以接着改、接着存，改完自己关
+      await loadProfiles(true);
+      // 存过了，基线随之刷新——否则关窗时会误报"有未保存的改动"
+      baselineRef.current = editFingerprint();
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '保存失败');
     } finally {
@@ -488,7 +566,7 @@ const SettingsPage: React.FC = () => {
         try {
           const res = await activateProfile(p.id);
           message.success(res.data.message);
-          await loadProfiles();
+          await loadProfiles(true);
         } catch {
           message.error('切换失败');
         }
@@ -500,7 +578,7 @@ const SettingsPage: React.FC = () => {
     try {
       await deleteProfile(id);
       message.success('已删除');
-      await loadProfiles();
+      await loadProfiles(true);
     } catch {
       message.error('删除失败');
     }
@@ -915,23 +993,27 @@ const SettingsPage: React.FC = () => {
           styles/modals.css .profile-config-modal，与 .chunk-detail-modal 同一套规则） */}
       <AppModal
         dimension="resizable"
-        defaultSize={{ w: 720, h: 560 }}
         rememberKey="settings-1"
         className="profile-config-modal"
         title={editingId ? '编辑配置档案' : '新建配置档案'}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
-        onOk={handleSave}
-        confirmLoading={saving}
-        okText="保存"
+        onCancel={requestClose}
+        // 不要「取消」按钮——右上角已有 ✕，两个关闭入口重复。
+        // ✕ / Esc 都走 requestClose：有未保存改动会先弹二次确认
+        footer={
+          <AppModalFooter
+            okText="保存"
+            cancelText={null}
+            okLoading={saving}
+            onOk={handleSave}
+          />
+        }
         width={720}
-        style={{ top: '8vh', height: 'min(88vh, calc(100vh - 120px))' }}
-        styles={{
-          content: { display: 'flex', flexDirection: 'column', height: '100%' },
-          header: { flexShrink: 0 },
-          body: { padding: '16px 20px', flex: 1, minHeight: 0, overflow: 'auto' },
-          footer: { flexShrink: 0 },
-        }}
+        // 初始大小交给 defaultSize：**不能传 style.height**——那会锁死弹窗高度，
+        // 与 AppModal 的拖拽打架（拖拽只改正文区高度，正文一高就把 footer 顶到
+        // 弹窗外面、按钮出屏）。用户拖过的尺寸由 rememberKey 记住。
+        // 原先这里的 styles 也一并删了：AppModal 会接管 styles，传了不生效。
+        defaultSize={{ w: 720, h: 700 }}
       >
         <Form form={form} layout="vertical" size="small" disabled={readOnly}>
           <Collapse
@@ -959,63 +1041,107 @@ const SettingsPage: React.FC = () => {
                 label: '系统提示词库',
                 children: (
                   <div>
+                    {/* 与下面「LLM 对话模型」面板同款 Alert；内容压成一行小字 */}
                     <Alert
                       type="info"
                       showIcon
-                      style={{ marginBottom: 12 }}
-                      message="供「外部查询」引用"
-                      description={
-                        '外部链接选一条即可复用同一套提示词；改这里的正文，'
-                        + '所有引用它的链接立刻生效——外部链接存的是名称引用，'
-                        + '不是内容副本。'
+                      style={{ marginBottom: 12, padding: '6px 12px' }}
+                      message={
+                        <span style={{ fontSize: 12 }}>
+                          供配置使用：选一条即可复用，改正文即全生效（存名称引用，非内容副本）
+                        </span>
                       }
                     />
                     {/* 弹窗 body 是固定高度（见弹窗注释），条目多了必须自己滚动，
                         否则"添加提示词"按钮会被 footer 盖住 */}
-                    <div style={{ maxHeight: 220, overflowY: 'auto', paddingRight: 4 }}>
+                    <div style={{ maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
                       <Form.List name={['prompts', 'items']}>
                         {(fields, { add, remove }) => (
                           <>
                             {fields.map(({ key, name, ...rest }) => (
-                              <Row key={key} gutter={8} style={{ marginBottom: 8 }}>
-                                <Col span={6}>
-                                  <Form.Item
-                                    {...rest}
-                                    name={[name, 'name']}
-                                    style={{ marginBottom: 0 }}
-                                    rules={[{
-                                      required: true, whitespace: true,
-                                      message: '请输入名称',
-                                    }]}
-                                  >
-                                    <Input placeholder="名称（如：严谨引用）" maxLength={50} />
-                                  </Form.Item>
-                                </Col>
-                                <Col span={16}>
-                                  <Form.Item
-                                    {...rest}
-                                    name={[name, 'content']}
-                                    style={{ marginBottom: 0 }}
-                                    rules={[{
-                                      required: true, whitespace: true,
-                                      message: '请输入提示词内容',
-                                    }]}
-                                  >
-                                    <Input.TextArea
-                                      rows={2}
-                                      placeholder="提示词正文，可含 {knowledge} / {refs} 占位符"
-                                    />
-                                  </Form.Item>
-                                </Col>
-                                <Col span={2}>
-                                  <Button
-                                    type="text"
-                                    danger
-                                    icon={<DeleteOutlined />}
-                                    onClick={() => remove(name)}
-                                  />
-                                </Col>
-                              </Row>
+                              // 卡片式：名称与提示词**并排**同一行，各自标签在左、内容在右。
+                              // 并排的代价是提示词框只剩约 250px 宽，长文本会频繁折行——
+                              // 这是用户权衡后的选择（优先让每条只占 4 行高）
+                              <div
+                                key={key}
+                                style={{
+                                  border: '1px solid #f0f0f0',
+                                  borderRadius: 8,
+                                  padding: 12,
+                                  marginBottom: 8,
+                                  background: '#fafafa',
+                                }}
+                              >
+                                {/* 外层并排：名称列定宽、提示词列吃剩余。用原生 flex 而不是
+                                    Row/Col——Col 在定宽容器里 flex-basis 会取 Input 的固有
+                                    宽度，把"标签+输入框"挤成上下两行（踩过）；配合
+                                    minWidth: 0 才能让输入框真正收缩到容器宽度 */}
+                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                                  <div style={{ width: 210, flexShrink: 0, display: 'flex', gap: 8 }}>
+                                    <span style={{ ...LABEL_COL, flexShrink: 0 }}>名称：</span>
+                                    <Form.Item
+                                      {...rest}
+                                      name={[name, 'name']}
+                                      style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
+                                      rules={[{
+                                        required: true, whitespace: true,
+                                        message: '请输入名称',
+                                      }]}
+                                    >
+                                      <Input placeholder="如：严谨引用" maxLength={50} />
+                                    </Form.Item>
+                                  </div>
+                                  <div style={{ flex: 1, minWidth: 0, display: 'flex', gap: 8 }}>
+                                    <span
+                                      style={{ ...LABEL_COL, ...LABEL_COL_MULTILINE, flexShrink: 0 }}
+                                    >
+                                      提示词：
+                                    </span>
+                                    <Form.Item
+                                      {...rest}
+                                      name={[name, 'content']}
+                                      style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
+                                      rules={[{
+                                        required: true, whitespace: true,
+                                        message: '请输入提示词内容',
+                                      }]}
+                                    >
+                                      {/* 框窄，占位符说明只能留最关键的一句；
+                                          全文看「查看详情」 */}
+                                      <Input.TextArea
+                                        rows={3}
+                                        placeholder="可含 {knowledge} / {refs} 占位符"
+                                      />
+                                    </Form.Item>
+                                  </div>
+                                  {/* 两个图标按钮，size=small 省宽度——每一像素都是
+                                      从提示词框那儿匀过来的 */}
+                                  <Space size={0} style={{ flexShrink: 0 }}>
+                                    <Tooltip title="查看详情">
+                                      <Button
+                                        type="text"
+                                        size="small"
+                                        icon={<EyeOutlined />}
+                                        onClick={() => setPromptPreview({
+                                          name: String(form.getFieldValue(
+                                            ['prompts', 'items', name, 'name']) ?? ''),
+                                          content: String(form.getFieldValue(
+                                            ['prompts', 'items', name, 'content']) ?? ''),
+                                        })}
+                                      />
+                                    </Tooltip>
+                                    <Tooltip title="删除该提示词">
+                                      <Button
+                                        type="text"
+                                        size="small"
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        onClick={() => remove(name)}
+                                      />
+                                    </Tooltip>
+                                  </Space>
+                                </div>
+                              </div>
                             ))}
                             <Button
                               type="dashed"
@@ -1094,6 +1220,38 @@ const SettingsPage: React.FC = () => {
 
           <div style={{ height: 4 }} />
         </Form>
+      </AppModal>
+
+      {/* 「有未保存改动」确认框：与项目其余弹窗统一走 AppModal
+          （原先是 antd 命令式 modal.confirm，外观和交互都不是这一套）。
+          dimension="fixed"：确认框不需要拖拽，也免得小框上的手柄热区被误触 */}
+      <AppModal
+        dimension="fixed"
+        // minSize 必须一起给小：默认最小高 360 会把这种一行字的确认框撑出大片空白
+        minSize={{ w: 380, h: 200 }}
+        defaultSize={{ w: 460, h: 200 }}
+        title={
+          <Space size={8}>
+            <ExclamationCircleFilled style={{ color: '#faad14' }} />
+            <span>有未保存的改动</span>
+          </Space>
+        }
+        open={closeConfirmOpen}
+        onCancel={() => setCloseConfirmOpen(false)}
+        footer={
+          <AppModalFooter
+            okText="放弃改动并关闭"
+            cancelText="继续编辑"
+            danger
+            onOk={() => {
+              setCloseConfirmOpen(false);
+              setModalOpen(false);
+            }}
+            onCancel={() => setCloseConfirmOpen(false)}
+          />
+        }
+      >
+        关闭后这些改动会丢失，确定关闭吗？
       </AppModal>
 
       {/* 模型添加/编辑弹窗（LLM 多模型管理） */}
@@ -1382,6 +1540,42 @@ const SettingsPage: React.FC = () => {
         </Form>
       </AppModal>
 
+      {/* 提示词详情：条目里的正文框只有 4 行且很窄，看全文/复制靠这个弹窗。
+          内容实时取自表单当前值（不是保存后的旧值） */}
+      {promptPreview && (
+        <AppModal
+          dimension="resizable"
+          defaultSize={{ w: 720, h: 520 }}
+          rememberKey="prompt-detail"
+          open
+          width={720}
+          title={`提示词详情：${promptPreview.name || '（未命名）'}`}
+          footer={[
+            <Button key="close" onClick={() => setPromptPreview(null)}>关闭</Button>,
+          ]}
+          onCancel={() => setPromptPreview(null)}
+          styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
+          destroyOnHidden
+        >
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+            名称
+            <Button size="small" style={{ marginLeft: 8 }}
+              onClick={() => copyText(promptPreview.name, '名称')}>
+              复制
+            </Button>
+          </div>
+          <div style={{ marginBottom: 12 }}>{promptPreview.name || '-'}</div>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>
+            提示词正文（{promptPreview.content.length} 字）
+            <Button size="small" style={{ marginLeft: 8 }}
+              onClick={() => copyText(promptPreview.content, '提示词正文')}>
+              复制
+            </Button>
+          </div>
+          <pre style={PRE_STYLE}>{promptPreview.content || '（空）'}</pre>
+        </AppModal>
+      )}
+
       {/* 部门配置查询（超管只读）：统一走 AppModal——尺寸可记忆/拖拽，
           pre-wrap 让超长字段自动折行，右上「复制」一键拷走 */}
       {deptView && (
@@ -1397,7 +1591,7 @@ const SettingsPage: React.FC = () => {
           ]}
           onCancel={() => setDeptView(null)}
           styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
-          destroyOnClose
+          destroyOnHidden
         >
           <Alert
             type="info"

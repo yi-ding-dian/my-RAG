@@ -44,7 +44,9 @@ from backend.services.settings.service import (LLM_TEST_TIMEOUT,
                                                list_prompt_items,
                                                mask_api_key,
                                                merge_chat_config,
+                                               resolve_prompt_ref,
                                                merge_department_llm)
+from backend.services.settings.merge import chat_payload
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["系统配置"])
@@ -170,7 +172,21 @@ def _effective_chat_payload(profile: dict,
             "image_summary": img_summary, "vision_options": vision_options,
             # 提示词库条目：部门管理员可读（与 vision_options 同理，只给
             # 名称与正文，供部门配置里选一条给自己部门用）
-            "prompt_options": list_prompt_items()}
+            "prompt_options": list_prompt_items(),
+            # 「跟随全局默认」实际会用到的提示词全文（供前端"查看提示词"）：
+            # 全局档案的引用条目 → 全局 system_prompt → 内置模板，与运行时
+            # chat_service 的解析顺序一致
+            "default_system_prompt": _global_default_prompt(profile)}
+
+
+def _global_default_prompt(profile: dict) -> str:
+    """全局档案下「未设置任何提示词」时实际会用的内容（不含部门覆盖）"""
+    from backend.services.chat_service import _SYSTEM_PROMPT_TEMPLATE
+    g_chat = (chat_payload(profile) or {}).get("chat") or {}
+    return (resolve_prompt_ref(g_chat.get("system_prompt_ref"))
+            or (g_chat.get("system_prompt") or "").strip()
+            or _SYSTEM_PROMPT_TEMPLATE.format(
+                refs="【此处运行时注入本次检索到的引用内容】"))
 
 
 def _validate_numeric_field(k: str, v, cast: str) -> None:

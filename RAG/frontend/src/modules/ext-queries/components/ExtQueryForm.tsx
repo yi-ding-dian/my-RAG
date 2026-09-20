@@ -353,26 +353,35 @@ const ExtQueryForm: React.FC<ExtQueryFormProps> = ({
             />
           }
           extra={
-            <Popover
-              title="「跟随全局默认」实际使用的提示词"
-              trigger="click"
-              content={
-                <div style={{
-                  maxWidth: 480,
-                  maxHeight: 340,
-                  overflowY: 'auto',
-                  whiteSpace: 'pre-wrap',
-                  fontSize: 12,
-                  lineHeight: 1.7,
-                }}>
-                  {defaults?.default_system_prompt || '加载中…'}
-                </div>
-              }
-            >
-              <Typography.Link style={{ fontSize: 12 }}>
-                查看默认提示词
-              </Typography.Link>
-            </Popover>
+            // 自定义模式下文本框就在下方，无需"查看"；跟随默认/引用库时才给入口
+            promptRefValue === CUSTOM_PROMPT ? null : (
+              <Popover
+                title={promptRefValue
+                  ? `提示词库条目：${promptRefValue}`
+                  : '「跟随全局默认」实际使用的提示词'}
+                trigger="click"
+                content={
+                  <div style={{
+                    maxWidth: 480,
+                    maxHeight: 340,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    fontSize: 12,
+                    lineHeight: 1.7,
+                  }}>
+                    {promptRefValue
+                      ? ((defaults?.prompt_options ?? [])
+                        .find(p => p.name === promptRefValue)?.content
+                        ?? '（该条目已不存在，运行时将回退到全局默认）')
+                      : (defaults?.default_system_prompt || '加载中…')}
+                  </div>
+                }
+              >
+                <Typography.Link style={{ fontSize: 12 }}>
+                  查看提示词
+                </Typography.Link>
+              </Popover>
+            )
           }
         >
           <Select
