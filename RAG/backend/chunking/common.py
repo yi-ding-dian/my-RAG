@@ -88,10 +88,45 @@ def _unwrap_wrapped_heading(line: str) -> str | None:
     return inner if _is_heading_text_candidate(inner) else None
 
 
+# 整行加粗标题：**标题**（首尾 ** 配对、中间不含 **）
+_BOLD_HEADING_RE = re.compile(r"^\*\*(.+)\*\*$")
+
+
+def _unwrap_bold_heading(line: str) -> str | None:
+    """整行加粗标题解析：命中返回标题内容，否则 None
+
+    整行就是 `**文字**` 的行，语义上通常是标题。常见来源：
+    - MinerU **未经 PDF 转换直接解析 Office 文档**（如 docx/ppt）时的产物：
+      版面分析没参与，标题样式没被还原，只留下加粗；
+    - Word 里手动加粗排版标题（未使用 Heading 样式）。
+
+    这类行既无 `#`，也不属于既有五种纯文本标题样式（setext / 包裹式 /
+    前导符号式 / 编号式），加这一支把它们接住。
+
+    判据从严（宁可漏认，也不能把正文里的加粗强调行当标题）：
+    - 整行就是 `**...**`：首尾配对且**中间不再含 `**`**（多个加粗块并列
+      的行不是标题）；
+    - 内容非空、<= 50 字符、非纯符号行（复用 _is_heading_text_candidate）；
+    - 不含句末标点（。！？；）与逗号——标题几乎不含，含之的多半是正文句。
+    """
+    s = line.strip()
+    m = _BOLD_HEADING_RE.match(s)
+    if not m:
+        return None
+    inner = m.group(1).strip()
+    if "**" in inner:
+        return None
+    if not _is_heading_text_candidate(inner):
+        return None
+    if any(ch in inner for ch in _SENTENCE_PUNCT) or "，" in inner or "," in inner:
+        return None
+    return inner
+
+
 # 纯文本编号标题识别：只认体系里的**高层编号**（拼接长表位置 <= 本值）。
 # legal 体系下即 编(0)/章(1)/节(2)，条(3)/款(4)/项(5) 不认——正文里
-# "第十六条　劳动合同是劳动者与用人单位…"同样匹配编号正则，认了会把每条法条
-# 都变成标题边界，切块碎成一片、标题链也烂掉。
+# "第十六条　……"这类条文正文同样匹配编号正则，认了会把每一条都变成标题
+# 边界，切块碎成一片、标题链也烂掉。
 _PLAIN_HEADING_MAX_POS = 2
 # 句末标点：标题几乎不含；含之的多半是"第三章规定了…。"这类引用章节号的正文句
 _SENTENCE_PUNCT = "。！？；"
@@ -108,11 +143,11 @@ def _prev_nonblank(lines: List[str], i: int) -> Optional[int]:
 
 def _is_plain_numbered_heading(lines: List[str], i: int, s: str,
                                systems: List[str]) -> bool:
-    """无任何标记的编号标题行（如 MinerU 漏标 `##` 的"第三章　劳动合同和集体合同"）
+    """无任何标记的编号标题行（MinerU 漏标 `##`，行内只剩编号 + 标题文本）
 
     仅在调用方提供编号体系时启用——体系已检测出该文档用"第X章"这类编号做
-    标题（其余标题带 `#`），那么裸编号行也该认。实测：劳动法 14 章里 11 章
-    MinerU 输出了 `##`，第三章/第十二章没有，导致目录树缺章、切块少边界。
+    标题（其余标题带 `#`），那么裸编号行也该认。实测同一份文档里多数标题带
+    `##`、少数漏标，漏标处即导致目录树缺章、切块少边界。
 
     约束从严（宁可漏认，不能把正文或目录当标题）：
     - 编号属体系高层（见 _PLAIN_HEADING_MAX_POS）；
@@ -121,9 +156,9 @@ def _is_plain_numbered_heading(lines: List[str], i: int, s: str,
     - **前后都须是空行**：标题独立成段；顺带挡掉目录里"标题行紧挨标题行"
       的连续排列（只有首行前面是空行）；
     - **目录区判据**：越过空行往上，连续两行也是编号行 → 判为目录（正文里
-      章节标题之间必有正文，不会编号行挨着编号行）。劳动法目录区
+      章节标题之间必有正文，不会编号行挨着编号行）。目录区里
       "…第十一章\n\n第十二章\n\n第十三章"这类被空行隔开的行靠这条挡下
-      （实测否则会切出 8~9 字符的碎片块）。
+      （实测否则会切出几个字符的碎片块）。
     """
     if len(s) > _HEADING_MAX_LEN or s.startswith(("<", "|")):
         return False
@@ -160,6 +195,10 @@ def _iter_headings(text: str,
       '【标题】' / '━━ 标题 ━━' → 级别 2
     - 前导符号式 '■ 第一章 概述'（■◆●※▶▍ 开头，后跟空格或直接接文字，
       整行 <=50 字符）→ 级别 2
+    - 整行加粗式 '**标题**'（首尾 ** 配对、中间不含 **、<=50 字符、不含
+      句末标点/逗号）→ 级别 2。常见于 MinerU 未经 PDF 转换直接解析 Office
+      文档的产物、以及 Word 里手动加粗排版的标题；提供编号体系时级别按
+      编号推断（见 _unwrap_bold_heading）
 
     heading_systems（可选，编号体系名列表如 ["chapter_body","numeric_multi"]）：
     提供时，ATX 标题的级别**优先按标题文本的编号推断**（并列拼接长表位置 + 1，
@@ -203,6 +242,12 @@ def _iter_headings(text: str,
                 lm = _LEADING_MARK_RE.match(line)
                 if lm is not None and len(s) <= _HEADING_MAX_LEN:
                     title, level = lm.group(2).strip(), 2  # 前导符号式
+                elif (bold := _unwrap_bold_heading(line)) is not None:
+                    # 整行加粗式（见 _unwrap_bold_heading）：级别默认 2，
+                    # 提供编号体系时按编号推断（加粗本身不含层级信息）
+                    title, level = bold, 2
+                    if heading_systems:
+                        sys_pos = _match_system_position(bold, heading_systems)
                 elif (heading_systems
                       and _is_plain_numbered_heading(lines, i, s,
                                                      heading_systems)):

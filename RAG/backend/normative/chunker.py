@@ -34,6 +34,14 @@
    的混合层级表）传入每个标题的真实层级，覆盖从 `#` 数量得到的层级；level=0
    的标题不参与建树（不是章节边界），但其文本仍按原文留在正文里——偏移契约
    与内容覆盖不受影响。
+7. 标题编号体系（heading_systems，可选）：与 title/parent_child 同款机制
+   （backend.chunking.heading_presets）——`#` 数量相同的扁平输出里，真实层级
+   藏在标题编号中（"一、"=章、"1.1"=节），按编号推断即可还原。**这一步要由
+   调用方把体系检测结果传进来**：不传时全 `##` 文档在 _groups 里找不到
+   level <= chapter_level 的节点，会退化成"整篇一个聚合组"，章与章之间被
+   贪心装箱合并（同一块携带两个章的内容，且标题链前缀指向错误的章节）；
+   传了之后同一份文档的章级边界就位，聚合与分组同时成立。
+   与 heading_levels 不冲突：后者存在时优先（见 _tree_headings）。
 
 overlap 的落点：聚合块的边界本身是章节语义边界（子树/章节），人为回移起点会让
 块首不再是它自己的标题、标题链前缀与块首标题错位，故 overlap 只在"被强制切断
@@ -105,7 +113,10 @@ class HierarchicalChunker:
     add_heading_path = 是否给块首拼接祖先标题链（默认开，见类 docstring 第 4 点）；
     heading_levels = 外部给定的层级表（可选，见类 docstring 第 6 点）：与标题
     识别结果（_iter_headings）按顺序一一对应，level 取 0~6，0 表示"不是标题"
-    （不参与建树，文本仍留在正文里）。
+    （不参与建树，文本仍留在正文里）；
+    heading_systems = 标题编号体系（可选，见类 docstring 第 7 点）：与
+    title/parent_child 同款机制（backend.chunking.heading_presets），把
+    MinerU 全 `##` 扁平输出里藏在编号里的真实层级还原出来。
 
     产出保证（测试断言依赖）：
     - 每块 text == full[char_start:char_end]（拼了标题链前缀的块只多一个前缀行）；
@@ -118,7 +129,8 @@ class HierarchicalChunker:
                  overlap: int | None = None,
                  chapter_level: int = 1,
                  add_heading_path: bool = True,
-                 heading_levels: List[int] | None = None):
+                 heading_levels: List[int] | None = None,
+                 heading_systems: List[str] | None = None):
         cfg = get_active_config().chunking
         self.chunk_size = chunk_size if chunk_size is not None else cfg.chunk_size
         self.overlap = overlap if overlap is not None else cfg.chunk_overlap
@@ -131,6 +143,12 @@ class HierarchicalChunker:
         # 外部层级表（None = 用 # 数量的既有行为）；取值域即时校验，长度校验
         # 依赖实际标题数、在 chunk() 里做（见 _external_levels）
         self.heading_levels = self._check_levels(heading_levels)
+        # 标题编号体系（None/空 = 仅按 # 数量定级，与历史行为一致）：
+        # MinerU 把 PDF 所有标题输出为 `##`（真实层级藏在"一、"/"1.1"编号里），
+        # 提供体系时按编号推断级别（_iter_headings 归一化为文档内相对层级）——
+        # 不接这一步时全 ## 文档在 _groups 里找不到章级标题，会退化成
+        # "整篇一个聚合组"，章与章之间被贪心装箱合并（见类 docstring 第 7 点）
+        self.heading_systems = heading_systems or []
         # 表格/代码块/图片引用保护区间（每次 chunk 按当前文本重算；
         # 与 RecursiveChunker 同样挂在实例上，便于各辅助方法直接取用）
         self.protected_ranges: List[Tuple[int, int]] = []
@@ -181,7 +199,10 @@ class HierarchicalChunker:
         if not text or not text.strip():
             return []
         self.protected_ranges = find_protected_ranges(text)
-        headings = _iter_headings(text, self.protected_ranges)
+        # 标题 = [(偏移, 级别, 文本)]：heading_systems 提供时按编号推断真实层级
+        # （MinerU 全 ## 扁平输出），否则回退 # 数量（既有行为）
+        headings = _iter_headings(text, self.protected_ranges,
+                                  self.heading_systems)
         self._heading_starts = {off for off, _lvl, _t in headings}
         self._heading_starts_sorted = sorted(self._heading_starts)
         root = self._build_tree(text, self._tree_headings(headings))
@@ -290,6 +311,10 @@ class HierarchicalChunker:
         - 章级标题（level <= chapter_level，默认 1 级）各成一个组；
         - 第一个章级标题之前的内容（封面/修订记录，可能含更低级标题）整体
           为一个"前言组"（伪节点，level 0）；
+        - 前言只有一行文本时（典型：文档标题行，其后直接跟章标题）**并入
+          首个章组**——它没有正文相伴，单独成组会产出几十字符的纯标题空块
+          （占召回位、无检索价值），与 _glue_heading_units"标题不单独成块"
+          同一原则；正文多于一行（封面/修订记录）才独立成组；
         - 全文没有章级标题 → 整篇一个前言组（不设强制边界，仍可一路聚合）。
         """
         tops = root.children
@@ -300,10 +325,22 @@ class HierarchicalChunker:
                           children=tops)]
         groups: List[_Node] = []
         pre_end = tops[first].start
-        if first > 0 or text[:pre_end].strip():
+        # 前言行数：>1 行 = 有正文（封面/修订记录）→ 独立成组；
+        # 恰 1 行 = 纯文档标题 → 并入首章（见方法 docstring）
+        preamble_lines = [ln for ln in text[:pre_end].split("\n") if ln.strip()]
+        if first > 0 or len(preamble_lines) > 1:
             groups.append(_Node(level=0, title="", start=0, end=pre_end,
                                 children=tops[:first]))
-        groups.extend(tops[first:])
+            groups.extend(tops[first:])
+        elif preamble_lines:
+            # 并入首章：首章节点起点提前到 0，使"文档标题 + 首章"同组聚合
+            # （children 原样引用，仅复制节点本身，不动树）
+            head = tops[first]
+            groups.append(_Node(level=head.level, title=head.title, start=0,
+                                end=head.end, children=head.children))
+            groups.extend(tops[first + 1:])
+        else:
+            groups.extend(tops[first:])
         return groups
 
     # ---- 自底向上收集可上浮单元 ----
@@ -454,9 +491,9 @@ class HierarchicalChunker:
                       mode: str) -> List[Tuple[int, int]]:
         """不可切分的原子区间（升序合并）：保护区间 + 句级下的标题行
 
-        标题行自身必须原子：标题文本里的编号点号（如 "##### 3.3.3.5.6 设备
-        专用术语"）恰好是句级切分的句界，标题会被切成 "3.3." / "3.5." /
-        "6 设备专用术语" 这类残片（实测缺陷）。段落级不切标题行——段落级
+        标题行自身必须原子：标题文本里的编号点号（如 "##### 1.1.1.1.1 小节
+        标题"）恰好是句级切分的句界，标题会被切成 "1.1." / "1.1.1." /
+        "1 小节标题" 这类残片（实测缺陷）。段落级不切标题行——段落级
         本就按空行断片，标题行与其后的正文同段时不该被拆开。
         """
         spans = list(self._protected_spans(s, e))

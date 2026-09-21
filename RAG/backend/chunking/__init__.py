@@ -80,6 +80,7 @@ def get_chunker(method: str, config: dict) -> Chunker:
             chunk_size=config.get("chunk_size"),
             overlap=config.get("overlap"),
             chapter_level=config.get("chapter_level") or 1,
+            heading_systems=config.get("heading_systems"),
         )
     raise ValueError(f"未知切块方式: {method}（支持: {'/'.join(VALID_METHODS)}）")
 

@@ -160,6 +160,11 @@ _CONTEXT_META_LIMIT = 500
 _PREVIEW_LIMIT = 20
 _PREVIEW_CHAR = 500
 
+# 依赖标题结构的切块方式：块边界（title）、父子层级（parent_child）、章节树
+# （hierarchical）都按标题定，标题识别不出即退化成按字符硬切。两处用：
+# 3.8 的编号体系自动检测、3.9 的标题可用性校验（见 _stage_chunk）
+_TITLE_DEPENDENT_METHODS = ("title", "parent_child", "hierarchical")
+
 
 class _IngestCancelled(Exception):
     """入库任务被用户取消（路由 cancel 接口置标记，任务检查点抛出）"""
@@ -206,8 +211,12 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 入库流程耗时轨迹（doc_id → [{stage, ms}] + 当前阶段起点时间戳）：
         # 阶段切换累计耗时，任务结束写入文档 ingest_trace（可追溯）
         self._stage_ms: Dict[str, int] = {}     # 当前阶段起点时间（perf_counter）
-        self._trace: Dict[str, List[dict]] = {}  # 已完成阶段耗时 [{stage, ms}]
+        self._trace: Dict[str, List[dict]] = {}  # 已完成阶段耗时 [{stage, ms, status?, warn?}]
         self._task_started_at: Dict[str, str] = {}  # 任务开始时间（展示用）
+        # 待挂到当前阶段的警告文案（doc_id → msg，见 _mark_stage_warn）：
+        # 过程中发现问题但不阻断入库（如文档转换未成功、标题可能丢失），
+        # 阶段结算时挂到该条 trace 上，前端标黄 + 悬浮展示原因
+        self._trace_warn: Dict[str, str] = {}
 
     def is_running(self, doc_id: str) -> bool:
         return doc_id in self._running
@@ -561,24 +570,42 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 2.4) doc/docx/ppt/pptx 走 MinerU 时先转 PDF（需在系统配置配 Gotenberg
         # 地址，未配置则跳过、走原有路径）。原因：MinerU 的主场是 PDF——它按
         # 字号/字体/位置做版面分析，能还原标题层级；而处理 docx/ppt 时只提取
-        # 文本、**标题会全丢**（实测同一份文档：直接给 docx → 0 个标题；经
-        # Gotenberg 转成 PDF 再给 → 94 个标题、层级正确）。PPT 更是必须先转，
-        # 解析器根本不认 .ppt 二进制格式。
+        # 文本、**标题会全丢**（实测同一份文档：直接给 docx → 一个标题都识别
+        # 不出；经 Gotenberg 转成 PDF 再给 → 标题层级完整还原）。PPT 更是必须
+        # 先转，解析器根本不认 .ppt 二进制格式。
         # 转换失败不阻塞入库：回退到原文件按原类型解析。
         parse_target, parse_type = upload_path, doc.file_type
         pdf_tmp_dir: Optional[Path] = None
         if engine == "mineru" and (doc.file_type or "").lower() in (
                 "doc", "docx", "ppt", "pptx"):
             g_cfg = get_active_config().gotenberg
+            # 转换未成功的原因（非空 = 按原文件解析，标题可能丢失）：
+            # 三种情况都要留痕——未配置 / 调用异常（超时、服务不可用）/
+            # 服务返回但无输出。以前是静默跳过，事后无法追溯是哪一种
+            conv_warn = ""
             if (g_cfg.base_url or "").strip():
                 from backend.services.parsers.gotenberg import convert_to_pdf
                 pdf_tmp_dir = Path(tempfile.mkdtemp(prefix="doc2pdf_"))
-                pdf_path = await convert_to_pdf(upload_path, g_cfg, pdf_tmp_dir)
+                try:
+                    pdf_path = await convert_to_pdf(upload_path, g_cfg, pdf_tmp_dir)
+                except Exception as e:  # 超时/网络/服务异常：不阻断，按原文件走
+                    pdf_path = None
+                    conv_warn = f"文档转换调用异常（{type(e).__name__}: {e}）"
                 if pdf_path is not None:
                     parse_target, parse_type = pdf_path, "pdf"
                 else:  # 转换失败：清掉临时目录，按原文件走
                     shutil.rmtree(pdf_tmp_dir, ignore_errors=True)
                     pdf_tmp_dir = None
+                    conv_warn = conv_warn or "文档转换无输出（服务返回失败）"
+            else:
+                conv_warn = "文档转换服务（Gotenberg）未配置"
+            if conv_warn:
+                # 不阻断入库，但结果存疑：解析阶段标警告（前端标黄 + 悬浮可见）
+                warn_msg = (f"{conv_warn}，{doc.file_type} 已按原文件交 MinerU "
+                            f"解析，标题层级可能丢失")
+                logger.warning("文档转换告警: %s (%s) %s",
+                               doc.original_name, doc_id, warn_msg)
+                self._mark_stage_warn(doc_id, warn_msg)
         try:
             text, images, parse_method = await self._await_with_cancel(
                 doc_id,
@@ -727,6 +754,7 @@ class IngestionService(_TraceMixin, _ImageMixin):
             overlap=parser_config.get("overlap"),
             chapter_level=parser_config.get("chapter_level") or 1,
             heading_levels=heading_levels,
+            heading_systems=parser_config.get("heading_systems"),
         )
 
     async def _resolve_heading_levels(self, doc, doc_id: str, parser_id: str,
@@ -823,12 +851,14 @@ class IngestionService(_TraceMixin, _ImageMixin):
                     f"未达到 50% 规范要求。确认文档符合预期可强制继续入库"
                     f"（qa_force_continue=true）")
 
-        # 3.8) 标题编号体系自动检测（title/parent_child/regex 等基于标题的
-        # 方式）：解析产物标题常为 MinerU 全 ## 扁平输出（真实层级在编号
+        # 3.8) 标题编号体系自动检测（title/parent_child/hierarchical 等基于
+        # 标题的方式）：解析产物标题常为 MinerU 全 ## 扁平输出（真实层级在编号
         # "一、"/"1.1" 里），检测所用体系并写回 parser_config —— 切块
         # 层级推断（_iter_headings）与标题链（add_heading_paths）随之生效。
+        # hierarchical 必须在内：它靠章节树分组，全 ## 时 _groups 找不到
+        # 章级标题会退化成"整篇一个聚合组"，章与章之间被装箱合并。
         # 显式传入 heading_systems（重跑沿用/界面覆盖）时跳过检测
-        if parser_id in ("title", "parent_child") \
+        if parser_id in _TITLE_DEPENDENT_METHODS \
                 and not parser_config.get("heading_systems"):
             candidates = [t for _off, _lvl, t in _iter_headings(text)]
             detected = order_systems(
@@ -837,6 +867,23 @@ class IngestionService(_TraceMixin, _ImageMixin):
                 parser_config["heading_systems"] = detected
                 logger.info("标题体系检测: %s (%s) %s",
                             doc.original_name, doc_id, detected)
+
+        # 3.9) 标题可用性校验：上面三种方式靠标题定边界，一个标题都识别不出时
+        # 切块会退化成按字符硬切（块首无章节上下文、父子/层级结构名存实亡），
+        # 而入库仍照常成功——不校验就完全看不出来（历史数据里已有多份这种
+        # 静默退化）。只警告不阻断：文档仍可入库/检索，警告落到「切块」阶段
+        # 轨迹上（前端标黄 + 悬浮可见）。常见成因：解析引擎没保留标题层级
+        # （如 Office 文档未经 PDF 转换直接交 MinerU）、或文档确实无标题结构
+        if parser_id in _TITLE_DEPENDENT_METHODS:
+            n_headings = len(_iter_headings(
+                text, None, parser_config.get("heading_systems")))
+            if n_headings == 0:
+                warn_msg = (f"未从解析产物识别出任何标题，{parser_id} 切块已"
+                            f"退化为按字符切分（块首无章节上下文）；建议改用"
+                            f"结构解析或检查解析引擎")
+                logger.warning("标题校验告警: %s (%s) %s",
+                               doc.original_name, doc_id, warn_msg)
+                self._mark_stage_warn(doc_id, warn_msg)
 
         # 4) 切块（按用户选择的切块方式与参数；用替换后文本保证图片引用可加载）
         chunk_objects: List[Chunk] = []

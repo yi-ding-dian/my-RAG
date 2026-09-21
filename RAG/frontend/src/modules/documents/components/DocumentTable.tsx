@@ -30,6 +30,7 @@ import {
   RobotOutlined,
   StopOutlined,
   ThunderboltOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
@@ -115,7 +116,7 @@ const formatTraceMs = (ms?: number): string => {
 };
 
 const renderIngestTrace = (
-  trace: { stage: string; ms: number; status?: string }[],
+  trace: { stage: string; ms: number; status?: string; warn?: string }[],
   totalMs?: number | null,
   isFailed?: boolean,
   startedAt?: string | null,
@@ -130,8 +131,15 @@ const renderIngestTrace = (
     )}
     {trace.map((t, i) => (
       <div key={i}>
-        {t.stage}：{formatTraceMs(t.ms)}
+        {/* 阶段有警告（非失败、任务继续）：该阶段标黄，下方小字给出原因 */}
+        <span style={t.status === 'warn' ? { color: '#faad14' } : undefined}>
+          {t.stage}：{formatTraceMs(t.ms)}
+        </span>
         {t.status === 'failed' && <span style={{ color: '#ff4d4f' }}>（失败）</span>}
+        {t.status === 'warn' && <span style={{ color: '#faad14' }}>（警告）</span>}
+        {t.status === 'warn' && t.warn && (
+          <div style={{ color: '#faad14', paddingLeft: 12 }}>⚠ {t.warn}</div>
+        )}
       </div>
     ))}
     {finishedAt && (
@@ -489,14 +497,24 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
         // 等了多久；起点取不到（历史数据缺 updated_at）则不显示，不影响标签
         const busy = status === 'parsing' || status === 'converting';
         const elapsed = busy ? formatElapsed(row.updated_at) : '';
-        const tag =
-          busy ? (
-            <Tag color={meta.color} icon={<Spin size="small" />}>
-              {meta.text}{elapsed ? ` ${elapsed}` : ''}
-            </Tag>
-          ) : (
-            <Tag color={meta.color}>{meta.text}</Tag>
-          );
+        // 已入库但有阶段警告（如文档转换未成功、标题层级可能丢失）：状态语义
+        // 仍是"已入库"（文档可正常检索），只是标黄 + ⚠ 提示质量存疑——
+        // 不新增生命周期状态，悬浮查看具体原因（见 renderIngestTrace）
+        const hasWarn =
+          status === 'ingested' &&
+          Array.isArray(row.ingest_trace) &&
+          row.ingest_trace.some((t) => t?.status === 'warn');
+        const tag = hasWarn ? (
+          <Tag color="warning" icon={<WarningOutlined />}>
+            {meta.text}
+          </Tag>
+        ) : busy ? (
+          <Tag color={meta.color} icon={<Spin size="small" />}>
+            {meta.text}{elapsed ? ` ${elapsed}` : ''}
+          </Tag>
+        ) : (
+          <Tag color={meta.color}>{meta.text}</Tag>
+        );
         // 解析中：悬停展示实时阶段进度（页面主组件轮询拉取；后端任务结束后
         // 清空 running，进度随之消失——进度未取到显示"解析中"兜底）
         if (status === 'parsing') {

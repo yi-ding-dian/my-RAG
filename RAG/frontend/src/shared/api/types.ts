@@ -185,7 +185,9 @@ export interface DocumentItem {
   /** 图谱构建失败原因（graph_status=failed 时返回） */
   graph_error?: string;
   /** 入库流程轨迹（[{stage, ms, status?}]；可追溯展示；旧文档无=空） */
-  ingest_trace?: { stage: string; ms: number; status?: string }[];
+  // 入库轨迹：status=failed 该阶段失败 / status=warn 该阶段有警告（非失败，
+  // 任务照常跑完，warn 为警告原因，前端该阶段标黄 + 悬浮可见）
+  ingest_trace?: { stage: string; ms: number; status?: string; warn?: string }[];
   /** 入库总耗时（ms；可追溯展示；旧文档无） */
   ingest_total_ms?: number | null;
   /** 入库开始时间（HH:mm:ss；可追溯展示；旧文档无） */

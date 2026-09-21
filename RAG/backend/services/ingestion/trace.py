@@ -1,8 +1,9 @@
 """入库轨迹计时 mixin（方法实现原样搬移自原 ingestion_service）
 
-- _TraceMixin: _set_stage / _finalize_trace / _mark_trace_failed / _clear_stage
-- 状态字段（_trace / _stage / _stage_since / _stage_ms / _task_started_at）由
-  IngestionService.__init__ 初始化，mixin 只提供方法
+- _TraceMixin: _set_stage / _finalize_trace / _mark_trace_failed /
+  _mark_stage_warn / _clear_stage
+- 状态字段（_trace / _stage / _stage_since / _stage_ms / _task_started_at /
+  _trace_warn）由 IngestionService.__init__ 初始化，mixin 只提供方法
 """
 from __future__ import annotations
 
@@ -28,10 +29,12 @@ class _TraceMixin:
         # （首次）跳过——首个阶段"准备中"由任务启动处 _set_stage 开启）
         prev_start = self._stage_ms.pop(doc_id, None)
         if prev_start is not None:
-            self._trace[doc_id].append({
+            entry = {
                 "stage": self._stage.get(doc_id, "准备中"),
                 "ms": int(round((time.perf_counter() - prev_start) * 1000)),
-            })
+            }
+            self._attach_warn(doc_id, entry)
+            self._trace[doc_id].append(entry)
         self._stage[doc_id] = stage
         self._stage_since[doc_id] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._stage_ms[doc_id] = time.perf_counter()
@@ -59,10 +62,12 @@ class _TraceMixin:
         """
         prev_start = self._stage_ms.pop(doc_id, None)
         if prev_start is not None and doc_id in self._trace:
-            self._trace[doc_id].append({
+            entry = {
                 "stage": self._stage.get(doc_id, "准备中"),
                 "ms": int(round((time.perf_counter() - prev_start) * 1000)),
-            })
+            }
+            self._attach_warn(doc_id, entry)
+            self._trace[doc_id].append(entry)
         trace = self._trace.pop(doc_id, [])
         total = int(sum(s.get("ms", 0) for s in trace))
         started_at = self._task_started_at.pop(doc_id, "")
@@ -78,6 +83,24 @@ class _TraceMixin:
             s["status"] = "failed"
             break
 
+    def _mark_stage_warn(self, doc_id: str, msg: str) -> None:
+        """标记当前阶段有警告（非失败，任务继续跑完）
+
+        与 _mark_trace_failed 的区别：失败会终止任务、把**已结算**的最后一条
+        置为 failed；警告是过程里发现问题但结果仍可用（如文档转换没成功、
+        文档仍按原文件解析了），任务照常走完、状态仍是"已入库"。
+        故此处只暂存文案，等该阶段被 _set_stage / _finalize_trace 结算时由
+        _attach_warn 挂到对应条目上——前端据此把该阶段标黄 + 悬浮展示原因。
+        """
+        self._trace_warn[doc_id] = msg
+
+    def _attach_warn(self, doc_id: str, entry: dict) -> None:
+        """把暂存的阶段警告挂到 trace 条目（无则不动，条目保持原样）"""
+        warn = self._trace_warn.pop(doc_id, None)
+        if warn:
+            entry["status"] = "warn"
+            entry["warn"] = warn
+
     def _clear_stage(self, doc_id: str) -> None:
         """任务结束（完成/失败/取消/待确认）清理阶段状态（避免悬停残留）"""
         self._stage.pop(doc_id, None)
@@ -85,3 +108,4 @@ class _TraceMixin:
         self._stage_ms.pop(doc_id, None)
         self._trace.pop(doc_id, None)
         self._task_started_at.pop(doc_id, None)
+        self._trace_warn.pop(doc_id, None)
