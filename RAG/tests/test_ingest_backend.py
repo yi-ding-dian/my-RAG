@@ -2,14 +2,14 @@
 
 覆盖：
 1. IngestRequest.backend 校验：非法值同步 400；None/auto 允许且不持久化；
-   hybrid-auto-engine/pipeline 合法并持久化到 parser_config（重跑沿用）
+   hybrid-engine/pipeline 合法并持久化到 parser_config（重跑沿用）
 2. ingestion 透传：mock parser 断言 parse_opts.backend（仅显式选择时透传，
    auto/None 不透传）
 3. parsers.client 表单构造：backend 出现在 /file_parse form data；
    None/缺省时无该字段
 4. 显式 backend="auto" 可重置上次持久化的 backend（新配置覆盖旧值）
 
-契约：backend ∈ {auto, hybrid-auto-engine, pipeline}；None=不传跟随服务端默认；
+契约：backend ∈ {auto, pipeline, hybrid-engine, vlm-engine}；None=不传跟随服务端默认；
 auto 与 None 语义等价（不持久化、不透传）。
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from conftest import create_kb, upload_doc, wait_for_status
 from backend.services.parsers.client import _build_mineru_form_data
 
 # 解析后端合法值（与 backend/services/ingestion/params.py _VALID_MINERU_BACKENDS 契约一致）
-VALID_BACKENDS = ("hybrid-auto-engine", "pipeline")
+VALID_BACKENDS = ("pipeline", "hybrid-engine", "vlm-engine")
 
 PDF_BYTES = b"%PDF-1.4 fake"
 
@@ -109,7 +109,7 @@ class TestIngestBackendValidation:
     @pytest.mark.parametrize("backend", VALID_BACKENDS)
     def test_backend_valid_persisted(self, client, mock_embedding, admin_headers,
                                      backend):
-        """hybrid-auto-engine/pipeline：合法，持久化到 parser_config"""
+        """hybrid-engine/pipeline：合法，持久化到 parser_config"""
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"])
         resp = _ingest(client, kb["id"], doc["id"],
@@ -140,10 +140,10 @@ class TestIngestBackendValidation:
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"])
         resp = _ingest(client, kb["id"], doc["id"],
-                       body={"backend": "hybrid-auto-engine"}, headers=admin_headers)
+                       body={"backend": "hybrid-engine"}, headers=admin_headers)
         assert resp.status_code == 200, resp.text
         first = wait_for_status(client, kb["id"], doc["id"])
-        assert first["parser_config"]["backend"] == "hybrid-auto-engine"
+        assert first["parser_config"]["backend"] == "hybrid-engine"
         # 显式传 auto → 重置为跟随服务端默认（parser_config 无 backend 键）
         resp = _ingest(client, kb["id"], doc["id"],
                        body={"backend": "auto"}, headers=admin_headers)
@@ -171,11 +171,11 @@ class TestIngestBackendPassthrough:
 
     def test_backend_hybrid_passed(self, client, monkeypatch, mock_embedding,
                                    admin_headers):
-        """backend=hybrid-auto-engine → parse_opts.backend 透传"""
+        """backend=hybrid-engine → parse_opts.backend 透传"""
         fake = self._run(client, monkeypatch,
-                         {"backend": "hybrid-auto-engine"}, admin_headers)
+                         {"backend": "hybrid-engine"}, admin_headers)
         assert fake.last_opts is not None
-        assert fake.last_opts["backend"] == "hybrid-auto-engine"
+        assert fake.last_opts["backend"] == "hybrid-engine"
 
     def test_backend_pipeline_passed(self, client, monkeypatch, mock_embedding,
                                      admin_headers):
@@ -184,6 +184,34 @@ class TestIngestBackendPassthrough:
                          admin_headers)
         assert fake.last_opts is not None
         assert fake.last_opts["backend"] == "pipeline"
+
+    def test_effort_default_high_for_hybrid(self, client, monkeypatch,
+                                            mock_embedding, admin_headers):
+        """hybrid-engine 未传 effort → 默认 high
+        （服务端默认是 medium，会关掉图片/图表分析，产物质量明显差一档）"""
+        fake = self._run(client, monkeypatch,
+                         {"backend": "hybrid-engine"}, admin_headers)
+        assert fake.last_opts is not None
+        assert fake.last_opts["effort"] == "high"
+
+    def test_effort_explicit_medium(self, client, monkeypatch, mock_embedding,
+                                    admin_headers):
+        """显式传 effort=medium → 原样透传"""
+        fake = self._run(client, monkeypatch,
+                         {"backend": "hybrid-engine", "effort": "medium"},
+                         admin_headers)
+        assert fake.last_opts is not None
+        assert fake.last_opts["effort"] == "medium"
+
+    def test_effort_not_sent_for_pipeline(self, client, monkeypatch,
+                                          mock_embedding, admin_headers):
+        """backend=pipeline → 不带 effort（服务端标注仅 hybrid 生效，
+        带了也会被忽略，不带以免污染持久化配置）"""
+        fake = self._run(client, monkeypatch,
+                         {"backend": "pipeline", "effort": "high"},
+                         admin_headers)
+        assert fake.last_opts is not None
+        assert "effort" not in fake.last_opts
 
     def test_backend_auto_not_passed(self, client, monkeypatch, mock_embedding,
                                      admin_headers):
@@ -205,8 +233,8 @@ class TestParserBackendFormData:
 
     def test_form_data_builder_backend_present(self):
         """_build_mineru_form_data：backend 非空时同名透传"""
-        data = _build_mineru_form_data({"backend": "hybrid-auto-engine"})
-        assert data["backend"] == "hybrid-auto-engine"
+        data = _build_mineru_form_data({"backend": "hybrid-engine"})
+        assert data["backend"] == "hybrid-engine"
         data = _build_mineru_form_data({"backend": "pipeline"})
         assert data["backend"] == "pipeline"
 
@@ -248,8 +276,8 @@ class TestParserBackendFormData:
         import asyncio
         parser = ParserClient()
         asyncio.run(parser._parse_via_mineru(
-            "http://mineru:8001", pdf, 30.0, backend="hybrid-auto-engine"))
-        assert fake.post_data["backend"] == "hybrid-auto-engine"
+            "http://mineru:8001", pdf, 30.0, backend="hybrid-engine"))
+        assert fake.post_data["backend"] == "hybrid-engine"
 
 
 class TestCancelIngestion:

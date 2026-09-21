@@ -23,9 +23,12 @@ parsed 为历史中间态，仅兼容保留）
   （解析 LLM 模型，默认空=激活模型）：上下文摘要/图谱抽取专用模型（值为激活
   档案模型列表的 name，后端按 name 查完整配置覆盖 llm 段，查不到回退激活
   模型，仅影响摘要/抽取，对话不受影响）
-- MinerU 解析后端 backend（mineru-api /file_parse 参数）：可选
-  hybrid-auto-engine（质量优，默认）/pipeline（快但表格错乱）；None 或 "auto"
-  不持久化不透传（跟随服务端默认）；仅 MinerU 引擎解析时透传
+- MinerU 解析后端 backend（mineru-api /file_parse 参数）：可选 pipeline（流水线，
+  最快、无幻觉，但表格结构弱）/ hybrid-engine（VLM 版面分析 + 原生文本提取，
+  精度与稳定性兼顾，推荐）/ vlm-engine（端到端视觉大模型，复杂版面精度最高，
+  但慢且可能幻觉，仅中英文）；backend=hybrid-engine 时另有 effort（medium 关闭
+  图片/图表分析、high 开启，默认 high）；None 或 "auto" 不持久化不透传
+  （跟随服务端默认）；仅 MinerU 引擎解析时透传
 - 解析引擎：parser_engine auto/mineru/deepdoc/plain（默认 auto）；显式 deepdoc
   或 layout_recognize=DeepDOC 且 engine=auto 时走 DeepDoc 引擎（RAGFlow，
   表格输出为可检索 HTML，仅 PDF；此时不传 MinerU 解析参数）；

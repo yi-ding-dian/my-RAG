@@ -42,12 +42,20 @@ _VALID_RETRIEVAL_MODES = ("parent", "child")
 # 标题层级/自动编号保留；本地实现无服务依赖，doc 先经 LibreOffice 转 docx）/
 # plain=纯文本提取
 _VALID_PARSER_ENGINES = ("auto", "mineru", "deepdoc", "docx_struct", "plain")
-# MinerU 解析后端（mineru-api /file_parse backend 参数，实测对比见
-# mcp-server/kb-ext-server/record.md）：
-# hybrid-auto-engine=混合自动引擎（服务端默认，质量优：表格规范/OCR 准/流程图识别，
-# 速度慢约 29-36%）/ pipeline=管线（快约 20s，表格可能错乱）
-# auto（或 None）=跟随服务端默认：不持久化、不透传（与默认行为完全一致）
-_VALID_MINERU_BACKENDS = ("auto", "hybrid-auto-engine", "pipeline")
+# MinerU 解析后端（mineru-api /file_parse backend 参数，取值见服务端 OpenAPI）：
+#   pipeline      流水线——多个专用小模型分步处理。最快、无幻觉；但表格结构弱，
+#                 复杂版面可能错乱（表头丢失、单元格错并）
+#   hybrid-engine 混合引擎——VLM 做版面分析 + 原生文本提取。精度与稳定性兼顾，
+#                 通用场景推荐（官方默认值）
+#   vlm-engine    视觉大模型——端到端单模型。复杂版面精度最高，但慢、且可能
+#                 幻觉（生成式模型在低质量图像上会出错）；仅支持中英文
+# auto（或 None）= 跟随服务端默认：不持久化、不透传（服务端默认 hybrid-engine）
+# 注：vlm-http-client / hybrid-http-client 需服务端开 --allow-public-http-client
+# （默认关闭，防 SSRF），本环境不可用，故不列入
+_VALID_MINERU_BACKENDS = ("auto", "pipeline", "hybrid-engine", "vlm-engine")
+# hybrid-engine 专用的解析力度（服务端 effort 参数）：
+# medium=快，但**关闭图片/图表分析** ／ high=开启图片分析，精度更高
+_VALID_MINERU_EFFORTS = ("medium", "high")
 # 父块参数默认值（与 KnowFlow parent_child 默认一致）
 _DEFAULT_PARENT_CHUNK_SIZE = 1024
 _DEFAULT_PARENT_CHUNK_OVERLAP = 100
@@ -83,9 +91,9 @@ _PARSER_BOOL_FIELDS = ("table_enable", "formula_enable", "return_images",
                        "enable_heading_in_content", "contextual_retrieval",
                        "knowledge_graph")
 # 透传给 parsers.client.parse 的字段（enable_heading_in_content 是切块后处理，不传解析器；
-# backend 仅在显式选择 hybrid-auto-engine/pipeline 时存在于 parser_config，auto/None 不写入）
+# backend/effort 仅在显式选择时存在于 parser_config，auto/None 不写入）
 _PARSER_PARSE_OPTS = ("table_enable", "formula_enable", "return_images",
-                      "lang_list", "pages", "backend")
+                      "lang_list", "pages", "backend", "effort")
 
 
 def resolve_parser_engine(parser_config: dict) -> str:
@@ -169,9 +177,11 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
     # MinerU 解析后端（仅 MinerU 引擎生效）：请求显式传 > 文档已有配置（重跑沿用）；
     # None/auto 语义=跟随服务端默认：不写入 cfg（不持久化、不透传），
     # 显式传 "auto" 可重置上次持久化的 backend（新配置覆盖旧值）
-    # 默认改 pipeline（2026-09-09）：本环境 MinerU 服务未配 GPU device，
-    # hybrid-auto-engine 报"Device string must not be empty"不可用，pipeline 实测可用；
-    # 未显式传且文档无旧配置 → 按新默认 pipeline（写入 cfg 生效，重跑沿用）
+    # 默认 pipeline：它在无 GPU 的环境也能跑（服务端会用 CPU），是"总能出结果"的
+    # 兜底档；有 GPU 的环境建议在解析配置里选 hybrid-engine（精度更高）。
+    # 注：2026-09-09 曾把此处默认从 hybrid 改到 pipeline，当时记的原因是
+    # "本环境未配 GPU device"——后查明实为**容器与升级后的驱动不匹配**
+    # （NVML 初始化失败），重建容器即恢复，与"没配 GPU"无关
     backend = params.get("backend", old.get("backend"))
     if backend is None:
         backend = "pipeline"
@@ -181,6 +191,17 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
             f"（支持: {'/'.join(_VALID_MINERU_BACKENDS)}，None=跟随服务端默认）")
     if backend != "auto":
         cfg["backend"] = backend
+    # 解析力度（仅 hybrid-engine 有效）：未传时给 high——服务端默认是 medium，
+    # 而 medium 会关掉图片/图表分析，实测会把表格说明行误标成 `##` 标题、
+    # 还把页眉混进正文，产物质量明显差一档
+    effort = params.get("effort", old.get("effort"))
+    if effort is None:
+        effort = "high"
+    if effort not in _VALID_MINERU_EFFORTS:
+        raise ValueError(
+            f"effort 非法: {effort}（支持: {'/'.join(_VALID_MINERU_EFFORTS)}）")
+    if backend == "hybrid-engine":
+        cfg["effort"] = effort
     # 块大小 / 重叠：请求 > 已有配置 > 活跃配置
     chunk_size = params.get("chunk_size", old.get("chunk_size", active.chunk_size))
     if not _MIN_CHUNK_SIZE <= chunk_size <= _MAX_CHUNK_SIZE:

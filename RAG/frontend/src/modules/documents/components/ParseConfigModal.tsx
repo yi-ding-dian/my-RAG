@@ -17,7 +17,7 @@ import {
   Tag, 
   Tooltip} from 'antd';
 import { CheckCircleFilled, CloseCircleFilled, EyeOutlined } from '@ant-design/icons';
-import type { DocumentItem, ImgSummaryFormat, IngestConfig, MinerUBackend, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../../../shared/api/client';
+import type { DocumentItem, ImgSummaryFormat, IngestConfig, MinerUBackend, MinerUEffort, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../../../shared/api/client';
 import {
   asApiError, getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../../../shared/api/client';
 /** 通用切块默认分隔符集（与后端 RecursiveChunker.DEFAULT_SEPARATORS 对应，
@@ -55,6 +55,8 @@ interface ParseConfigFormValues {
   // ===== PDF 解析配置（仅 pdf/docx 文档显示/提交，见 isPdfLike；txt/md/url 隐藏） =====
   /** MinerU 解析后端（仅解析方式=MinerU 时显示/提交；auto=不传跟随服务端默认） */
   backend: MinerUBackend;
+  /** hybrid-engine 专用解析力度（medium 关闭图片/图表分析、high 开启；其余 backend 不提交） */
+  effort: MinerUEffort;
   /** Form.List 页码范围（每项 {from, to}），提交时转 [[from, to]] */
   pages?: Array<{ from?: number; to?: number }>;
   task_page_size: number;
@@ -295,10 +297,12 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         parent_split_level: toNumber(cfg.parent_split_level, 2),
         retrieval_mode: cfg.retrieval_mode === 'child' ? 'child' : 'parent',
         // MinerU 解析后端：重解析沿用上次持久化值；缺失/非法回退"自动"（不传跟随服务端默认）
-        backend:
-          cfg.backend === 'hybrid-auto-engine' || cfg.backend === 'pipeline'
-            ? (cfg.backend as MinerUBackend)
-            : 'auto',
+        backend: cfg.backend === 'pipeline' || cfg.backend === 'hybrid-engine'
+          || cfg.backend === 'vlm-engine'
+          ? (cfg.backend as MinerUBackend) : 'auto',
+        // 解析力度（仅 hybrid-engine 有效）：沿用持久化值，缺失时给 high
+        // （服务端默认 medium 会关掉图片/图表分析，质量明显差一档）
+        effort: cfg.effort === 'medium' ? 'medium' : 'high',
         pages: cfgPages.length > 0 ? cfgPages : [{ from: 1, to: 1000000 }],
         task_page_size: toNumber(cfg.task_page_size, 12),
         table_enable: typeof cfg.table_enable === 'boolean' ? cfg.table_enable : true,
@@ -475,6 +479,11 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     // MinerU 解析后端：仅解析方式=MinerU 时发送；选"自动"（auto）不传（跟随服务端默认）
     if (values.parse_mode === 'MinerU' && values.backend && values.backend !== 'auto') {
       config.backend = values.backend;
+      // 解析力度仅 hybrid-engine 有效（服务端标注 "Adapted only for hybrid backend"），
+      // 其余后端发了也会被服务端忽略，不带以免污染持久化配置
+      if (values.backend === 'hybrid-engine' && values.effort) {
+        config.effort = values.effort;
+      }
     }
     // 解析方式联动提交（隐藏即不提交）：非 MinerU 时后端不读
     // pages/task_page_size/table_enable/formula_enable/return_images/lang_list
@@ -679,7 +688,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       </div>
                     )}
                     {/* MinerU 解析后端：仅解析方式=MinerU 时显示（其他方式不传，
-                        跟随 MinerU 服务端默认 hybrid-auto-engine） */}
+                        跟随 MinerU 服务端默认，服务端默认为 hybrid-engine） */}
                     {isMinerU && <MinerUBackendField />}
                     {/* 页码范围/任务页面大小/表格/公式/图片/语言：仅 MinerU 生效（非 MinerU
                         时后端 parse_opts={} 或 plain 分支不消费），隐藏即不提交 */}

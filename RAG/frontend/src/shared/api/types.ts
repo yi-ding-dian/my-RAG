@@ -66,8 +66,15 @@ export type ParseMethod = 'naive' | 'title' | 'regex' | 'parent_child' | 'qa' | 
 /** 解析引擎：auto=自动（MinerU 优先，不可用自动降级；layout=DeepDOC 时走 DeepDoc）| mineru=强制 MinerU 高精度（PDF 混排）| deepdoc=强制 DeepDoc（RAGFlow，表格输出可检索 HTML，仅 PDF）| docx_struct=本地结构化解析（OOXML 直读，标题层级/自动编号保留，仅 docx/doc；doc 经 LibreOffice 转换）| plain=纯文本提取 */
 export type ParserEngine = 'auto' | 'mineru' | 'deepdoc' | 'docx_struct' | 'plain';
 
-/** MinerU 解析后端（mineru-api /file_parse backend 参数）：auto/不传=跟随服务端默认（hybrid-auto-engine）| hybrid-auto-engine=混合自动引擎（质量优：表格规范/OCR 准/流程图识别，速度稍慢）| pipeline=管线（快约 20s，表格可能错乱） */
-export type MinerUBackend = 'auto' | 'hybrid-auto-engine' | 'pipeline';
+/** MinerU 解析后端（mineru-api /file_parse 的 backend 参数，取值以服务端枚举为准）：
+ *  auto/不传=跟随服务端默认（服务端默认为 hybrid-engine）
+ *  pipeline=流水线（多专用小模型分步处理，最快、无幻觉；表格结构弱、复杂版面可能错乱）
+ *  hybrid-engine=混合引擎（VLM 版面分析+原生文本提取，精度与稳定性兼顾，通用推荐）
+ *  vlm-engine=视觉大模型（端到端单模型，复杂版面精度最高，但慢、可能幻觉；仅中英文） */
+export type MinerUBackend = 'auto' | 'pipeline' | 'hybrid-engine' | 'vlm-engine';
+
+/** hybrid-engine 专用解析力度（服务端 effort 参数）：medium 关闭图片/图表分析、high 开启 */
+export type MinerUEffort = 'medium' | 'high';
 
 /** PDF 版面识别引擎：MinerU=高精度（推荐）| DeepDOC=表格输出为可检索 HTML| PlainText=纯文本直提（pypdf/python-docx，无表格/图片识别） */
 export type LayoutRecognize = 'MinerU' | 'DeepDOC' | 'PlainText';
@@ -102,8 +109,10 @@ export interface IngestConfig {
   method?: ParseMethod;
   /** 解析引擎（默认 auto，不传等价于自动探测降级） */
   parser_engine?: ParserEngine;
-  /** MinerU 解析后端（仅 parser_engine=mineru 时发送；auto/不传=跟随服务端默认 hybrid-auto-engine） */
+  /** MinerU 解析后端（仅 parser_engine=mineru 时发送；auto/不传=跟随服务端默认，服务端默认 hybrid-engine） */
   backend?: MinerUBackend;
+  /** hybrid-engine 专用解析力度（medium 关闭图片/图表分析、high 开启；不传时后端按 high 处理） */
+  effort?: MinerUEffort;
   chunk_size?: number;
   overlap?: number;
   delimiter?: string | string[];

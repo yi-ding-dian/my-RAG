@@ -127,7 +127,8 @@ class IngestRequest(BaseModel):
     """
     method: Optional[str] = Field(None, description="切块方式: naive=通用切块/title=按标题切块/regex=正则切块/parent_child=父子分块/qa=QA 问答切块（按问/答标记聚合问答对为整块）")
     parser_engine: Optional[str] = Field(None, description="解析引擎: auto=自动（MinerU 优先、不可用降级；layout_recognize=DeepDOC 时走 DeepDoc）/mineru=强制 MinerU（不可用标 failed）/deepdoc=强制 DeepDoc（RAGFlow，表格输出为可检索 HTML，仅 PDF）/docx_struct=本地结构化解析（OOXML 直读，标题层级/自动编号保留，仅 docx/doc；doc 经 LibreOffice 转换）/plain=纯文本提取（默认 auto）")
-    backend: Optional[str] = Field(None, description="MinerU 解析后端: hybrid-auto-engine=混合自动引擎（默认，质量优：表格规范/OCR 准/流程图识别）/pipeline=管线（速度快约 20s，表格可能错乱）/auto=跟随服务端默认（与不传等价，不持久化不透传；仅 MinerU 引擎生效）")
+    backend: Optional[str] = Field(None, description="MinerU 解析后端: pipeline=流水线（最快、无幻觉，但表格结构弱、复杂版面可能错乱）/hybrid-engine=混合引擎（VLM 版面分析+原生文本提取，精度与稳定性兼顾，通用推荐）/vlm-engine=视觉大模型（复杂版面精度最高，但慢、可能幻觉，仅中英文）/auto=跟随服务端默认（与不传等价，不持久化不透传；仅 MinerU 引擎生效）")
+    effort: Optional[str] = Field(None, description="hybrid-engine 专用解析力度: medium=快但关闭图片/图表分析/high=开启图片分析、精度更高（默认 high；仅 backend=hybrid-engine 生效）")
     chunk_size: Optional[int] = Field(None, description="块大小（字符数，默认取活跃配置）")
     overlap: Optional[int] = Field(None, description="重叠字符数（默认取活跃配置）")
     delimiter: Optional[Union[str, List[str]]] = Field(None, description="仅 naive 用，分隔符（字符串或列表，可选）")
