@@ -72,14 +72,14 @@ _PLACEHOLDER_RE = re.compile(r"%(\d)")
 _WS_RE = re.compile(r"[ \t\r\n　]+")
 
 # 编号与正文之间不加空格的收尾字符（中文顿号/括号等：编号自带分隔效果，
-# 再补空格会变成 "一、 系统安装"）
+# 再补空格反而插进一个多余空白）
 _TIGHT_TAIL_CHARS = "、。，；：）)】」》＞>.,;:"
 
 # ---- 自动编号的"正规形式编号"（legal numbering）语义开关 ----
 # ECMA-376 字面规则：lvlText 里 %N 用**第 N 级自己**的 numFmt 渲染（一级
 # 中文数字 + 二级阿拉伯数字的文档里，"1.1" 会被算成 "一.1"）；而 Word/WPS
 # 实际渲染时上层级编号跟随**当前级**的 numFmt（显示 "1.1"），该语义由
-# <w:isLgl/> 显式声明、但转换工具常把它丢掉。实测原文档显示为 "1.1"，故
+# <w:isLgl/> 显式声明、但转换工具常把它丢掉。实测实际渲染显示为 "1.1"，故
 # 默认按实际渲染语义（跟随当前级 numFmt），lvl 显式含 <w:isLgl/> 时同理。
 _LEGAL_NUMBERING = True
 
@@ -185,7 +185,7 @@ def _join_number(prefix: str, text: str) -> str:
     """编号文本 + 正文（编号自带中文收尾标点时紧贴，否则补一个空格）
 
     编号的 suffix 语义（w:suff：tab/space/nothing）在纯文本里无法还原，
-    按收尾字符判断：'一、系统安装' / '1.1 DEB包安装'。
+    按收尾字符判断：'一、标题'（紧贴）/ '1.1 标题'（补空格）。
     """
     if not prefix:
         return text

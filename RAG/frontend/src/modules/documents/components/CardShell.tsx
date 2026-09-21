@@ -7,7 +7,7 @@ import { Card, Typography } from 'antd';
  * 用法（与知识库卡片 KbCard 同构，后续可迁移复用）：
  *   <CardShell
  *     iconText="文"
- *     title="花花的旅游计划.xlsx"
+ *     title="示例文档.pdf"
  *     actions={<Button .../>}          // hover 时显示的右上操作区
  *     tags={<Tag>已入库</Tag>}          // 标题下标签行
  *     desc={<.../>}                     // 中部描述区（可省）

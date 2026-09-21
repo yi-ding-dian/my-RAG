@@ -308,7 +308,7 @@ class ParsedHeading(BaseModel):
     识别口径与切块完全同源（backend.chunking.common._iter_headings）：ATX `#`
     标题 + 纯文本样式 + 编号体系推断。**前端不得自己再抽一份**——历史上后端与
     前端各有一套抽取逻辑，导致"后端已识别的章标题在目录树里没有"（MinerU 漏标
-    `##` 的裸编号标题「第三章　劳动合同和集体合同」，后端修好了、目录树照旧缺）。
+    `##` 的裸编号章标题，后端修好了、目录树照旧缺）。
     """
     level: int = Field(..., description="标题层级（1~6，编号体系下为文档内相对层级）")
     text: str = Field("", description="标题文本（不含 # 前缀）")

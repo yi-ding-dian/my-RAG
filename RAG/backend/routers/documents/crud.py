@@ -830,7 +830,7 @@ def _build_parsed_headings(full_text: str,
     识别口径与切块**同源**（backend.chunking.common._iter_headings）：ATX `#`
     标题 + 纯文本样式 + 编号体系推断，含 MinerU 漏标 `#` 的裸编号标题。
     前端不再自己抽一份——历史上后端与前端各有一套，导致"后端已识别的章标题
-    在目录树里缺失"（劳动法第三章：MinerU 没输出 `##`）。
+    在目录树里缺失"（MinerU 没输出 `##` 的裸编号章标题）。
     """
     if not full_text:
         return []

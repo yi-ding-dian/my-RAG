@@ -330,9 +330,9 @@ const DocumentsPage: React.FC = () => {
       }
       // 1 万~5 万字：弹确认框（字数从错误信息"文档约 X.X 万字"解析）。
       // 结构化兜底：仅 Agentic 切块方式（parser_id='agentic'）才属于本确认框
-      // ——上下文检索超阈值失败（E文件导出实例全部.txt 等，parser_id 为
-      // title 等）虽然 error 也含"文档约 X.X 万字"，但非 Agentic 分块成本
-      // 问题，不应弹；不依赖错误文案匹配，文案改动不影响
+      // ——上下文检索超阈值失败（parser_id 为 title 等非 agentic 值）虽然
+      // error 也含"文档约 X.X 万字"，但非 Agentic 分块成本问题，不应弹；
+      // 不依赖错误文案匹配，文案改动不影响
       const m = doc.error.match(/文档约\s*([\d.]+)\s*万字/);
       if (!m || agenticPromptedRef.current.has(doc.id)) continue;
       if (doc.parser_id !== 'agentic') continue;

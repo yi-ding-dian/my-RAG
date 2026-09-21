@@ -47,7 +47,8 @@ def suggest_engine(file_type: str, probe: dict,
     if file_type == "doc":
         # 无规范样式（有样式的已被上面拦走）：
         # 经 Gotenberg 转 PDF 交 MinerU —— MinerU 直接吃 docx 只提文本、标题会
-        # 全丢（实测同一文档：docx → 0 个标题，转 PDF → 94 个）。
+        # 全丢（实测同一文档对比：直接给 docx 一个标题都识别不出，转 PDF 后
+        # 层级完整）。
         # **前提是转换服务可用**：没配 Gotenberg 就只能走本地结构化解析
         # （否则转 PDF 失败会回退成把 .doc 原样交给 MinerU，而它不认这个格式）
         if mineru.get("available") and gotenberg_ready:

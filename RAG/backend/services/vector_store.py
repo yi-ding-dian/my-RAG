@@ -31,7 +31,7 @@ Hit = Tuple[str, str, Dict, float]
 # 全文检索字段配置（Milvus 侧）：
 # - text 必须声明为显式字段才能挂分词器——analyzer 是字段级属性，动态字段配不了；
 # - 中文必须显式指定 chinese 分词器：默认 standard 分词器会把整句当成一个 token
-#   （实测「配置工具怎么创建工程」零命中），而且配错时**向量检索照常工作、只有
+#   （实测中文整句检索零命中），而且配错时**向量检索照常工作、只有
 #   BM25 静默失效**，非常难发现；
 # - max_length 用 Milvus VARCHAR 上限，单个切块远低于此（层级聚合的父块也只有几千字）。
 TEXT_MAX_LENGTH = 65535
