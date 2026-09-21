@@ -41,6 +41,14 @@ _HTML_TABLE_CLOSE_RE = re.compile(r"</table\s*>", re.IGNORECASE)
 # 单元格内空白折叠（跨 <p>/<br> 的换行缩进合并成单个空格）
 _WS_RE = re.compile(r"\s+")
 
+# 合并单元格展开时的重复上限（字符）：跨行/跨列的文本 <= 该长度才重复填充。
+# 管道表格语法没有合并单元格，rowspan/colspan 只能靠重复文本来保真——
+# 短标签（如"上游层"跨 6 行）重复有价值，每行都能看到自己属于哪一组；
+# 但整段文字跨列时重复 N 遍纯属浪费（实测某 3.12MB PDF 展开后近半字符
+# 是同一段话重复三遍，既撑大块又白烧 embedding token）。
+# 长内容只在首个位置保留全文，其余留空——信息不丢，只是不再复制。
+_SPAN_REPEAT_MAX_CHARS = 30
+
 
 def _is_header_cell(tag: str) -> bool:
     return tag.lower() == "th"
@@ -204,11 +212,17 @@ def _expand_layout(rows: List[List[_Cell]]) -> Tuple[List[List[str]], int]:
             # start_col 为单元格跨列起点（col 随后才推进，勿用 col-span_w：
             # span_w=1 时 col-span_w=col-1 会错位一列）
             start_col = col
-            for _ in range(span_w):
-                out.append(cell.text)
+            # 跨列展开：短内容重复填充、长内容只填首格（见 _SPAN_REPEAT_MAX_CHARS）。
+            # 循环变量用 j：外层行索引是 i，同名的内层循环会把它覆盖掉，
+            # 导致后面的 header_idx = i 取到错的行号（表头重排失效）
+            repeat = cell.text if len(cell.text) <= _SPAN_REPEAT_MAX_CHARS else ""
+            for j in range(span_w):
+                out.append(cell.text if j == 0 else repeat)
             if cell.rowspan > 1:
+                # 跨行填充同理：长内容不在后续行重复
+                fill = cell.text if len(cell.text) <= _SPAN_REPEAT_MAX_CHARS else ""
                 for k in range(span_w):
-                    pending[start_col + k] = (cell.rowspan - 1, cell.text)
+                    pending[start_col + k] = (cell.rowspan - 1, fill)
             # 第一个含 <th> 的行作为表头（MinerU 表头行基本都带 th）
             if header_idx is None and any(c.is_header for c in row):
                 header_idx = i
