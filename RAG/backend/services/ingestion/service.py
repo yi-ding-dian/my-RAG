@@ -1076,6 +1076,9 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 重新解析一次就把"禁用"洗白了
         doc_active = getattr(doc, "enabled", True)
         metadatas = []
+        # 超长父块（> _PARENT_TEXT_META_LIMIT，入库会被截断）记录：一个父块通常
+        # 对应多个子块，用 dict 去重（存父块索引 → 原长度），循环外统一告警一次
+        truncated_parents: Dict[int, int] = {}
         for i, c in enumerate(chunk_objects):
             meta = {
                 "document_id": doc_id,
@@ -1096,13 +1099,27 @@ class IngestionService(_TraceMixin, _ImageMixin):
                 meta["parent_chunk_index"] = parent_idx
                 # 父块全文随子块入库作检索上下文；章节父块可能数千字，
                 # 按 8000 截断防 Chroma metadata 单值超限（展示侧另有 2000 截断）
-                meta["parent_text"] = (
+                parent_text = (
                     stage.parent_chunks[parent_idx].text
                     if 0 <= parent_idx < len(stage.parent_chunks)
-                    else c.text)[:_PARENT_TEXT_META_LIMIT]
+                    else c.text)
+                if len(parent_text) > _PARENT_TEXT_META_LIMIT:
+                    truncated_parents[parent_idx] = len(parent_text)
+                meta["parent_text"] = parent_text[:_PARENT_TEXT_META_LIMIT]
                 meta["retrieval_mode"] = parser_config.get(
                     "retrieval_mode", "parent")
             metadatas.append(meta)
+        if truncated_parents:
+            # 不阻断入库（子块完整、检索照常），但父块上下文不完整这件事要留痕：
+            # 显示在文档状态列（前端标黄 + 悬浮可见），否则完全无感
+            warn_msg = (
+                f"{len(truncated_parents)} 个父块超过 {_PARENT_TEXT_META_LIMIT} "
+                f"字符（最大 {max(truncated_parents.values())} 字），入库时已截断"
+                f"——检索返回的父块上下文不完整；常见成因是标题层级超出父块"
+                f"切分层级，导致多个章节被并成一个父块")
+            logger.warning("父块截断告警: %s (%s) %s",
+                           doc.original_name, doc_id, warn_msg)
+            self._mark_stage_warn(doc_id, warn_msg)
         await vec.add(doc.kb_id, doc_id, doc.original_name, embed_texts,
                       embeddings, metadatas=metadatas)
         # 混合检索 BM25 索引失效（下次检索自动重建；函数内导入防循环依赖）

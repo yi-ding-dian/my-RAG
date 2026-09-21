@@ -49,6 +49,28 @@ _WS_RE = re.compile(r"\s+")
 # 长内容只在首个位置保留全文，其余留空——信息不丢，只是不再复制。
 _SPAN_REPEAT_MAX_CHARS = 30
 
+# 表题首部的数字编号（"4.1.1.1 系统节点及应用管理"）：命中说明是章节标题
+_CAPTION_HEADING_RE = re.compile(r"^\d+(?:\.\d+)*\s+\S")
+
+
+def _render_caption(caption: str) -> str:
+    """<caption> 内容 → 表格上方的独立行（DeepDoc 用它承载章节标题）
+
+    DeepDoc 把章节标题统一放在 <caption> 里（正文里没有任何标题标记），
+    不提取的话整批标题随标签一起消失，依赖标题的切块方式（title /
+    parent_child / hierarchical）随后识别不出标题、退化成按字符硬切。
+
+    两种形态分开处理：
+    - 数字编号开头（"4.1.1.1 系统节点及应用管理"）→ markdown 标题行，
+      供 _iter_headings 识别（真实层级由编号体系推断）；
+    - 其他（"（1）被测对象包括以下设备："这类表格说明）→ 普通文本行，
+      不加 ## ——否则会给文档塞进一批并非章节的噪音标题节点。
+    """
+    text = (caption or "").strip()
+    if not text:
+        return ""
+    return f"## {text}" if _CAPTION_HEADING_RE.match(text) else text
+
 
 def _is_header_cell(tag: str) -> bool:
     return tag.lower() == "th"
@@ -94,6 +116,11 @@ class _TableParser(HTMLParser):
         self._cur_text: List[str] = None  # type: ignore[assignment]
         self._cur_cell: Optional[_Cell] = None
         self._in_table = False
+        # 表题（<caption>）：出现在所有 <tr> 之前，此时没有活动单元格，
+        # 文本若走 _push_text 会被丢弃 —— 单独收集，见 _render_caption
+        self.caption: str = ""
+        self._in_caption = False
+        self._caption_parts: List[str] = []
 
     # ---- 生命周期 ----
     def handle_starttag(self, tag: str, attrs: list) -> None:
@@ -102,6 +129,10 @@ class _TableParser(HTMLParser):
             self._in_table = True
             return
         if not self._in_table:
+            return
+        if tag_l == "caption":
+            self._in_caption = True
+            self._caption_parts = []
             return
         if tag_l == "tr":
             self._close_row()
@@ -138,6 +169,10 @@ class _TableParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag_l = tag.lower()
+        if tag_l == "caption":
+            self._in_caption = False
+            self.caption = "".join(self._caption_parts).strip()
+            return
         if tag_l == "table":
             self._close_cell()
             self._close_row()
@@ -161,7 +196,9 @@ class _TableParser(HTMLParser):
 
     # ---- 内部 ----
     def _push_text(self, chunk: str) -> None:
-        if self._cur_cell is not None:
+        if self._in_caption:
+            self._caption_parts.append(chunk)
+        elif self._cur_cell is not None:
             self._cur_text.append(chunk)
 
     def _close_cell(self) -> None:
@@ -297,6 +334,11 @@ def html_tables_to_pipe(text: str) -> str:
             grid, header_idx = _expand_layout(parser.rows)
             pipe = _render_pipe(grid, header_idx)
             if pipe.strip():
+                # 表题先于表格输出（见 _render_caption）：DeepDoc 的章节标题
+                # 只存在于 <caption> 里，漏掉即等于整份文档没有标题
+                caption = _render_caption(parser.caption)
+                if caption:
+                    out.append("\n" + caption + "\n")
                 out.append("\n" + pipe + "\n")
         # 丢弃的表格（空表）直接跳过，不输出任何内容
         last = end
