@@ -678,6 +678,9 @@ export interface IngestDefaults {
   retrieval_modes: string[];
   agentic: { confirm_chars: number; hard_chars: number };
   parser_defaults: Record<string, unknown>;
+  /** MinerU 解析后端：enabled 由超管按服务端资源声明（默认只开 pipeline），
+   *  default 是不指定时的默认档——前端据此渲染下拉（只列可用档） */
+  mineru_backends: { enabled: MinerUBackend[]; default: MinerUBackend };
 }
 
 /** GET /kbs/{kb_id}/documents/{doc_id}/analyze 响应（画像 + 推荐，任何一步
@@ -1087,6 +1090,10 @@ export interface EmbeddingConfig {
 export interface MinerUConfig {
   url: string;
   timeout: number;
+  /** 可用解析引擎（超管按服务端资源声明：GPU/显存不够时只开 pipeline） */
+  engines_enabled: string[];
+  /** 默认解析引擎（新文档不指定时用它，须在 engines_enabled 内） */
+  default_engine: string;
 }
 
 /** DeepDoc 解析服务配置（RAGFlow API；表格输出为可检索 HTML） */

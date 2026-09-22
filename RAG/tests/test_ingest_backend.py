@@ -27,6 +27,18 @@ VALID_BACKENDS = ("pipeline", "hybrid-engine", "vlm-engine")
 PDF_BYTES = b"%PDF-1.4 fake"
 
 
+@pytest.fixture
+def enable_all_backends(monkeypatch):
+    """模拟超管在「MinerU 文档解析」配置里启用全部后端
+
+    新校验要求"本次显式选择的档"必须在 mineru.engines_enabled 里，
+    默认配置只开 pipeline——测 hybrid/vlm 的用例先调这个 fixture。
+    """
+    from backend.config import get_active_config
+    monkeypatch.setattr(get_active_config().mineru, "engines_enabled",
+                        ["pipeline", "hybrid-engine", "vlm-engine"])
+
+
 def _ingest(client, kb_id, doc_id, body=None, headers=None):
     """触发入库（body 可选），返回原始响应"""
     return client.post(f"/api/kbs/{kb_id}/documents/{doc_id}/ingest",
@@ -68,6 +80,7 @@ def _install_fake_parser(monkeypatch, text: str, images: list,
     return fake
 
 
+@pytest.mark.usefixtures("enable_all_backends")
 class TestIngestBackendValidation:
     """backend 参数校验：非法 400 / None 与 auto 不持久化 / 合法值持久化"""
 
@@ -153,6 +166,7 @@ class TestIngestBackendValidation:
         assert "backend" not in second["parser_config"]
 
 
+@pytest.mark.usefixtures("enable_all_backends")
 class TestIngestBackendPassthrough:
     """ingestion 透传：parse_opts.backend 仅显式选择时出现（pdf + mock parser）"""
 
@@ -368,3 +382,57 @@ class TestCancelIngestion:
             headers=admin_headers)
         assert resp.status_code == 409
         assert "当前不在解析中" in resp.json()["detail"]
+
+
+class TestBackendEnabledGate:
+    """超管按资源声明"可用引擎"：默认只开 pipeline，未启用的档显式选择时被拒
+
+    注意：本类**不加** enable_all_backends fixture——测的就是"没启用"的场景。
+    """
+
+    def test_backend_not_enabled_rejected(self, client, mock_embedding,
+                                          admin_headers, monkeypatch):
+        """显式选未启用的 backend → 400（比入库跑到一半失败、报一串服务端错误好）"""
+        from backend.config import get_active_config
+        monkeypatch.setattr(get_active_config().mineru, "engines_enabled",
+                            ["pipeline"])
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"])
+        resp = _ingest(client, kb["id"], doc["id"],
+                       body={"backend": "hybrid-engine"}, headers=admin_headers)
+        assert resp.status_code == 400
+        assert "未启用" in resp.text
+        assert "pipeline" in resp.text  # 提示当前可用档
+
+    def test_backend_enabled_after_config_change(self, client, mock_embedding,
+                                                 admin_headers, monkeypatch):
+        """超管启用后即可选（默认档仍是 pipeline，但 hybrid 不再被拒）"""
+        from backend.config import get_active_config
+        monkeypatch.setattr(get_active_config().mineru, "engines_enabled",
+                            ["pipeline", "hybrid-engine"])
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"])
+        resp = _ingest(client, kb["id"], doc["id"],
+                       body={"backend": "hybrid-engine"}, headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        final = wait_for_status(client, kb["id"], doc["id"])
+        assert final["parser_config"]["backend"] == "hybrid-engine"
+
+    def test_legacy_config_not_blocked(self, client, mock_embedding,
+                                       admin_headers, monkeypatch):
+        """沿用旧配置不拦：存量文档存着后来被关掉的档，重解析不该失败"""
+        from backend.config import get_active_config
+        monkeypatch.setattr(get_active_config().mineru, "engines_enabled",
+                            ["pipeline", "hybrid-engine"])
+        kb = create_kb(client)
+        doc = upload_doc(client, kb["id"])
+        _ingest(client, kb["id"], doc["id"], body={"backend": "hybrid-engine"},
+                headers=admin_headers)
+        wait_for_status(client, kb["id"], doc["id"])
+        # 超管关掉 hybrid（模拟资源变化）→ 无 body 重跑（沿用旧配置）应成功
+        monkeypatch.setattr(get_active_config().mineru, "engines_enabled",
+                            ["pipeline"])
+        resp = _ingest(client, kb["id"], doc["id"], headers=admin_headers)
+        assert resp.status_code == 200, resp.text
+        final = wait_for_status(client, kb["id"], doc["id"])
+        assert final["status"] == "ingested"

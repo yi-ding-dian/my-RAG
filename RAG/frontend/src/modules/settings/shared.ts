@@ -185,6 +185,10 @@ export interface ProfileFormValues {
   embedding_dimension: number;
   mineru_url: string;
   mineru_timeout: number;
+  /** 可用解析引擎（超管按服务端资源声明；默认只开 pipeline） */
+  mineru_engines_enabled: string[];
+  /** 默认解析引擎（新文档不指定时用它，须在可用列表内） */
+  mineru_default_engine: string;
   deepdoc_base_url: string;
   deepdoc_email: string;
   deepdoc_password: string;
@@ -262,7 +266,11 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
     model: vals.embedding_model,
     dimension: vals.embedding_dimension,
   },
-  mineru: { url: vals.mineru_url, timeout: vals.mineru_timeout },
+  mineru: {
+    url: vals.mineru_url, timeout: vals.mineru_timeout,
+    engines_enabled: vals.mineru_engines_enabled,
+    default_engine: vals.mineru_default_engine,
+  },
   deepdoc: {
     base_url: vals.deepdoc_base_url,
     email: vals.deepdoc_email,
@@ -363,6 +371,8 @@ export const toFormValues = (p: ServiceProfile) => ({
   embedding_dimension: p.embedding?.dimension,
   mineru_url: p.mineru?.url,
   mineru_timeout: p.mineru?.timeout,
+  mineru_engines_enabled: p.mineru?.engines_enabled ?? ['pipeline'],
+  mineru_default_engine: p.mineru?.default_engine ?? 'pipeline',
   deepdoc_base_url: p.deepdoc?.base_url,
   deepdoc_email: p.deepdoc?.email,
   deepdoc_password: p.deepdoc?.password,

@@ -417,3 +417,29 @@ class TestSettingsReadOnlyForDeptAdmin:
         resp = client.post("/api/settings/profiles/active/test",
                            headers=user_headers)
         assert resp.status_code == 404
+
+
+class TestListFieldCast:
+    """列表字段的 cast 必须是 raw（回归：List[str] 曾被推断成 cast="str"）
+
+    症状：配置档案加载时 `str(["pipeline"])` → "['pipeline']"，
+    下游 `list(...)` 逐字符拆开 → 前端下拉框每个字符占一行。
+    """
+
+    def test_list_field_not_stringified(self):
+        """MinerUConfig.engines_enabled（List[str]）加载后仍是 list"""
+        from backend.config import get_active_config
+        from backend.services.settings.service import get_settings_service
+        get_settings_service()
+        v = get_active_config().mineru.engines_enabled
+        assert isinstance(v, list), f'engines_enabled 被转成了 {type(v).__name__}: {v!r}'
+        assert all(isinstance(x, str) for x in v)
+
+    def test_ingest_defaults_returns_list(self):
+        """ingest-defaults 接口的 mineru_backends.enabled 是 list（前端据此渲染下拉）"""
+        from backend.services.ingestion.params import public_defaults
+        enabled = public_defaults()['mineru_backends']['enabled']
+        assert isinstance(enabled, list)
+        # 不能是"字符串被拆开"的形态（['p','i','p','e',...]）
+        assert not (enabled and len(enabled[0]) == 1 and len(enabled) > 3), \
+            f'enabled 疑似被逐字符拆开: {enabled!r}'

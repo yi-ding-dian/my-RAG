@@ -5,10 +5,15 @@ import type { MinerUBackend, MinerUEffort } from '../../../../shared/api/client'
 interface MinerUBackendFieldProps {
   /** 表单字段名（默认 backend） */
   name?: string;
-  /** 默认值 */
+  /** 默认值（缺省时用 defaultBackend） */
   initialValue?: MinerUBackend;
   /** effort 字段名（默认 effort；仅 backend=hybrid-engine 时提交） */
   effortName?: string;
+  /** 可用后端：由超管在「MinerU 文档解析」配置里按服务端资源声明
+   *  （默认只开 pipeline）——下拉只列这些，避免选中实际跑不动的档 */
+  enabledBackends?: MinerUBackend[];
+  /** 默认后端：不显式指定时用它（来自系统配置，缺省 pipeline） */
+  defaultBackend?: MinerUBackend;
 }
 
 /** 三个后端的对比（官方口径）：配置时直接看，不用去翻文档 */
@@ -40,6 +45,13 @@ const COMPARE_ROWS: [string, string, string, string][] = [
 ];
 
 const BACKEND_NAMES = ['pipeline（流水线）', 'hybrid-engine（混合引擎）', 'vlm-engine（视觉大模型）'];
+
+/** 后端 → 下拉显示名（auto 不是引擎，是"不指定、跟随服务端默认"） */
+const BACKEND_LABELS: Record<string, string> = {
+  'pipeline': '流水线 pipeline（最快，表格结构弱）',
+  'hybrid-engine': '混合引擎 hybrid-engine（推荐）',
+  'vlm-engine': '视觉大模型 vlm-engine（复杂版面最准，慢）',
+};
 
 const CompareTable: React.FC = () => (
   <div style={{ fontSize: 12, overflowX: 'auto' }}>
@@ -74,23 +86,28 @@ const tdStyle: React.CSSProperties = {
  * MinerU 解析后端选择（mineru-api /file_parse 的 backend 参数）。
  * 仅在解析引擎选择「MinerU 高精度」时显示（ParseConfigModal 条件渲染）。
  *
- * 取值以**服务端 OpenAPI 枚举**为准：pipeline / hybrid-engine / vlm-engine
- * （vlm-http-client、hybrid-http-client 需服务端开 --allow-public-http-client，
- * 默认关闭以防 SSRF，故不列出）。旧值 hybrid-auto-engine 服务端并不存在，
- * 后端已按 hybrid-engine 兼容。
+ * **下拉只列「可用后端」**——由超管在「MinerU 文档解析」配置里按服务端资源
+ * （GPU/显存）声明，默认只开 pipeline（无 GPU 也能跑、总能出结果的兜底档）。
+ * 用户选中即对该文档生效（可覆盖默认）；不选则走后端配置的默认档。
  *
- * 默认值 pipeline：它在无 GPU 的环境也能跑（服务端用 CPU），是"总能出结果"的
- * 兜底档；有 GPU 的环境建议选 hybrid-engine。
  * effort 仅 hybrid-engine 有效——服务端默认 medium 会**关闭图片/图表分析**，
  * 实测会把表格说明行误标成标题、页眉混进正文，故前端默认给 high。
  */
 const MinerUBackendField: React.FC<MinerUBackendFieldProps> = ({
   name = 'backend',
-  initialValue = 'pipeline',
+  initialValue,
   effortName = 'effort',
+  enabledBackends,
+  defaultBackend,
 }) => {
   // 只有 hybrid-engine 需要 effort（服务端标注 "Adapted only for hybrid backend"）
   const backend = Form.useWatch(name) as MinerUBackend | undefined;
+  // 默认档来自系统配置；接口未回来时兜底 pipeline（与后端默认一致）
+  const fallback = defaultBackend ?? 'pipeline';
+  // auto 永远可选（它不是引擎，是"不指定、跟随服务端默认"）；引擎按超管声明列
+  const engineOptions = (enabledBackends ?? ['pipeline']).map((b) => ({
+    value: b, label: BACKEND_LABELS[b] ?? b,
+  }));
   return (
     <>
       <Form.Item
@@ -98,19 +115,17 @@ const MinerUBackendField: React.FC<MinerUBackendFieldProps> = ({
         label={
           <span>
             MinerU 解析后端
-            <Tooltip title="流水线最快、无幻觉但表格结构弱；混合引擎用 VLM 分析版面、精度与稳定性兼顾（推荐）；视觉大模型复杂版面最准但慢且可能幻觉。展开下方对比表看详细差异。">
+            <Tooltip title="可选项由系统配置决定（超管按服务端 GPU/显存声明）。流水线最快、无幻觉但表格结构弱；混合引擎用 VLM 分析版面、精度与稳定性兼顾（推荐）；视觉大模型复杂版面最准但慢且可能幻觉。展开下方对比表看详细差异。">
               <span style={{ marginLeft: 6, color: '#999', cursor: 'help' }}>?</span>
             </Tooltip>
           </span>
         }
-        initialValue={initialValue}
+        initialValue={initialValue ?? fallback}
       >
         <Select
           options={[
             { value: 'auto', label: '自动（跟随服务端默认）' },
-            { value: 'pipeline', label: '流水线 pipeline（最快，表格结构弱）' },
-            { value: 'hybrid-engine', label: '混合引擎 hybrid-engine（推荐）' },
-            { value: 'vlm-engine', label: '视觉大模型 vlm-engine（复杂版面最准，慢）' },
+            ...engineOptions,
           ]}
         />
       </Form.Item>

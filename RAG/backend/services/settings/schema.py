@@ -153,7 +153,15 @@ class SectionSpec:
 
 
 def _infer_cast(annotation) -> str:
-    """从 pydantic 字段 annotation 推断 cast（解包 Optional）"""
+    """从 pydantic 字段 annotation 推断 cast（解包 Optional）
+
+    容器类型（list/tuple/set/dict）返回 "raw"——它们必须原样保留结构。
+    若沿用标量的 `str` 转换，`List[str]` 会被 `str()` 成 `"['a', 'b']"`，
+    下游再 `list(...)` 就逐字符拆开（实测配置面板的下拉框每个字符占一行）。
+    """
+    if getattr(annotation, "__origin__", None) in (list, tuple, set,
+                                                  frozenset, dict):
+        return "raw"
     args = getattr(annotation, "__args__", None)
     if args:
         non_none = [a for a in args if a is not type(None)]

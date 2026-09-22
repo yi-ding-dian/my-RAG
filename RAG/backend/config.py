@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -218,9 +218,19 @@ class EmbeddingConfig(BaseModel):
 
 
 class MinerUConfig(BaseModel):
-    """MinerU 解析服务配置"""
+    """MinerU 解析服务配置
+
+    engines_enabled / default_engine：由超管按服务端资源（GPU、显存）声明
+    "这台机器能跑哪些解析后端"——只有声明可用的才出现在解析配置的下拉里，
+    避免用户选中实际跑不动的档（如无 GPU 时选 hybrid-engine 会直接失败）；
+    default_engine 是不显式指定时的默认档，**必须**在 engines_enabled 内。
+    """
     api_url: str
     timeout: float
+    # 可用解析后端（默认只开 pipeline：它无 GPU 也能跑，是"总能出结果"的兜底档）
+    engines_enabled: List[str] = Field(default_factory=lambda: ["pipeline"])
+    # 默认解析后端（必须在 engines_enabled 里；后端保存配置时校验）
+    default_engine: str = "pipeline"
 
 
 class DeepDocConfig(BaseModel):

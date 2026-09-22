@@ -23,6 +23,7 @@ import {
   DocumentItem,
   IngestConfig,
   ParseMethod,
+  MinerUBackend,
   analyzeDocument,
   ingestDocument,
   uploadDocument,
@@ -39,6 +40,13 @@ const METHOD_OPTIONS: { value: ParseMethod; label: string }[] = [
   { value: 'qa', label: 'QA 问答' },
   { value: 'agentic', label: 'Agentic 智能分块' },
 ];
+
+/** MinerU 解析引擎显示名（可选档由超管在系统配置里声明，这里只负责翻译） */
+const MINERU_ENGINE_LABELS: Record<string, string> = {
+  'pipeline': '流水线 pipeline（最快，表格结构弱）',
+  'hybrid-engine': '混合引擎 hybrid-engine（推荐）',
+  'vlm-engine': '视觉大模型 vlm-engine（复杂版面最准，慢）',
+};
 
 /* 配置装配统一走 ingestDefaults（默认值来源在后端 /kbs/ingest-defaults）：
  *  - 智能模式：直接用后端给出的 plan.config —— 画像、引擎建议、切块参数是一起
@@ -94,6 +102,13 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   const [mode, setMode] = useState<'smart' | 'uniform'>('smart');
   // 统一模式表单
   const [method, setMethod] = useState<ParseMethod>('naive');
+  /** MinerU 解析后端（'' = 尚未选择，按系统默认档）。仅对走 MinerU 的
+   *  文档（pdf/docx/doc）生效；可选档由超管在系统配置里声明 */
+  const [mineruBackend, setMineruBackend] = useState<string>('');
+  // 下拉初始选中系统配置的默认档（不设"跟随系统默认"选项——它与"选默认档"
+  // 结果完全一样，只是多一个不透明的可选项）
+  const engineDefault = ingestDefaults?.mineru_backends?.default ?? 'pipeline';
+  const engineValue = mineruBackend || engineDefault;
   const [regexPattern, setRegexPattern] = useState('');
   const [contextualRetrieval, setContextualRetrieval] = useState(false);
   const [knowledgeGraph, setKnowledgeGraph] = useState(false);
@@ -208,11 +223,18 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
         try {
           const a = await analyzeDocument(kbId, doc.id);
           const plan = a.data.parse_plan;
-          // plan 为 null = 后端决策矩阵异常（画像仍照常返回）→ 退回最小配置
-          config = plan?.config ?? { method: 'naive' };
+          // plan 为 null = 后端决策矩阵异常（画像仍照常返回）→ 退回最小配置。
+          // 解析引擎两种模式通用：选了就覆盖进 config（仅走 MinerU 的文档消费）
+          config = {
+            ...(plan?.config ?? { method: 'naive' }),
+            backend: engineValue as MinerUBackend,
+          };
           if (!plan) note = '画像未给出方案，已按默认配置入库';
         } catch {
-          config = { method: 'naive' };
+          config = {
+            method: 'naive',
+            backend: engineValue as MinerUBackend,
+          };
           note = '画像分析失败，已按默认配置入库';
         }
       } else {
@@ -225,6 +247,9 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
             ? { image_summary_format: imageFormat } : {}),
           ...(method === 'regex'
             ? { regex_pattern: regexPattern.trim() } : {}),
+          // MinerU 解析引擎：'' = 跟随系统默认（不带该参数，后端用配置的默认档）；
+          // 仅对走 MinerU 的文档生效，其余类型后端不消费
+          backend: engineValue as MinerUBackend,
         });
       }
       // 3) 触发入库（后台任务：parsing → ingested，列表轮询刷新）
@@ -315,6 +340,27 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
               ? '逐个文档分析画像（格式/标题结构/篇幅等），按推荐配置入库；画像失败自动回退默认配置'
               : '所选解析方式应用于全部文档，各文档均按同一配置入库'}
           </div>
+        </div>
+
+        {/* MinerU 解析引擎：**两种模式都显示**——智能解析只决定"切块方式与增强开关"
+            的推荐，引擎选择是"这台机器用哪个后端解析"，与推荐无关，统一在这里选，
+            选了之后本批所有走 MinerU 的文档（pdf/docx/doc）都用它；不选则用系统
+            配置的默认档。可选档由超管在系统配置里按服务端资源声明 */}
+        <div>
+          <div style={{ marginBottom: 4 }}>
+            <Text strong>MinerU 解析引擎</Text>{' '}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              仅 PDF / Office 文档走 MinerU 解析时使用（txt / Excel 等直读文档不涉及）；
+              不选则用系统配置的默认档，可选档由超管按服务端资源声明
+            </Text>
+          </div>
+          <Select
+            style={{ width: '100%' }}
+            value={engineValue}
+            onChange={setMineruBackend}
+            options={(ingestDefaults?.mineru_backends?.enabled ?? ['pipeline'])
+              .map((b) => ({ value: b, label: MINERU_ENGINE_LABELS[b] ?? b }))}
+          />
         </div>
 
         {/* 统一模式：解析方式选择（复用手动解析弹窗语义的最小表单） */}

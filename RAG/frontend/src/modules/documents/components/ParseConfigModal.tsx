@@ -688,8 +688,14 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
                       </div>
                     )}
                     {/* MinerU 解析后端：仅解析方式=MinerU 时显示（其他方式不传，
-                        跟随 MinerU 服务端默认，服务端默认为 hybrid-engine） */}
-                    {isMinerU && <MinerUBackendField />}
+                        跟随 MinerU 服务端默认）。可用档由系统配置声明（默认只开 pipeline），
+                        不选则走后端配置的默认档 */}
+                    {isMinerU && (
+                      <MinerUBackendField
+                        enabledBackends={defaults?.mineru_backends?.enabled}
+                        defaultBackend={defaults?.mineru_backends?.default}
+                      />
+                    )}
                     {/* 页码范围/任务页面大小/表格/公式/图片/语言：仅 MinerU 生效（非 MinerU
                         时后端 parse_opts={} 或 plain 分支不消费），隐藏即不提交 */}
                     {isMinerU && <PagesRangeField />}

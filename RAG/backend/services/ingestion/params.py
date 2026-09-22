@@ -53,6 +53,8 @@ _VALID_PARSER_ENGINES = ("auto", "mineru", "deepdoc", "docx_struct", "plain")
 # 注：vlm-http-client / hybrid-http-client 需服务端开 --allow-public-http-client
 # （默认关闭，防 SSRF），本环境不可用，故不列入
 _VALID_MINERU_BACKENDS = ("auto", "pipeline", "hybrid-engine", "vlm-engine")
+# 兜底默认后端：配置档案的 mineru.default_engine 为空时用它（正常不会走到）
+_DEFAULT_MINERU_BACKEND = "pipeline"
 # hybrid-engine 专用的解析力度（服务端 effort 参数）：
 # medium=快，但**关闭图片/图表分析** ／ high=开启图片分析，精度更高
 _VALID_MINERU_EFFORTS = ("medium", "high")
@@ -184,11 +186,24 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
     # （NVML 初始化失败），重建容器即恢复，与"没配 GPU"无关
     backend = params.get("backend", old.get("backend"))
     if backend is None:
-        backend = "pipeline"
+        # 默认档由超管在「MinerU 文档解析」配置里声明（默认 pipeline）
+        backend = (get_active_config().mineru.default_engine
+                   or _DEFAULT_MINERU_BACKEND)
     if backend not in _VALID_MINERU_BACKENDS:
         raise ValueError(
             f"backend 非法: {backend}"
             f"（支持: {'/'.join(_VALID_MINERU_BACKENDS)}，None=跟随服务端默认）")
+    # 可用性校验只针对**本次显式选择**的：超管按服务端资源声明了哪些引擎
+    # 可用（如无 GPU 时只开 pipeline），用户选了没启用的档当场拒绝——
+    # 比入库跑到一半失败、报一串服务端错误好。沿用旧配置的不拦
+    # （存量文档可能存着后来被超管关掉的档，拦了它们重解析会直接失败）
+    if "backend" in params and backend != "auto":
+        enabled = get_active_config().mineru.engines_enabled or [backend]
+        if backend not in enabled:
+            raise ValueError(
+                f"MinerU 解析后端 {backend} 未启用"
+                f"（当前可用: {'/'.join(enabled)}；"
+                f"如需使用请在「MinerU 文档解析」配置里启用）")
     if backend != "auto":
         cfg["backend"] = backend
     # 解析力度（仅 hybrid-engine 有效）：未传时给 high——服务端默认是 medium，
@@ -362,6 +377,7 @@ def public_defaults(cfg=None) -> dict:
     弹窗里抄了 5 遍，且与后端活跃配置漂移。改为接口供给后，前端只做展示与
     用户覆盖，数值仍只有这一个来源。
     """
+    mineru = (cfg or get_active_config()).mineru
     return {
         "methods": method_defaults(cfg),
         "ranges": {
@@ -379,4 +395,10 @@ def public_defaults(cfg=None) -> dict:
         "agentic": {"confirm_chars": _MAX_AGENTIC_TEXT_CHARS,
                     "hard_chars": _MAX_AGENTIC_TEXT_CHARS_HARD},
         "parser_defaults": dict(_DEFAULT_PARSER_CONFIG),
+        # MinerU 解析后端：可用档由超管在「MinerU 文档解析」配置里按资源声明
+        # （默认只开 pipeline）。前端据此渲染下拉（只列可用档）并选中默认档
+        "mineru_backends": {
+            "enabled": list(mineru.engines_enabled or [_DEFAULT_MINERU_BACKEND]),
+            "default": (mineru.default_engine or _DEFAULT_MINERU_BACKEND),
+        },
     }
