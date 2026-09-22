@@ -24,6 +24,7 @@ import {
   IngestConfig,
   ParseMethod,
   MinerUBackend,
+  MinerUEffort,
   analyzeDocument,
   ingestDocument,
   uploadDocument,
@@ -109,6 +110,8 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
   // 结果完全一样，只是多一个不透明的可选项）
   const engineDefault = ingestDefaults?.mineru_backends?.default ?? 'pipeline';
   const engineValue = mineruBackend || engineDefault;
+  /** 解析力度（仅 hybrid-engine 有效）：'' = 用后端默认（high） */
+  const [mineruEffort, setMineruEffort] = useState<string>('');
   const [regexPattern, setRegexPattern] = useState('');
   const [contextualRetrieval, setContextualRetrieval] = useState(false);
   const [knowledgeGraph, setKnowledgeGraph] = useState(false);
@@ -228,12 +231,18 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
           config = {
             ...(plan?.config ?? { method: 'naive' }),
             backend: engineValue as MinerUBackend,
+          // 解析力度总是带上（值合法即可）：后端只在 backend=hybrid-engine 时
+          // 写进配置，其余档忽略——省去前端再判一次条件
+          effort: (mineruEffort || 'high') as MinerUEffort,
           };
           if (!plan) note = '画像未给出方案，已按默认配置入库';
         } catch {
           config = {
             method: 'naive',
             backend: engineValue as MinerUBackend,
+          // 解析力度总是带上（值合法即可）：后端只在 backend=hybrid-engine 时
+          // 写进配置，其余档忽略——省去前端再判一次条件
+          effort: (mineruEffort || 'high') as MinerUEffort,
           };
           note = '画像分析失败，已按默认配置入库';
         }
@@ -250,6 +259,9 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
           // MinerU 解析引擎：'' = 跟随系统默认（不带该参数，后端用配置的默认档）；
           // 仅对走 MinerU 的文档生效，其余类型后端不消费
           backend: engineValue as MinerUBackend,
+          // 解析力度总是带上（值合法即可）：后端只在 backend=hybrid-engine 时
+          // 写进配置，其余档忽略——省去前端再判一次条件
+          effort: (mineruEffort || 'high') as MinerUEffort,
         });
       }
       // 3) 触发入库（后台任务：parsing → ingested，列表轮询刷新）
@@ -361,6 +373,19 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
             options={(ingestDefaults?.mineru_backends?.enabled ?? ['pipeline'])
               .map((b) => ({ value: b, label: MINERU_ENGINE_LABELS[b] ?? b }))}
           />
+          {/* 解析力度：仅混合引擎有效（服务端标注 Edited only for hybrid backend），
+              与解析配置弹窗同语义——不选则后端按 high 处理 */}
+          {engineValue === 'hybrid-engine' && (
+            <Select
+              style={{ width: '100%', marginTop: 8 }}
+              value={mineruEffort || 'high'}
+              onChange={setMineruEffort}
+              options={[
+                { value: 'high', label: '解析力度：高（开启图片/图表分析，推荐）' },
+                { value: 'medium', label: '解析力度：中（更快，但关闭图片分析）' },
+              ]}
+            />
+          )}
         </div>
 
         {/* 统一模式：解析方式选择（复用手动解析弹窗语义的最小表单） */}

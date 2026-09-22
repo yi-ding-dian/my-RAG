@@ -16,7 +16,8 @@ import type {
   SettingsReferences, VisionModelItem,
 } from '../../shared/api/types';
 import {
-  PANEL_TEST_SECTIONS, sectionLabel, toFormValues, toProfileInput, toTestItems,
+  HEADING_END_PUNCT_DEFAULT, PANEL_TEST_SECTIONS, sectionLabel, toFormValues,
+  toProfileInput, toTestItems,
 } from './shared';
 import type { ProfileFormValues, SectionKey, TestItem } from './shared';
 import ArPanel from './ArPanel';
@@ -69,6 +70,7 @@ const NEW_PROFILE_DEFAULTS = {
   rerank_top_n: 10,
   chunk_size: 800, chunk_overlap: 100,
   heading_llm_model: '',
+  heading_end_punct_whitelist: HEADING_END_PUNCT_DEFAULT.slice(),
   contextual_retrieval_max_full_doc_chars: 20000,
   ingestion_concurrency: 3,
   ingestion_kb_doc_limit: 0,

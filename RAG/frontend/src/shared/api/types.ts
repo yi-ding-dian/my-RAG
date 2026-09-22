@@ -116,6 +116,9 @@ export interface IngestConfig {
   chunk_size?: number;
   overlap?: number;
   delimiter?: string | string[];
+  /** 标题末尾标点白名单（**仅本文档生效**，存 parser_config；不传=用全局配置）。
+   *  末尾是句末标点时须在名单内才认作标题；跨切块方式通用（不受 method 限制） */
+  heading_end_punct_whitelist?: string[];
   split_level?: number;
   regex_pattern?: string;
   /** 父块大小（字符），范围 200-4000，仅 parent_child */
@@ -681,6 +684,9 @@ export interface IngestDefaults {
   /** MinerU 解析后端：enabled 由超管按服务端资源声明（默认只开 pipeline），
    *  default 是不指定时的默认档——前端据此渲染下拉（只列可用档） */
   mineru_backends: { enabled: MinerUBackend[]; default: MinerUBackend };
+  /** 标题末尾标点白名单（**全局配置值**）：解析配置弹窗据此显示默认值，
+   *  用户可增删后存进**本文档** parser_config（不改全局配置） */
+  heading_end_punct_whitelist: string[];
 }
 
 /** GET /kbs/{kb_id}/documents/{doc_id}/analyze 响应（画像 + 推荐，任何一步
@@ -1137,6 +1143,10 @@ export interface ChunkingConfig {
    *  （值为模型列表里的标识 name/model；空=不做 LLM 分层，只用规则）；
    *  旧后端可能缺失，前端做可选兼容 */
   heading_llm_model?: string;
+  /** 标题末尾标点白名单：末尾是句末标点（。？！；… 及半角）时须在名单内才
+   *  认作标题；空数组=回退国标默认（问号/叹号/省略号）。冒号/顿号/右括号等
+   *  不受管辖；旧后端可能缺失，前端做可选兼容 */
+  heading_end_punct_whitelist?: string[];
 }
 
 /** 会话参数（聊天设置弹窗可编辑段，temperature/top_p/max_tokens 为 null=跟随模型默认） */

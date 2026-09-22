@@ -4,6 +4,21 @@ import type { ParserLlmModelItem } from '../../shared/api/types';
 
 const { Password } = Input;
 
+/** 句末标点候选（与后端 chunking.common._END_PUNCT_CHARS 一致）：只有末尾是
+ *  这些符号时才受白名单裁决。冒号/顿号/右括号等是标题的正常组成部分，不在此列、
+ *  也不受本名单管辖——纳入会误杀"注："、"1）xx"、"一、总则" 这类真标题 */
+const END_PUNCT_OPTIONS = [
+  { value: '？', label: '？ 全角问号' },
+  { value: '！', label: '！ 全角叹号' },
+  { value: '…', label: '… 省略号' },
+  { value: '。', label: '。 全角句号' },
+  { value: '；', label: '； 全角分号' },
+  { value: '?', label: '? 半角问号' },
+  { value: '!', label: '! 半角叹号' },
+  { value: '.', label: '. 半角句号' },
+  { value: ';', label: '; 半角分号' },
+];
+
 /** 面板 props：标题分层模型下拉数据源（GET /api/settings/llm/models） */
 interface Props {
   headingModelOptions: ParserLlmModelItem[];
@@ -112,6 +127,19 @@ const RetrievalPanel: React.FC<Props> = ({ headingModelOptions }) => (
               value: m.name,
               label: `${m.name}${m.model && m.model !== m.name ? `（${m.model}）` : ''}`,
             }))}
+          />
+        </Form.Item>
+      </Col>
+      <Col span={12}>
+        <Form.Item
+          name="heading_end_punct_whitelist"
+          label="标题末尾标点白名单"
+          extra="标题末尾是句末标点时，须在名单内才认作标题；默认按国标取问号/叹号/省略号，留空回退默认。冒号、顿号、右括号等不受管辖"
+        >
+          <Select
+            mode="tags"
+            placeholder="默认为 ？ ！ … ? !"
+            options={END_PUNCT_OPTIONS}
           />
         </Form.Item>
       </Col>

@@ -285,6 +285,14 @@ class ChunkingConfig(BaseModel):
     # settings.service.llm_cfg_for_parser）；空 = 不做 LLM 分层，只用规则
     # 分层（运行时动态读取，改配置即生效）
     heading_llm_model: str = ""
+    # 标题末尾标点白名单：标题末尾若是「句末标点」（。？！；… 及半角 .?!;），
+    # 必须落在白名单里才认作标题（判定见 chunking.common.passes_end_punct）。
+    # 默认值取国标 GB/T 15834—2011 列举的「标题末尾可用」标点：问号、叹号、
+    # 省略号（含半角形式）。**留空回退默认值**，而非"什么都不认"。
+    # 注意管辖范围只到句末标点：冒号/顿号/逗号/右括号等**不受本名单约束**
+    # （"注："、"1）xx"、"一、总则" 这类是真标题，纳入会误杀）。
+    heading_end_punct_whitelist: List[str] = Field(
+        default_factory=lambda: ["？", "！", "…", "?", "!"])
 
 
 class ChatConfig(BaseModel):

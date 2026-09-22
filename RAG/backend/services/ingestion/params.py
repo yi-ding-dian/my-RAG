@@ -133,6 +133,24 @@ def _validate_pages(pages) -> list:
     return out
 
 
+def _validate_end_punct_whitelist(value) -> list:
+    """标题末尾标点白名单校验：字符串列表，每项须为**单个字符**
+
+    空列表合法（= 回退全局/内置默认，**不表示"什么都不认"**——后者会让所有
+    问句标题消失，见 chunking.common.resolve_end_punct_whitelist）。非法抛
+    ValueError（上层 400 或写回 failed）。
+    """
+    if not isinstance(value, list):
+        raise ValueError("heading_end_punct_whitelist 必须是列表")
+    out = []
+    for item in value:
+        if not isinstance(item, str) or len(item) != 1:
+            raise ValueError(
+                f"heading_end_punct_whitelist 每项须为单个字符: {item!r}")
+        out.append(item)
+    return out
+
+
 def resolve_parser_config(doc: DocumentItem, method: str | None = None,
                           params: dict | None = None) -> Tuple[str, dict]:
     """解析切块方式与参数（校验失败抛 ValueError，由调用方决定 400 或写回 failed）
@@ -227,6 +245,14 @@ def resolve_parser_config(doc: DocumentItem, method: str | None = None,
     if not 0 <= overlap < chunk_size:
         raise ValueError(f"overlap 非法: {overlap}（需 0 <= overlap < chunk_size）")
     cfg["overlap"] = overlap
+    # 标题末尾标点白名单：**跨切块方式通用**（title/parent_child/hierarchical
+    # 都用），故不放进下面的 method 分支（delimiter 只有 naive 用，才在分支里）。
+    # 本次解析显式传 > 文档已有（重跑沿用）> 不写该字段 = 切块时用全局配置
+    whitelist = params.get("heading_end_punct_whitelist",
+                           old.get("heading_end_punct_whitelist"))
+    if whitelist is not None:
+        cfg["heading_end_punct_whitelist"] = _validate_end_punct_whitelist(
+            whitelist)
     if method == "naive":
         delimiter = params.get("delimiter", old.get("delimiter"))
         if delimiter:
@@ -401,4 +427,8 @@ def public_defaults(cfg=None) -> dict:
             "enabled": list(mineru.engines_enabled or [_DEFAULT_MINERU_BACKEND]),
             "default": (mineru.default_engine or _DEFAULT_MINERU_BACKEND),
         },
+        # 标题末尾标点白名单（**全局配置值**）：解析配置弹窗据此显示默认值，
+        # 用户可增删后存进**本文档** parser_config（不改全局配置）
+        "heading_end_punct_whitelist": list(
+            (cfg or get_active_config()).chunking.heading_end_punct_whitelist),
     }

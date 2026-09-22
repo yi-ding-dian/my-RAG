@@ -51,6 +51,7 @@ def get_chunker(method: str, config: dict) -> Chunker:
             chunk_size=config.get("chunk_size"),
             overlap=config.get("overlap"),
             split_level=config.get("split_level"),
+            heading_end_punct_whitelist=config.get("heading_end_punct_whitelist"),
         )
     if method == "regex":
         return RegexChunker(
@@ -66,6 +67,7 @@ def get_chunker(method: str, config: dict) -> Chunker:
             parent_chunk_overlap=config.get("parent_chunk_overlap"),
             parent_split_level=config.get("parent_split_level"),
             heading_systems=config.get("heading_systems"),
+            heading_end_punct_whitelist=config.get("heading_end_punct_whitelist"),
         )
     if method == "qa":
         return QaChunker(
@@ -81,6 +83,7 @@ def get_chunker(method: str, config: dict) -> Chunker:
             overlap=config.get("overlap"),
             chapter_level=config.get("chapter_level") or 1,
             heading_systems=config.get("heading_systems"),
+            heading_end_punct_whitelist=config.get("heading_end_punct_whitelist"),
         )
     raise ValueError(f"未知切块方式: {method}（支持: {'/'.join(VALID_METHODS)}）")
 

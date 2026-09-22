@@ -43,3 +43,6 @@ mcp-server/**/record.md
 frontend/.vite/
 frontend/vite.config.js
 frontend/vite.config.d.ts
+
+# 本次排查整理的文档（暂不进版本库）
+docs/MinerU解析引擎选择与配置.md

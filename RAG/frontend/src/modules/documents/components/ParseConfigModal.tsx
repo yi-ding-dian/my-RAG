@@ -24,6 +24,11 @@ import {
     去掉字符级兜底 "" 与逗号；换行以键盘转义 \n 形式展示与编辑） */
 const DEFAULT_DELIMITERS = ['\n\n', '\n', '。', '；'];
 
+/** 句末标点候选（与后端 chunking.common._END_PUNCT_CHARS 一致）：只有标题末尾是
+    这些符号时才受白名单裁决。冒号/顿号/右括号等是标题的正常组成部分（"注："、
+    "1）xx"、"一、总则" 都是真标题），不在候选之列、也不受白名单管辖 */
+const END_PUNCT_CANDIDATES = ['？', '！', '…', '。', '；', '?', '!', '.', ';'];
+
 /** 分隔符展示转义：真实换行 → 字面 \n（键盘可输入形式）；编辑输入时反向 */
 const displayDelimiter = (d: string): string => d.replace(/\n/g, '\\n');
 const parseDelimiterInput = (s: string): string => s.replace(/\\n/g, '\n');
@@ -46,6 +51,10 @@ interface ParseConfigFormValues {
   /** 通用切块（naive）的自定义分隔符列表：完整替代默认集（删默认项=不参与）；
     仅当前解析文档生效（存 parser_config.delimiter） */
   delimiter: string[];
+  /** 标题末尾标点白名单：末尾是句末标点时须在名单内才认作标题（防解析器把
+    正文句/表格文本/列表项标成标题）；空 = 用全局配置。仅当前解析文档生效
+    （存 parser_config.heading_end_punct_whitelist），**跨切块方式通用** */
+  heading_end_punct_whitelist: string[];
   split_level: number;
   regex_pattern: string;
   parent_chunk_size: number;
@@ -284,6 +293,14 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         method: initMethod,
         chunk_size: toNumber(cfg.chunk_size, isParentChild ? 512 : 800),
         overlap: toNumber(cfg.overlap, isParentChild ? 50 : 100),
+        // 标题末尾标点白名单：文档已存（重解析沿用）→ 用它；未存 → 用**全局配置**
+        // 值（用户看到的就是实际生效的那份，不留"空着但其实是默认"的悬念）。
+        // 跨切块方式通用，故不在 method 分支里
+        heading_end_punct_whitelist:
+          Array.isArray(cfg.heading_end_punct_whitelist)
+            ? cfg.heading_end_punct_whitelist.filter(
+                (d: unknown) => typeof d === 'string')
+            : (defaults?.heading_end_punct_whitelist ?? []),
         // 分隔符回填：列表原样；旧字符串值转单元素列表；缺失用默认集
         delimiter: Array.isArray(cfg.delimiter)
           ? cfg.delimiter.filter((d: unknown) => typeof d === 'string' && d !== '')
@@ -459,6 +476,14 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       if (values.parse_mode !== 'DocxStruct') {
         config.layout_recognize = values.parse_mode;
       }
+    }
+    // 标题末尾标点白名单（**跨切块方式通用**，故不在 method 分支里）：与全局配置
+    // 不同才提交——不提交 = 切块时用全局配置（全局改了能跟着变）；提交 = 存进
+    // 本文档 parser_config，重解析沿用。删空也提交（空数组是有效值 = 回退默认）
+    const whitelist = (values.heading_end_punct_whitelist ?? []).filter(Boolean);
+    const whitelistGlobal = defaults?.heading_end_punct_whitelist ?? [];
+    if (JSON.stringify(whitelist) !== JSON.stringify(whitelistGlobal)) {
+      config.heading_end_punct_whitelist = whitelist;
     }
     if (values.method === 'title') config.split_level = values.split_level;
     if (values.method === 'regex') config.regex_pattern = values.regex_pattern;
@@ -911,6 +936,20 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           </Form.Item>
         )}
 
+        {/* 标题末尾标点白名单：**跨切块方式通用**（故不在 method 条件里，放分隔符之后）。
+            挡的是解析器把正文句/表格单元格文本/列表项标成标题的误判——那类伪标题
+            进目录树会把真实章节链整段弹空。默认显示全局配置值；改动仅当前解析文档
+            生效（存 parser_config），「重置为全局」可一键还原 */}
+        <Form.Item
+          name="heading_end_punct_whitelist"
+          label="标题末尾标点白名单"
+          tooltip="标题末尾若是句末标点（。？！；… 及半角），须在名单内才认作标题；冒号、顿号、右括号等不受本名单管辖。默认取全局配置，改动仅当前解析文档生效"
+        >
+          <EndPunctWhitelistControl
+            globalDefault={defaults?.heading_end_punct_whitelist}
+          />
+        </Form.Item>
+
         {/* 包含父标题（A1）：切块后处理——为不含标题的块拼接前缀标题路径，与解析引擎/
             版面识别/文档格式无关，统一显示于切块参数区（不随版面识别隐藏）；
             qa/agentic 同样生效（块内保留标题路径） */}
@@ -1112,6 +1151,83 @@ const DelimiterControl: React.FC<{
         />
         <Button onClick={addDelimiter}>添加</Button>
         <Button onClick={() => setList(DEFAULT_DELIMITERS.slice())}>重置默认</Button>
+      </Space.Compact>
+    </Space>
+  );
+};
+
+/** 标题末尾标点白名单受控控件（Form.Item name="heading_end_punct_whitelist" 注入
+    value/onChange；Tag 可删 + 输入添加 + 重置为全局配置值）。
+
+    与切割分隔符控件的差别：①条目须为**单个字符**（后端同校验）；②"重置"目标是
+    **全局配置**而非硬编码默认；③允许删空——空 = 用全局配置（后端 condition=not_none
+    + 运行时回退默认，而非"什么都不认"） */
+const EndPunctWhitelistControl: React.FC<{
+  value?: string[];
+  onChange?: (v: string[]) => void;
+  /** 全局配置值：「重置」回到它 */
+  globalDefault?: string[];
+}> = ({ value, onChange, globalDefault }) => {
+  const items: string[] = value ?? [];
+  const globalList = globalDefault ?? [];
+  const [input, setInput] = useState('');
+
+  const setList = (list: string[]) => {
+    // 去重 + 只留单字符（Array.from 按码点切，避免把代理对拆坏）
+    const cleaned = list.filter(
+      (d, i) => d !== '' && Array.from(d).length === 1 && list.indexOf(d) === i);
+    onChange?.(cleaned);
+  };
+  const addItem = () => {
+    const ch = Array.from(input.trim())[0];
+    if (ch) {
+      setList([...items, ch]);
+      setInput('');
+    }
+  };
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      {/* 候选标点一览：已选=实心可删，未选=虚线点击即加（标点不好手打，
+          直接点比敲键盘省事；候选外的自定义符号走下面的输入框） */}
+      <Space wrap size={[4, 4]}>
+        {END_PUNCT_CANDIDATES.map(c => {
+          const on = items.includes(c);
+          return (
+            <Tag
+              key={c}
+              closable={on}
+              onClose={on ? () => setList(items.filter(x => x !== c)) : undefined}
+              onClick={on ? undefined : () => setList([...items, c])}
+              style={on
+                ? undefined
+                : { borderStyle: 'dashed', opacity: 0.55, cursor: 'pointer' }}
+            >
+              {c}
+            </Tag>
+          );
+        })}
+        {/* 候选外的自定义项（输入框添加的），一并展示且可删 */}
+        {items.filter(c => !END_PUNCT_CANDIDATES.includes(c)).map(c => (
+          <Tag key={c} closable onClose={() => setList(items.filter(x => x !== c))}>
+            {c}
+          </Tag>
+        ))}
+      </Space>
+      {items.length === 0 && (
+        <span style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary)' }}>
+          （空 = 用全局配置）
+        </span>
+      )}
+      <Space.Compact style={{ width: '100%' }}>
+        <Input
+          placeholder="添加候选外的符号（单个字符）"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onPressEnter={addItem}
+        />
+        <Button onClick={addItem}>添加</Button>
+        <Button onClick={() => setList(globalList.slice())}>重置为全局</Button>
       </Space.Compact>
     </Space>
   );

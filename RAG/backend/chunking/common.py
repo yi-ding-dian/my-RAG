@@ -131,6 +131,49 @@ _PLAIN_HEADING_MAX_POS = 2
 # 句末标点：标题几乎不含；含之的多半是"第三章规定了…。"这类引用章节号的正文句
 _SENTENCE_PUNCT = "。！？；"
 
+# ---- 标题末尾标点白名单（配置档案可改，见 config.ChunkingConfig）----
+# 管辖范围：只有**末尾落在这些字符里**才受白名单裁决（"句末标点"）。
+#   - 中文 。？！；… + 半角 .?!;
+#   - **不含冒号/顿号/逗号**：它们是标题的正常组成部分（实测真实文档里
+#     "注："、"第二步：" 都是真标题，"一、总则" 的顿号在行内），纳入管辖会大面积误杀。
+_END_PUNCT_CHARS = "。？！；…" + ".?!;"
+# 默认白名单：GB/T 15834—2011《标点符号用法》——"文章标题的末尾通常不用标点
+# 符号，但有时根据需要**可用问号、叹号或省略号**"（含半角形式）。
+_DEFAULT_END_PUNCT_WHITELIST = ("？", "！", "…", "?", "!")
+
+
+def resolve_end_punct_whitelist(whitelist=None) -> frozenset:
+    """标题末尾标点白名单：显式传入优先；否则读当前激活配置，回退默认值
+
+    空列表**回退默认值**，而非"什么都不认"——后者会让所有问句标题（"什么是 X？"）
+    一夜之间全部消失。运行时读取，改配置后重新入库即生效。
+    """
+    if whitelist is not None:
+        return (frozenset(whitelist) if whitelist
+                else frozenset(_DEFAULT_END_PUNCT_WHITELIST))
+    try:
+        from backend.config import get_active_config
+        configured = get_active_config().chunking.heading_end_punct_whitelist
+        if configured:
+            return frozenset(configured)
+    except Exception:  # 配置不可用（导入期/单测）→ 用默认
+        pass
+    return frozenset(_DEFAULT_END_PUNCT_WHITELIST)
+
+
+def passes_end_punct(title: str, whitelist=None) -> bool:
+    """标题末尾标点判定：末尾不是句末标点 → 通过；是 → 须在白名单里
+
+    **只看最后一个字符**：多标点连用（"…生效！！"、"真的吗？？"）取末尾那个。
+    非句末标点（普通字、右括号、冒号、顿号…）一律不受管辖。
+    """
+    t = (title or "").rstrip()
+    if not t:
+        return True
+    if t[-1] not in _END_PUNCT_CHARS:
+        return True  # 非句末标点：白名单不管
+    return t[-1] in resolve_end_punct_whitelist(whitelist)
+
 
 def _prev_nonblank(lines: List[str], i: int) -> Optional[int]:
     """从下标 i 起向上找第一个非空行（无则 None）"""
@@ -182,7 +225,9 @@ def _is_plain_numbered_heading(lines: List[str], i: int, s: str,
 
 def _iter_headings(text: str,
                    protected: List[Tuple[int, int]] | None = None,
-                   heading_systems: List[str] | None = None) -> List[Tuple[int, int, str]]:
+                   heading_systems: List[str] | None = None,
+                   end_punct_whitelist: List[str] | None = None,
+                   ) -> List[Tuple[int, int, str]]:
     """统一标题识别（title 切块）：ATX # 标题 + 纯文本常见标题样式
 
     返回 [(标题行起始偏移, 级别, 标题文本)]，按位置升序。级别映射
@@ -206,9 +251,19 @@ def _iter_headings(text: str,
     真实层级藏在编号里（如"一、"=章、"1.1"=节、"1.1.1"=小节）；编号未命中
     或未提供体系时回退 # 数量（既有行为）。
 
+    end_punct_whitelist（可选，标题末尾标点白名单）：
+    标题末尾的句末标点须落在此列表内；None = 读当前激活配置（配置为空回退
+    默认值，见 resolve_end_punct_whitelist）。
+
     防误判：
     - 纯符号行（单独一行 ======== / ------ 装饰线）不是标题内容；
     - 表格/代码块保护区间内的行不是标题（protected 过滤）；
+    - 标题末尾若是**句末标点**（。？！；… 及半角 .?!;），须落在**末尾标点白名单**
+      内才认（默认取国标列举的问号/叹号/省略号，配置档案可改，见 passes_end_punct）——
+      挡的是解析器把正文句、表格单元格文本或列表项标成标题的误判（实测某检测方案里
+      表格单元格"电气设备如有异常则在图元标注黄色背景。"被标成 `##`，进目录树后把
+      真实章节链整段弹空，后续章节全部挂错父级）。非句末标点（右括号、冒号、顿号…）
+      **不受白名单管辖**；
     - setext 内容行不以 < 开头（XML/HTML 标签行，如 '<Breaker::湖北>'）、
       不以 | 开头（表格行）、不以 :/：结尾（字段定义/程序输出标签行，
       以冒号结尾的行）、非纯符号、<=50 字符；
@@ -264,8 +319,11 @@ def _iter_headings(text: str,
                         title, level = s, 1
                     elif _SETEXT_DASH_RE.match(lines[i + 1]):
                         title, level = s, 2
-        if title and (not protected
-                      or not any(ps < start < pe for ps, pe in protected)):
+        # 统一出口判定：所有识别路径共用同一把尺子——标题末尾的句末标点
+        # 必须在白名单内（非句末标点不受管辖，见 passes_end_punct）
+        if (title and passes_end_punct(title, end_punct_whitelist)
+                and (not protected
+                     or not any(ps < start < pe for ps, pe in protected))):
             raw.append((start, level, title, sys_pos))
 
     # 第二遍：编号位置归一化（文档内实际用到的位置 → 1..N，保持相对顺序）
@@ -492,7 +550,9 @@ def _filter_continuous_headings(text: str, bounds: List[int],
 
 
 def add_heading_paths(chunks: List["Chunk"], text: str,
-                      heading_systems: List[str] | None = None) -> List["Chunk"]:
+                      heading_systems: List[str] | None = None,
+                      end_punct_whitelist: List[str] | None = None
+                      ) -> List["Chunk"]:
     """切块后处理：为块拼接其标题链（enable_heading_in_content）
 
     - 从原文标题树（_iter_headings 识别 + 位置）为每个块找 char_start 之前
@@ -511,7 +571,8 @@ def add_heading_paths(chunks: List["Chunk"], text: str,
     #    新标题入栈前弹出所有 level >= 自身 的标题（保证链按层级递增）；
     #    表格/代码块保护区间内的 # 行是内容不是标题，不参与标题链
     protected = find_protected_ranges(text)
-    headings = _iter_headings(text, protected, heading_systems)
+    headings = _iter_headings(text, protected, heading_systems,
+                              end_punct_whitelist)
     chains: List[Tuple[int, List[str]]] = []  # (标题行偏移, 链标题列表)
     stack: List[Tuple[int, str]] = []         # (level, 标题文本)
     for off, level, title in headings:

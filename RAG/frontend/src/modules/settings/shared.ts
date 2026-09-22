@@ -20,6 +20,12 @@ export const PRE_STYLE: CSSProperties = {
   background: '#fafafa',
 };
 
+/** 标题末尾标点白名单默认值（国标 GB/T 15834—2011：标题末尾可用问号、叹号、
+    省略号）。后端对旧档案不补该字段（守 coerce 契约），前端用它兜底展示——
+    用户看到的就是实际生效的那份；与后端 chunking.common._DEFAULT_END_PUNCT_WHITELIST
+    保持一致，改一处要同步另一处 */
+export const HEADING_END_PUNCT_DEFAULT = ['？', '！', '…', '?', '!'];
+
 /** 配置域快捷导航定义（方案 A）：标题 + 当前值摘要 + 对应编辑折叠 key */
 export const DOMAIN_CARDS: Array<{
   key: string;
@@ -208,6 +214,8 @@ export interface ProfileFormValues {
   chunk_overlap: number;
   /** 标题分层模型（可选，空串=不做 LLM 分层）：值 = 模型列表里的标识 */
   heading_llm_model: string;
+  /** 标题末尾标点白名单：末尾是句末标点时须在名单内才认作标题；空 = 回退国标默认 */
+  heading_end_punct_whitelist: string[];
   contextual_retrieval_max_full_doc_chars: number;
   ingestion_concurrency: number;
   ingestion_kb_doc_limit: number;
@@ -298,6 +306,8 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
     chunk_size: vals.chunk_size, overlap: vals.chunk_overlap,
     // 空串 = 不做 LLM 分层（后端 on_null=restore 语义允许清空已配置项）
     heading_llm_model: vals.heading_llm_model || '',
+    // 空数组 = 回退国标默认（后端 condition=not_none，空数组是有效值）
+    heading_end_punct_whitelist: vals.heading_end_punct_whitelist,
   },
   contextual_retrieval: {
     max_full_doc_chars: vals.contextual_retrieval_max_full_doc_chars,
@@ -390,6 +400,8 @@ export const toFormValues = (p: ServiceProfile) => ({
   chunk_size: p.chunking?.chunk_size,
   chunk_overlap: p.chunking?.overlap,
   heading_llm_model: p.chunking?.heading_llm_model ?? '',
+  heading_end_punct_whitelist: p.chunking?.heading_end_punct_whitelist
+    ?? HEADING_END_PUNCT_DEFAULT,
   contextual_retrieval_max_full_doc_chars:
     p.contextual_retrieval?.max_full_doc_chars ?? 20000,
   ingestion_concurrency: p.ingestion?.concurrency ?? 3,

@@ -323,6 +323,12 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                         "cast": "int", "condition": "not_none"},
             "heading_llm_model": {"strip": True, "condition": "not_none",
                                   "on_null": "restore"},
+            # 标题末尾标点白名单：**空列表是有效值**（= 回退国标默认），
+            # 故用 not_none 而非默认的 truthy——否则用户清空保存后旧值会残留。
+            # 不加 fill_missing：守 coerce 对旧档案不补字段的既有契约
+            # （同 heading_llm_model）；前端按默认值兜底展示，用户看到的
+            # 仍是实际生效的那份
+            "heading_end_punct_whitelist": {"condition": "not_none"},
         }),
     # 上下文检索增强（入库切块后处理专用配置）：完整文档视角阈值
     # （max_full_doc_chars，默认 20000）。仅档案 CRUD（超管）可配，不进

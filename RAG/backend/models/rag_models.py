@@ -132,6 +132,7 @@ class IngestRequest(BaseModel):
     chunk_size: Optional[int] = Field(None, description="块大小（字符数，默认取活跃配置）")
     overlap: Optional[int] = Field(None, description="重叠字符数（默认取活跃配置）")
     delimiter: Optional[Union[str, List[str]]] = Field(None, description="仅 naive 用，分隔符（字符串或列表，可选）")
+    heading_end_punct_whitelist: Optional[List[str]] = Field(None, description="标题末尾标点白名单：末尾是句末标点（。？！；… 及半角）时须在名单内才认作标题，防解析器把正文句/表格文本/列表项标成标题；跨切块方式通用（title/parent_child/hierarchical），仅当前解析文档生效（存 parser_config），不传=用全局配置")
     split_level: Optional[int] = Field(None, description="仅 title 用，标题层级 1-3")
     regex_pattern: Optional[str] = Field(None, description="仅 regex 用，正则表达式")
     parent_chunk_size: Optional[int] = Field(None, description="仅 parent_child 用，父块大小（字符数，默认 1024）")

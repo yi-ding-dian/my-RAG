@@ -130,7 +130,8 @@ class HierarchicalChunker:
                  chapter_level: int = 1,
                  add_heading_path: bool = True,
                  heading_levels: List[int] | None = None,
-                 heading_systems: List[str] | None = None):
+                 heading_systems: List[str] | None = None,
+                 heading_end_punct_whitelist: List[str] | None = None):
         cfg = get_active_config().chunking
         self.chunk_size = chunk_size if chunk_size is not None else cfg.chunk_size
         self.overlap = overlap if overlap is not None else cfg.chunk_overlap
@@ -149,6 +150,8 @@ class HierarchicalChunker:
         # 不接这一步时全 ## 文档在 _groups 里找不到章级标题，会退化成
         # "整篇一个聚合组"，章与章之间被贪心装箱合并（见类 docstring 第 7 点）
         self.heading_systems = heading_systems or []
+        # 标题末尾标点白名单（本文档覆盖全局；None = 用全局配置，见 common）
+        self.heading_end_punct_whitelist = heading_end_punct_whitelist
         # 表格/代码块/图片引用保护区间（每次 chunk 按当前文本重算；
         # 与 RecursiveChunker 同样挂在实例上，便于各辅助方法直接取用）
         self.protected_ranges: List[Tuple[int, int]] = []
@@ -202,7 +205,8 @@ class HierarchicalChunker:
         # 标题 = [(偏移, 级别, 文本)]：heading_systems 提供时按编号推断真实层级
         # （MinerU 全 ## 扁平输出），否则回退 # 数量（既有行为）
         headings = _iter_headings(text, self.protected_ranges,
-                                  self.heading_systems)
+                                  self.heading_systems,
+                                  self.heading_end_punct_whitelist)
         self._heading_starts = {off for off, _lvl, _t in headings}
         self._heading_starts_sorted = sorted(self._heading_starts)
         root = self._build_tree(text, self._tree_headings(headings))

@@ -137,13 +137,14 @@ class TestWhitelistFromSchema:
         """部门合并函数用的白名单 == schema whitelist 标记"""
         assert set(ss.CHAT_FIELD_NAMES) == {
             "temperature", "top_p", "max_tokens", "enable_multi_turn",
-            "history_rounds", "system_prompt", "kg_enhance",
+            "history_rounds", "system_prompt", "system_prompt_ref",
+            "kg_enhance",
             "query_rewrite", "query_rewrite_rounds", "thinking_mode",
             "citation_snippet_chars"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
         assert set(ss.LLM_FIELD_NAMES) == {
-            "base_url", "api_key", "model", "temperature",
+            "base_url", "api_key", "model", "temperature", "top_p",
             "max_tokens", "timeout", "thinking_control"}
         # 白名单字段必在 schema 且 whitelist=True（无手写漂移）
         for fname in ss.CHAT_FIELD_NAMES:
@@ -196,10 +197,11 @@ class TestCoerceBehavior:
             "rerank": {"enabled": False, "base_url": "", "model": "",
                        "api_key": "", "top_n": 10},
         }
-        # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + kg_enhance=True
-        # + thinking_mode="disabled" + query_rewrite=True + query_rewrite_rounds=3
-        # （历史契约：不补全段）
+        # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + system_prompt_ref=""
+        # + kg_enhance=True + thinking_mode="disabled" + query_rewrite=True
+        # + query_rewrite_rounds=3（历史契约：不补全段）
         assert out["chat"] == {"system_prompt": "",
+                               "system_prompt_ref": "",
                                "kg_enhance": build_default_config().chat.kg_enhance,
                                "thinking_mode": "disabled",
                                "query_rewrite": True,
