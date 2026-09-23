@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Empty, Radio, Space, Tag, Tooltip, Typography, theme } from 'antd';
+import { Alert, Button, Empty, Radio, Space, Tag, Tooltip, Typography } from 'antd';
 import {
   CheckOutlined,
   DeleteOutlined,
@@ -8,8 +8,36 @@ import {
   PlusOutlined,
 } from '@ant-design/icons';
 import type { LLMModelItem } from '../../shared/api/client';
+import type { ThinkingControl } from '../../shared/api/types';
+import ModelParamTooltip from './ModelParamTooltip';
+import type { ParamRow } from './ModelParamTooltip';
 
 const { Text } = Typography;
+
+/** 思考控制方式在卡片上的短名：与卡片标签同词，避免同一件事两套叫法 */
+const THINKING_LABEL: Record<ThinkingControl, string> = {
+  none: '不处理思考',
+  prefill: '注入 prefill 关思考',
+  api: 'API 参数关思考',
+};
+
+/** 信息行的一行文字：地址 + Key + 全部生成参数（放不下由 CSS 截断，悬浮看全） */
+const paramsText = (m: LLMModelItem) =>
+  `${m.base_url}　Key: ${m.api_key || '-'}　` +
+  `Temperature ${m.temperature} · Top P ${m.top_p ?? 0.9} · ` +
+  `Max Tokens ${m.max_tokens} · 超时 ${m.timeout}s · ` +
+  `${THINKING_LABEL[m.thinking_control ?? 'none']}`;
+
+/** 悬浮时的完整参数表（地址 / Key 一并列出：截断时它们同样看不全） */
+const paramsRows = (m: LLMModelItem): ParamRow[] => [
+  ['API 地址', <span style={{ wordBreak: 'break-all' }}>{m.base_url}</span>],
+  ['API Key', m.api_key || '-'],
+  ['Temperature', m.temperature],
+  ['Top P', m.top_p ?? 0.9],
+  ['Max Tokens', m.max_tokens],
+  ['超时', `${m.timeout} 秒`],
+  ['思考控制方式', THINKING_LABEL[m.thinking_control ?? 'none']],
+];
 
 /** 面板 props：模型列表状态与操作回调（状态由容器页持有，与表单同源） */
 interface Props {
@@ -23,7 +51,6 @@ interface Props {
 
 /** LLM 对话模型面板（配置档案弹窗）：多模型列表 + 勾选激活 + 增删改 */
 const LlmPanel: React.FC<Props> = ({ llmModels, llmActive, llmTestingIdx, openModelEdit, deleteModel, activateModel }) => {
-  const { token } = theme.useToken();
   return (
     <>
       <Alert
@@ -71,25 +98,19 @@ const LlmPanel: React.FC<Props> = ({ llmModels, llmActive, llmTestingIdx, openMo
                     prefill/api 是"系统会改请求"的标记，值得一眼看到 */}
                 {m.thinking_control === 'prefill' && (
                   <Tooltip title="系统会在请求末尾注入 <think></think> 跳过思考（适用于 Qwen 系本地部署，如 LM Studio）">
-                    <Tag color="geekblue" style={{ fontSize: 11 }}>注入 prefill 关思考</Tag>
+                    <Tag color="geekblue" style={{ fontSize: 11 }}>{THINKING_LABEL.prefill}</Tag>
                   </Tooltip>
                 )}
                 {m.thinking_control === 'api' && (
                   <Tooltip title="系统会传 thinking 参数关闭思考（适用于 DeepSeek 等支持该参数的在线 API）">
-                    <Tag color="geekblue" style={{ fontSize: 11 }}>API 参数关思考</Tag>
+                    <Tag color="geekblue" style={{ fontSize: 11 }}>{THINKING_LABEL.api}</Tag>
                   </Tooltip>
                 )}
                 {llmTestingIdx === i && (
                   <Tag icon={<LoadingOutlined spin />} color="processing">测试中</Tag>
                 )}
               </Space>
-              <div style={{
-                fontSize: 12, color: token.colorTextTertiary,
-                overflow: 'hidden', textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {m.base_url}　Key: {m.api_key || '-'}
-              </div>
+              <ModelParamTooltip rows={paramsRows(m)} text={paramsText(m)} />
             </div>
             <Space size="small">
               <Button size="small" icon={<EditOutlined />}

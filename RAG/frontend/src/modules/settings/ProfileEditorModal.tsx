@@ -614,7 +614,7 @@ const ProfileEditorModal: React.FC<{
                                           全文看「查看详情」 */}
                                       <Input.TextArea
                                         rows={3}
-                                        placeholder="可含 {knowledge} / {refs} 占位符"
+                                        placeholder="可含 {refs} 占位符"
                                       />
                                     </Form.Item>
                                   </div>

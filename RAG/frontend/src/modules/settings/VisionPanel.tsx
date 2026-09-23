@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Button, Empty, Radio, Space, Tag, Tooltip, Typography, theme } from 'antd';
+import { Alert, Button, Empty, Radio, Space, Tag, Tooltip, Typography } from 'antd';
 import {
   CheckOutlined,
   DeleteOutlined,
@@ -8,8 +8,21 @@ import {
   PlusOutlined,
 } from '@ant-design/icons';
 import type { VisionModelItem } from '../../shared/api/types';
+import ModelParamTooltip from './ModelParamTooltip';
+import type { ParamRow } from './ModelParamTooltip';
 
 const { Text } = Typography;
+
+/** 信息行的一行文字：地址 + Key + 超时（放不下由 CSS 截断，悬浮看全） */
+const paramsText = (m: VisionModelItem) =>
+  `${m.base_url}　Key: ${m.api_key || '-'}　超时 ${m.timeout}s`;
+
+/** 悬浮时的完整参数表（地址 / Key 一并列出：截断时它们同样看不全） */
+const paramsRows = (m: VisionModelItem): ParamRow[] => [
+  ['API 地址', <span style={{ wordBreak: 'break-all' }}>{m.base_url}</span>],
+  ['API Key', m.api_key || '-'],
+  ['超时', `${m.timeout} 秒`],
+];
 
 /** 面板 props：模型列表状态与操作回调（状态由容器页持有，与表单同源） */
 interface Props {
@@ -29,7 +42,6 @@ interface Props {
  * 「部门配置」里选具体用哪个，超管在这里定推荐项。
  */
 const VisionPanel: React.FC<Props> = ({ visionModels, visionActive, visionTestingIdx, openModelEdit, deleteModel, activateModel }) => {
-  const { token } = theme.useToken();
   return (
     <>
       <Alert
@@ -77,13 +89,7 @@ const VisionPanel: React.FC<Props> = ({ visionModels, visionActive, visionTestin
                   <Tag icon={<LoadingOutlined spin />} color="processing">测试中</Tag>
                 )}
               </Space>
-              <div style={{
-                fontSize: 12, color: token.colorTextTertiary,
-                overflow: 'hidden', textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {m.base_url}　Key: {m.api_key || '-'}
-              </div>
+              <ModelParamTooltip rows={paramsRows(m)} text={paramsText(m)} />
             </div>
             <Space size="small">
               <Button size="small" icon={<EditOutlined />}

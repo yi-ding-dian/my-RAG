@@ -187,8 +187,9 @@ class LLMConfig(BaseModel):
         - dict 可能含 LLMConfig 没有的扩展字段（部门合并产物/模型列表条目）
           → 只取已知字段，忽略未知
         - base_url/api_key/model 缺省或 None → ""（客户端构造语义与裸 dict
-          的 .get(key, "") 一致）；temperature/max_tokens/timeout 缺省或
-          None/0 → 出厂默认（0.3/4096/60，与历史 `float(x or 60)` 兜底一致）
+          的 .get(key, "") 一致）；temperature 缺省或 None → 0.3（**0 是合法值**，
+          不能用 `or` 兜底——要完全确定性输出就该写 0）；max_tokens/timeout
+          缺省或 None/0 → 出厂默认（4096/60，与历史 `float(x or 60)` 兜底一致）
         - thinking_control 缺省/空 → "none"（旧配置升级后不误注入）
         - None/空 dict 输入 → 出厂默认（防御脏数据）
         """
@@ -197,12 +198,14 @@ class LLMConfig(BaseModel):
             base_url=data.get("base_url") or "",
             api_key=data.get("api_key") or "",
             model=data.get("model") or "",
-            temperature=float(data.get("temperature") or 0.3),
+            temperature=(float(data["temperature"])
+                         if data.get("temperature") not in (None, "") else 0.3),
             max_tokens=int(data.get("max_tokens") or 4096),
             timeout=float(data.get("timeout") or 60.0),
-            # 注意不能用 `or`：0 是合法的 top_p（只取最高概率 token）
+            # 同 temperature：不能用 `or`——0 是合法取值（只取最高概率 token）；
+            # 只有 None / 空串才回落默认（表单清空后提交的是空串，不是 None）
             top_p=(float(data["top_p"])
-                   if data.get("top_p") is not None else 0.9),
+                   if data.get("top_p") not in (None, "") else 0.9),
             thinking_control=data.get("thinking_control") or "none",
         )
 

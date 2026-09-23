@@ -23,7 +23,16 @@ const { TextArea } = Input;
 
 // 内置默认系统提示词概要（占位提示；完整模板在后端 chat_service._SYSTEM_PROMPT_TEMPLATE）
 const DEFAULT_SYSTEM_PROMPT_SUMMARY =
-  '留空使用系统默认提示词（只依据 [引用] 回答、句末用 [n] 标注来源、无相关内容时明确说明、简洁准确中文回答）；可包含 {knowledge} 占位符（检索原文逐字注入，无来源包装，适合要求逐字输出原文的场景）或 {refs}（带来源标注的引用内容）';
+  '留空使用系统默认提示词（只依据 [引用] 回答、句末用 [n] 标注来源、无相关内容时明确说明、简洁准确中文回答）；可包含 {refs} 占位符（带来源标注的引用内容）';
+
+/**
+ * 「跟随模型默认」的展示文案：带上模型实际的值。
+ *
+ * 只写"跟随"不写跟到多少，用户看不出最终会跑成什么——此前"档案里写 0、
+ * 聊天详情里却是 0.2/0.3"的困惑就是这么来的。
+ */
+const followModelText = (value: number | null | undefined) =>
+  value == null ? '跟随模型默认' : `跟随模型默认（${value}）`;
 
 interface ChatSettingsFormValues {
   // 检索设置
@@ -70,8 +79,19 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // 当前生效的模型默认值（llm 段合并结果）：给「跟随模型默认」标出实际数字
+  const [llmDefaults, setLlmDefaults] = useState<{
+    temperature?: number | null;
+    max_tokens?: number | null;
+  }>({});
   const useDefaultTemperature = Form.useWatch('use_default_temperature', form) ?? true;
   const agenticEnabled = Form.useWatch('agentic_enabled', form) ?? false;
+  // 只读滑块只看得出位置、看不出数值，把当前值一并显示到 label 上
+  const similarityThreshold = Form.useWatch('retrieval_similarity_threshold', form);
+  const chatTemperature = Form.useWatch('chat_temperature', form);
+  const chatTopP = Form.useWatch('chat_top_p', form);
+  const agenticRecheck = Form.useWatch('agentic_recheck_threshold', form);
+  const agenticAbstain = Form.useWatch('agentic_abstain_threshold', form);
 
   // 打开时加载活跃档案聊天设置并回填表单
   useEffect(() => {
@@ -82,8 +102,12 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
     getChatSettings()
       .then(res => {
         if (cancelled) return;
-        const { retrieval, chat, agentic } = res.data;
+        const { retrieval, chat, agentic, llm } = res.data;
         setLoaded(true);
+        setLlmDefaults({
+          temperature: llm?.temperature,
+          max_tokens: llm?.max_tokens,
+        });
         form.setFieldsValue({
           retrieval_similarity_threshold: retrieval?.similarity_threshold ?? 0,
           retrieval_top_k: retrieval?.top_k ?? 5,
@@ -154,10 +178,11 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
               <Col span={12}>
                 <Form.Item
                   name="retrieval_similarity_threshold"
-                  label="相似度阈值"
+                  label={<span>相似度阈值　<b>{Math.round((similarityThreshold ?? 0) * 100)}%</b></span>}
                   extra="低于该阈值的检索片段将被过滤；0=不过滤"
                 >
                   <Slider
+                    className="readonly-slider"
                     min={0}
                     max={1}
                     step={0.05}
@@ -235,10 +260,11 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
                   <Col span={12}>
                     <Form.Item
                       name="agentic_recheck_threshold"
-                      label="直接回答阈值"
+                      label={<span>直接回答阈值　<b>{Math.round((agenticRecheck ?? 0.55) * 100)}%</b></span>}
                       extra="相似度 ≥ 该值直接回答，不改写不重试"
                     >
                       <Slider
+                        className="readonly-slider"
                         min={0}
                         max={1}
                         step={0.05}
@@ -249,11 +275,12 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
                 </Row>
                 <Form.Item
                   name="agentic_abstain_threshold"
-                  label="拒答阈值"
+                  label={<span>拒答阈值　<b>{Math.round((agenticAbstain ?? 0.25) * 100)}%</b></span>}
                   extra="相似度低于该值直接拒答（知识库中无相关内容/乱问），不改写不重试"
                   style={{ marginBottom: 0 }}
                 >
                   <Slider
+                    className="readonly-slider"
                     min={0}
                     max={1}
                     step={0.05}
@@ -304,7 +331,13 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item label="温度" required style={{ marginBottom: 8 }}>
+                <Form.Item
+                  label={<span>温度　<b>{useDefaultTemperature
+                    ? (llmDefaults.temperature ?? '-')
+                    : (chatTemperature ?? 0.7).toFixed(1)}</b></span>}
+                  required
+                  style={{ marginBottom: 8 }}
+                >
                   <Space direction="vertical" style={{ width: '100%' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                       <span style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)' }}>使用默认（跟随模型）</span>
@@ -313,11 +346,13 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
                       </Form.Item>
                     </div>
                     <Form.Item name="chat_temperature" noStyle>
+                      {/* 不传 disabled：传了就成 `disabled={false}`，会盖掉
+                          Form 的 disabled 上下文，滑块反而能拖 */}
                       <Slider
+                        className="readonly-slider"
                         min={0}
                         max={2}
                         step={0.1}
-                        disabled={useDefaultTemperature}
                         tooltip={{ formatter: v => v?.toFixed(1) }}
                       />
                     </Form.Item>
@@ -325,20 +360,27 @@ const ChatSettingsModal: React.FC<ChatSettingsModalProps> = ({ open, onCancel })
                 </Form.Item>
               </Col>
               <Col span={12}>
-                <Form.Item name="chat_top_p" label="Top P" extra="核采样概率（0-1）">
-                  <Slider min={0} max={1} step={0.05} tooltip={{ formatter: v => v?.toFixed(2) }} />
+                <Form.Item
+                  name="chat_top_p"
+                  label={<span>Top P　<b>{(chatTopP ?? 0.9).toFixed(2)}</b></span>}
+                  extra="核采样概率（0-1）"
+                >
+                  <Slider className="readonly-slider"
+                    min={0} max={1} step={0.05} tooltip={{ formatter: v => v?.toFixed(2) }} />
                 </Form.Item>
               </Col>
               <Col span={12}>
                 <Form.Item name="chat_max_tokens" label="最大 Token" extra="留空=跟随模型默认">
-                  <InputNumber min={1} max={128000} placeholder="跟随模型默认" style={{ width: '100%' }} />
+                  <InputNumber min={1} max={128000}
+                    placeholder={followModelText(llmDefaults.max_tokens)}
+                    style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
             </Row>
             <Form.Item
               name="chat_system_prompt"
               label="系统提示词"
-              extra="留空使用系统默认提示词；{knowledge}=检索原文逐字注入（无来源标注，模型可原样输出含图片/表格），{refs}=带来源标注的引用内容；两者可并存；不含任何占位符时自动在末尾追加引用段"
+              extra="留空使用系统默认提示词；{refs}=带来源标注的引用内容；不含该占位符时自动在末尾追加引用段"
               style={{ marginBottom: 8 }}
             >
               <TextArea

@@ -402,7 +402,7 @@ const ExtQueryForm: React.FC<ExtQueryFormProps> = ({
           <Form.Item
             name={['config', 'system_prompt']}
             label="自定义系统提示词"
-            extra="可含 {knowledge} 占位符（检索原文逐字注入）或 {refs}（带来源标注的引用内容）"
+            extra="可含 {refs} 占位符（带来源标注的引用内容）"
           >
             <TextArea rows={4} placeholder="输入这个链接专属的系统提示词…" />
           </Form.Item>

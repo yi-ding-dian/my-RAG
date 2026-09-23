@@ -574,7 +574,7 @@ const DeptConfig: React.FC = () => {
           </Form.Item>
           {chatPromptRef === CUSTOM_PROMPT && (
             <Form.Item name="chat_system_prompt" label="自定义系统提示词"
-              extra="可含 {knowledge} / {refs} 占位符">
+              extra="可含 {refs} 占位符">
               <TextArea rows={4} placeholder="输入本部门专属的系统提示词…" />
             </Form.Item>
           )}

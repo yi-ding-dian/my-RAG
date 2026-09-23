@@ -212,3 +212,18 @@
   background: #1e2430;
 }
 
+/* ============================================================
+   「聊天设置」弹窗（只读）的滑块：补回主色
+   整个表单是 disabled，滑块会一并变灰——看不出比例停在哪。
+   这里只把 disabled 态的上色改回主色（交互仍被 disabled 拦住，
+   "不能拖动"这件事不变）。
+   !important 必须加：antd 给 disabled 的轨道写了
+   `background-color: rgba(0,0,0,0.04) !important`，不提权压不过。
+   ============================================================ */
+.readonly-slider.ant-slider-disabled .ant-slider-track {
+  background-color: var(--brand-primary, #2563eb) !important;
+}
+.readonly-slider.ant-slider-disabled .ant-slider-handle::after {
+  box-shadow: 0 0 0 2px var(--brand-primary, #2563eb) !important;
+}
+

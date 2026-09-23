@@ -417,24 +417,24 @@ class TestRetrieveContext:
         from backend.models.rag_models import Source
         from backend.services.chat_service import ChatService
         # 无摘要：保持现状（不出现前缀）
-        refs = ChatService._build_refs([
-            Source(id="d_0", text="原文内容", document_name="doc")])
+        refs = asyncio.run(ChatService._build_refs([
+            Source(id="d_0", text="原文内容", document_name="doc")]))
         assert "【上下文】" not in refs
         assert "原文内容" in refs
         # 有摘要：引用文本 = 【上下文】摘要 + 原文
-        refs = ChatService._build_refs([
+        refs = asyncio.run(ChatService._build_refs([
             Source(id="d_0", text="原文内容", context="第二章介绍语法",
-                   document_name="doc")])
+                   document_name="doc")]))
         assert "【上下文】第二章介绍语法\n原文内容" in refs
         # parent_text 场景（父块全文本身无摘要）：补摘要前缀
-        refs = ChatService._build_refs([
+        refs = asyncio.run(ChatService._build_refs([
             Source(id="d_0", text="子块", parent_text="父块全文",
-                   context="第二章介绍语法", document_name="doc")])
+                   context="第二章介绍语法", document_name="doc")]))
         assert "【上下文】第二章介绍语法\n父块全文" in refs
         # text 已含前缀（向量化增强文本）：不重复拼接
-        refs = ChatService._build_refs([
+        refs = asyncio.run(ChatService._build_refs([
             Source(id="d_0", text="【上下文】第二章介绍语法\n原文内容",
-                   context="第二章介绍语法", document_name="doc")])
+                   context="第二章介绍语法", document_name="doc")]))
         assert refs.count("【上下文】") == 1
 
 
