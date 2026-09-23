@@ -476,6 +476,48 @@ class RetrievalService:
 _retrieval_service: RetrievalService | None = None
 
 
+def merge_round_robin(groups: List[List[Source]], top_k: int,
+                      min_per_group: int = 1) -> List[Source]:
+    """多路检索结果**轮流取**（按 id 去重），直到取满 top_k
+
+    复合问题拆成多个子问题后，不能沿用"合并后按 score 全局排序再截断"——
+    排在前面的子问题分数往往更高，会把名额占满，后面的子问题照样进不了
+    prompt（这正是复合问题答不全的根因）。轮流出牌保证每路都有份。
+
+    - 各路内部已按 score 降序（retrieve_multi 保证），所以"第 i 轮取各路第
+      i 条"≈ 各路取自己的第 i 高分，路与路之间公平
+    - 按 source.id 去重：不同子问题可能命中同一片段
+    - min_per_group：每路**保底**进这么多条（先于 top_k 满足）。实测同一路
+      的第 1 条未必含答案、第 2~3 条才含（"海洋科技科研机构"那题要到第 3 条
+      才出现"珠海海洋工程研究院"），严格轮流会让每路只进 1 条、照样答不全。
+      保底会让总数略微超过 top_k，多出的部分由 prompt token 预算兜底。
+    """
+    # top_k=None 表示"用活跃配置的 retrieval.top_k"，与 retrieve_multi 同口径
+    top_k = top_k or get_active_config().retrieval.top_k
+    out: List[Source] = []
+    seen = set()
+
+    def _take(s: Source) -> bool:
+        if s.id in seen:
+            return False
+        seen.add(s.id)
+        out.append(s)
+        return True
+
+    # 第一轮：每路保底（不受 top_k 限制，保底优先）
+    for g in groups:
+        for s in g[:max(min_per_group, 0)]:
+            _take(s)
+    # 之后：轮流出牌补齐到 top_k
+    idx = max(min_per_group, 0)
+    while len(out) < top_k and any(idx < len(g) for g in groups):
+        for g in groups:
+            if idx < len(g) and len(out) < top_k:
+                _take(g[idx])
+        idx += 1
+    return out
+
+
 def get_retrieval_service() -> RetrievalService:
     global _retrieval_service
     if _retrieval_service is None:

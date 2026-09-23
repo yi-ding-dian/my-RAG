@@ -658,11 +658,9 @@ const ChatPage: React.FC = () => {
                 value={topK}
                 onChange={setTopK}
                 style={{ width: 90 }}
-                options={[
-                  { value: 3, label: '3' },
-                  { value: 5, label: '5' },
-                  { value: 10, label: '10' },
-                ]}
+                options={[5, 6, 7, 8, 9, 10].map(v => ({
+                  value: v, label: String(v),
+                }))}
               />
             </>
           )}

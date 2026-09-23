@@ -40,7 +40,8 @@ from backend.services.llm_client import get_llm_client, llm_to_dict
 from backend.services.agentic_service import get_agentic_service
 from backend.services.query_rewriter import rewrite_query
 from backend.services.retrieval_service import (RetrievalUnavailableError,
-                                                get_retrieval_service)
+                                                get_retrieval_service,
+                                                merge_round_robin)
 from backend.services.token_counter import count_tokens, truncate_to_tokens
 from backend.services.settings.service import (merge_chat_config,
                                                merge_department_llm)
@@ -486,6 +487,11 @@ class ChatService:
                 if len(kb_ids) > 1
                 else build_kg_source(kb_ids[0], message, kg_enabled))
 
+            # 复合问题拆解同样先起任务并行跑（启发式不通过时直接返回单条，
+            # 连 LLM 都不调）。散会点在第 2 步之后——拆出的子问题要各自检索。
+            from backend.services.query_rewriter import split_query
+            split_task = asyncio.create_task(split_query(search_query))
+
             # 检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
             t_retrieval = time.perf_counter()
             try:
@@ -517,17 +523,48 @@ class ChatService:
                 # 系统级故障（Embedding 服务不可用等）：打 fault 标记点亮红绿灯；
                 # warning 不透传堆栈，用户消息语义与历史一致（原样透传）
                 log.system_error("检索服务不可用: %s", e)
-                kg_task.cancel()  # 早退：并行的图谱任务不能留着空跑
+                kg_task.cancel()  # 早退：并行的图谱/拆分任务不能留着空跑
+                split_task.cancel()
                 yield sse_event("error", {"message": str(e)})
                 return
             except Exception as e:
                 # 兜底（未知异常）：不记堆栈，信息保留
                 log.system_error("检索失败: %s", e)
                 kg_task.cancel()
+                split_task.cancel()
                 yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
 
-            # 2) 知识图谱增强通道（与普通检索并行注入：LLM 抽实体 → 图谱匹配
+            # 2) 复合问题拆分落地：拆出多问时各子问题**并行**检索，再与主检索
+            #    结果轮流合并。不这么做的后果：top_k 被前一个问题占满，后一问
+            #    的原文挤不进 prompt，模型只能拿前面的材料硬编（实测"X 是什么，
+            #    并且 Y 怎样"这类题后半段普遍答不全）。
+            #    拆解失败/只拆出一问 → sub_queries 就是 [原问题]，跳过本段。
+            sub_queries = await split_task
+            if len(sub_queries) > 1:
+                t_split = time.perf_counter()
+                try:
+                    extra = await asyncio.gather(*[
+                        get_retrieval_service().retrieve_multi(
+                            kb_ids, sq, top_k=eff_top_k,
+                            min_score=eff_min_score)
+                        for sq in sub_queries])
+                    # 轮流取：合并后按 score 全局排序会让主检索那路占满名额，
+                    # 等于没拆——轮流出牌 + 每路保底 2 条，保证每问都进得了
+                    # prompt（见 merge_round_robin 注释）
+                    sources = merge_round_robin([sources, *extra], eff_top_k,
+                                                min_per_group=2)
+                    logger.info("问题拆分检索: %d 路 → %d 条",
+                                len(sub_queries) + 1, len(sources))
+                except Exception as e:
+                    # 子问题检索失败：退回主检索结果，绝不影响问答
+                    logger.warning("子问题检索失败，退回单路: %s",
+                                   str(e)[:150], exc_info=True)
+                split_ms = int(round((time.perf_counter() - t_split) * 1000))
+            else:
+                split_ms = 0
+
+            # 知识图谱增强通道（与普通检索并行注入：LLM 抽实体 → 图谱匹配
             #    → 1-hop 邻接扩展 → 组装"知识图谱"来源引用；开关关/无图谱/
             #    失败一律跳过不阻塞查询；不参与 rerank——rerank 只处理检索
             #    服务内的普通候选）
@@ -666,6 +703,8 @@ class ChatService:
                 "prompt": list(messages),
                 "retrieval_ms": retrieval_ms,
                 "kg_ms": kg_ms,
+                # 子问题检索耗时（0 = 未拆分）；含拆解自身的 LLM 等待
+                "split_ms": split_ms,
                 # 查询改写（第 0.5 步）：耗时单独统计（不污染 retrieval_ms），
                 # 改写后的检索词供"请求详情"对照原问题
                 "rewrite_ms": rewrite_ms,

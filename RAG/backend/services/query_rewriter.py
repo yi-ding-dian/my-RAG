@@ -190,3 +190,108 @@ async def rewrite_query(query: str,
         # 兜底（未知异常）：同样原问题降级，信息保留
         logger.warning("查询改写失败，使用原问题检索: %s", str(e)[:150])
         return None
+
+
+# ==================== 复合问题拆分 ====================
+
+# 连接词：出现即"一句话里问了两件事"的强信号
+_COMPLEX_INDICATORS = ("分别", "以及", "同时", "并且", "还有", "另外", "各自")
+# 疑问词：一句话里出现 ≥2 个，同样是复合问题的信号（"哪些…哪些…"）
+_INTERROGATIVES = ("哪些", "哪个", "哪几", "哪一级", "哪一", "什么", "怎么",
+                   "多少", "何时", "何地", "如何")
+# 拆解上限：拆太碎会让每次检索都变浅，得不偿失
+_MAX_SUB_QUERIES = 3
+
+_SPLIT_SYSTEM_PROMPT = (
+    "你是检索问题拆解助手。把用户问题拆成若干**可独立检索**的子问题。\n"
+    "输出要求：每行一个子问题；不要编号、不要解释、不要输出任何其他内容。\n"
+    "判断规则：\n"
+    "- 只问一件事 → 原样输出一行；\n"
+    "- 问多件事（如「X 是什么，并且 Y 怎么样」）→ 每件事拆成一行；\n"
+    "- 每行都要能独立看懂，但**不得增加原文没有的限定词、实体或数字**"
+    "——拆歪比不拆更伤检索。"
+)
+_SPLIT_USER_TEMPLATE = "用户问题：{query}"
+_SPLIT_MAX_TOKENS = 256
+
+
+def _needs_split(query: str) -> bool:
+    """启发式：像"复合问题"才值得花一次 LLM 拆解
+
+    复合问题（"X 是什么，**并且** Y 怎样"）在 top_k 有限时会翻车：检索片段
+    被前一个问题占满，后一问的原文挤不进 prompt，模型只能拿前面的材料硬编。
+
+    但拆解本身要一次 LLM 调用，所以先用便宜的特征挑候选：命中连接词
+    （分别/以及/同时/并且…），或疑问词出现 ≥2 次（"哪些…哪些…"）。
+    **漏判的代价只是退回现状**（不拆、照旧单路检索），不会答得更差——
+    宁可少触发，也别把简单问题拖下水。
+    """
+    if any(w in query for w in _COMPLEX_INDICATORS):
+        return True
+    return sum(query.count(w) for w in _INTERROGATIVES) >= 2
+
+
+def _parse_sub_queries(content: str) -> List[str]:
+    """LLM 输出 → 子问题列表（每行一个；剥编号前缀与引号、去重、限 3 条）"""
+    out: List[str] = []
+    for line in (content or "").splitlines():
+        text = _PREFIX_RE.sub("", line.strip()).strip()
+        text = text.strip('\'"“”‘’「」『』').strip()
+        if text and text not in out:
+            out.append(text[:_REWRITE_LEN_LIMIT])
+        if len(out) >= _MAX_SUB_QUERIES:
+            break
+    return out
+
+
+async def split_query(query: str) -> List[str]:
+    """把复合问题拆成可独立检索的子问题；不满足触发条件/失败 → [原问题]
+
+    返回**恒非空**：调用方用 `len(result) > 1` 判断要不要走多路检索，
+    "拆解失败"与"模型认为只有一件事"共用同一条降级路径（退回单路，
+    行为与改造前完全一致）。
+
+    与 rewrite_query 的关系：改写是"把口语/指代换成正式问句"（仍是**一个**
+    问题），拆解是"把一句话里的多件事分成**多个**问题"。两者独立，可叠加：
+    先改写得出 search_query，再在它基础上拆解。
+    """
+    q = (query or "").strip()
+    if not q or not _needs_split(q):
+        return [q] if q else []
+    llm_cfg = llm_to_dict(get_active_config().llm)
+    cfg_obj = LLMConfig.from_dict(llm_cfg)
+    if not (cfg_obj.base_url and cfg_obj.model):
+        logger.warning("LLM 未配置（base_url/model 为空），跳过问题拆分")
+        return [q]
+    try:
+        client = _get_client(llm_cfg)
+        # 与改写、实体抽取同策略：延迟敏感的短任务，关思考
+        strategy = get_thinking_strategy(llm_cfg, "disabled")
+        payload = {
+            "messages": [
+                {"role": "system", "content": _SPLIT_SYSTEM_PROMPT},
+                {"role": "user",
+                 "content": _SPLIT_USER_TEMPLATE.format(query=q)},
+            ],
+        }
+        strategy.apply(payload)
+        resp = await llm_completion(
+            client, model=cfg_obj.model, messages=payload["messages"],
+            max_tokens=_SPLIT_MAX_TOKENS, temperature=0.1,
+            extra_body=payload.get("extra_body"), timeout=_TIMEOUT,
+        )
+        try:
+            content = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            content = ""
+        subs = _parse_sub_queries(content)
+        if len(subs) <= 1:
+            return [q]  # 模型认为只问了一件事（或没拆出东西）→ 单路
+        logger.info("问题拆分: %r → %s", q[:40], [s[:40] for s in subs])
+        return subs
+    except LLMTimeoutError:
+        logger.warning("问题拆分超时（>%.0fs），单路检索", _TIMEOUT)
+        return [q]
+    except Exception as e:
+        logger.warning("问题拆分失败，单路检索: %s", str(e)[:150])
+        return [q]
