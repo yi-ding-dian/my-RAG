@@ -116,6 +116,35 @@ class TestStream:
         assert isinstance(prompt_data["kg_ms"], int) \
             and prompt_data["kg_ms"] >= 0, "kg_ms 应为非负整数"
 
+    def test_stream_total_ms_first_delta_and_persist(
+            self, client, mock_embedding, mock_llm, admin_headers):
+        """「提问→首字」总耗时：随首条 delta 下发 + 随消息落盘
+
+        回归防护：该值原先只由前端 performance.now() 算、只存内存里——切会话
+        （openSessionById 整体替换 messages）或刷新页面就丢。改为后端首字埋点后，
+        既要"刚问完立刻点详情"能看到（delta 下发），也要历史会话回看得到（落盘）。
+        """
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=admin_headers)
+        text = resp.text
+        blocks = [b for b in text.split("\n\n") if b.startswith("event: delta")]
+        assert len(blocks) >= 2, "mock LLM 应产出多条 delta 增量"
+        first = json.loads(blocks[0].split("data: ", 1)[1].strip())
+        assert isinstance(first.get("total_ms"), int) and first["total_ms"] >= 0, \
+            "首条 delta 应携带 total_ms（请求详情「总耗时」）"
+        for block in blocks[1:]:
+            rest = json.loads(block.split("data: ", 1)[1].strip())
+            assert "total_ms" not in rest, "total_ms 只应随首条 delta 下发"
+        # 落盘：切会话 / 刷新后从会话详情读回，且与下发值一致
+        session_id = extract_session_id(text)
+        detail = client.get(f"/api/chat/history/{session_id}",
+                            headers=admin_headers).json()
+        assert detail["messages"][1]["total_ms"] == first["total_ms"], \
+            "落盘的 total_ms 应与 delta 下发的一致（切会话/刷新后可回看）"
+
     def test_stream_no_hit_without_llm(self, client, mock_embedding,
                                        mock_llm, admin_headers):
         """空库无命中：不调用 LLM，直接提示 + done，不发 prompt 事件"""
@@ -363,3 +392,6 @@ class TestHistory:
                             headers=admin_headers).json()
         assert "未检索到相关内容" in detail["messages"][1]["content"]
         assert detail["messages"][1]["sources"] == []
+        # 未调 LLM 的早退路径同样有首字耗时（用户看到的第一段就是这句提示）
+        assert isinstance(detail["messages"][1]["total_ms"], int), \
+            "无命中路径的 total_ms 也要落盘"

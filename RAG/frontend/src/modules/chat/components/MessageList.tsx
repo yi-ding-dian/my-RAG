@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AppModal from '../../../shared/components/common/AppModal';
 import {
   App as AntApp,
@@ -116,25 +116,9 @@ const CitationMark: React.FC<{
   onClick: (source: Source) => void;
   /** 摘要窗口大小（字）：配置档案「聊天设置 → 引用设置」，默认 600 */
   snippetChars: number;
-}> = ({ n, source, answerText, onClick, snippetChars }) => {
-  const raw = cleanSourceSummary(source.parent_text || source.text || '');
-  const isGraph = source.document_name === '知识图谱';
-  // 先在全量文本上算高亮（位置才准），再围绕首个命中开窗——**不能先截断再算**：
-  // 回答用到的内容常落在块的中后段（表格块的有效数字都在表格下方），从头硬截
-  // 会让命中整段落在窗口外，浮层里一个高亮都标不出来（实测丢图那轮的 5 个引用
-  // 全部如此：命中数字都在 400 字之后）。
-  const fullHighlights = !isGraph && answerText
-    ? computeHighlightRanges(answerText, raw)
-    : [];
-  // 数字标记：回答里出现过的数字在引用里的位置（渲染成方框，便于核对金额）
-  const fullNumbers = !isGraph && answerText
-    ? computeNumberRanges(answerText, raw)
-    : [];
-  const {
-    text: snippet,
-    highlights: snippetHighlights,
-    numbers: snippetNumbers,
-  } = buildSnippet(raw, fullHighlights, snippetChars, fullNumbers);
+  /** 该消息正在流式生成中：跳过 Tooltip 与高亮计算，只渲染上标 */
+  streaming?: boolean;
+}> = ({ n, source, answerText, onClick, snippetChars, streaming }) => {
   // Tooltip 弹层方向：引用标位于视口上部（顶部导航高度内）时改显示在下方，
   // 防止弹层弹出后遮挡页面顶部导航栏（antd 避让只针对视口、不感知导航层）
   const [placement, setPlacement] = useState<'top' | 'bottom'>('top');
@@ -145,6 +129,60 @@ const CitationMark: React.FC<{
       setPlacement(rect.top < 140 ? 'bottom' : 'top');
     }
   };
+
+  // 摘要高亮计算收进 useMemo：原先直接写在渲染路径上，**每次渲染**都要拿回答
+  // 全文重跑一遍匹配（每个引用标各一份），流式时每帧重算是输出"一卡一卡"的主因
+  // 之一。streaming=true 时整段跳过——正在生成的消息每帧都在变，算了立刻作废
+  const summary = useMemo(() => {
+    if (streaming) return null;
+    const raw = cleanSourceSummary(source.parent_text || source.text || '');
+    const isGraph = source.document_name === '知识图谱';
+    // 先在全量文本上算高亮（位置才准），再围绕首个命中开窗——**不能先截断再算**：
+    // 回答用到的内容常落在块的中后段（表格块的有效数字都在表格下方），从头硬截
+    // 会让命中整段落在窗口外，浮层里一个高亮都标不出来（实测丢图那轮的 5 个引用
+    // 全部如此：命中数字都在 400 字之后）。
+    const fullHighlights = !isGraph && answerText
+      ? computeHighlightRanges(answerText, raw)
+      : [];
+    // 数字标记：回答里出现过的数字在引用里的位置（渲染成方框，便于核对金额）
+    const fullNumbers = !isGraph && answerText
+      ? computeNumberRanges(answerText, raw)
+      : [];
+    const built = buildSnippet(raw, fullHighlights, snippetChars, fullNumbers);
+    return {
+      isGraph,
+      snippet: built.text,
+      snippetHighlights: built.highlights,
+      snippetNumbers: built.numbers,
+    };
+  }, [streaming, answerText, source, snippetChars]);
+
+  const mark = (
+    <span
+      ref={markRef}
+      className="citation-mark"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(source);
+      }}
+      style={{
+        fontSize: 12,
+        fontWeight: 700,
+        lineHeight: 1,
+        verticalAlign: 'super',
+        cursor: 'pointer',
+        userSelect: 'none',
+        margin: '0 1px',
+      }}
+    >
+      [{n}]
+    </span>
+  );
+
+  // 流式中直接返回上标本身（不建 Tooltip、不算高亮）；生成结束后 waiting 归 false，
+  // 这条消息重渲染成完整版，悬浮预览照常可用
+  if (!summary) return mark;
+
   return (
     <Tooltip
       placement={placement}
@@ -156,7 +194,7 @@ const CitationMark: React.FC<{
           <div style={{ fontWeight: 600 }}>
             {source.document_name || source.document_id || '未知来源'}
           </div>
-          {snippet && (
+          {summary.snippet && (
             <div
               style={{
                 marginTop: 2,
@@ -165,7 +203,7 @@ const CitationMark: React.FC<{
                 wordBreak: 'break-word',
               }}
             >
-              {splitByHighlights(snippet, snippetHighlights, snippetNumbers).map((seg, i) => {
+              {splitByHighlights(summary.snippet, summary.snippetHighlights, summary.snippetNumbers).map((seg, i) => {
                 const cls = [
                   seg.highlighted ? 'citation-highlight' : '',
                   seg.isNumber ? 'citation-number' : '',
@@ -177,30 +215,12 @@ const CitationMark: React.FC<{
             </div>
           )}
           <div style={{ marginTop: 4, fontWeight: 400, opacity: 0.75 }}>
-            点击查看{isGraph ? '图谱内容' : '引用详情'}
+            点击查看{summary.isGraph ? '图谱内容' : '引用详情'}
           </div>
         </div>
       }
     >
-      <span
-        ref={markRef}
-        className="citation-mark"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClick(source);
-        }}
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          lineHeight: 1,
-          verticalAlign: 'super',
-          cursor: 'pointer',
-          userSelect: 'none',
-          margin: '0 1px',
-        }}
-      >
-        [{n}]
-      </span>
+      {mark}
     </Tooltip>
   );
 };
@@ -226,6 +246,7 @@ const renderCitationContent = (
   sources: Source[] | undefined,
   onCitationClick: ((source: Source) => void) | undefined,
   snippetChars: number,
+  streaming: boolean,
 ): React.ReactNode[] => {
   const parts: React.ReactNode[] = [];
   if (!content) return parts;
@@ -248,6 +269,7 @@ const renderCitationContent = (
           answerText={content}
           onClick={onCitationClick}
           snippetChars={snippetChars}
+          streaming={streaming}
         />,
       );
     } else {
@@ -277,6 +299,7 @@ const renderContent = (
   sources: Source[] | undefined,
   onCitationClick: ((source: Source) => void) | undefined,
   snippetChars: number,
+  streaming: boolean,
 ): React.ReactNode[] => {
   // 先清洗行首 Markdown 结构符号（### 标题 / - 列表等）：
   // 显示文本与高亮基准（answerText）都用清洗后文本，保证所见即所算。
@@ -290,7 +313,7 @@ const renderContent = (
     if (typeof b !== 'string') {
       return <React.Fragment key={`t${bi}`}>{b}</React.Fragment>;
     }
-    const parts = renderCitationContent(b, sources, onCitationClick, snippetChars);
+    const parts = renderCitationContent(b, sources, onCitationClick, snippetChars, streaming);
     return parts.map((p, pi) =>
       typeof p === 'string'
         ? <MdImages key={`m${bi}-${pi}`} text={p} maxWidth={ANSWER_IMAGE_MAX_WIDTH} />
@@ -387,6 +410,148 @@ const FeedbackBar: React.FC<{ idx: number; sessionId?: string; kbId?: string }> 
   );
 };
 
+interface MessageItemProps {
+  m: ChatMessage;
+  /** 消息序号（反馈条定位用） */
+  idx: number;
+  /** 该条正在流式生成中（内容每帧都在变） */
+  streaming: boolean;
+  /** waiting 期间的最后一条：引用来源按钮延后到生成完再显示 */
+  pending: boolean;
+  /** 该条对应的用户提问（详情弹窗「检索问题」；无则为空串） */
+  question: string;
+  sessionId?: string;
+  kbId?: string;
+  snippetChars: number;
+  /** token.colorTextTertiary（元信息行/已停止文字的灰字色） */
+  textTertiary: string;
+  userId: string;
+  userAvatar?: string | null;
+  onCitationClick?: (s: Source) => void;
+  /** 打开引用来源弹窗（sources + 高亮基准原文） */
+  onOpenSources: (sources: Source[], answerText: string) => void;
+  /** 打开请求详情弹窗 */
+  onOpenDetail: (m: ChatMessage, question: string) => void;
+}
+
+/**
+ * 单条消息（用户/助手气泡 + 反馈条 + 元信息行）。
+ *
+ * **必须 memo 化**：流式输出时每 50ms 就会 setMessages 一次，不隔离的话每次都要把
+ * 整段会话的每条消息连同各自的 antd Tooltip/Button/头像全部重建一遍——实测单帧
+ * 300ms、主线程被堵死，节流被反噬成 2.4Hz（"输出一卡一卡"）。抽成 memo 组件后，
+ * 只有内容真变的那条（正在生成的那条）重渲染，历史消息整棵子树跳过。
+ * 前提是回调 prop 全部来自 useCallback（否则每次渲染都是新函数，memo 形同虚设）。
+ */
+const MessageItem: React.FC<MessageItemProps> = ({
+  m,
+  idx,
+  streaming,
+  pending,
+  question,
+  sessionId,
+  kbId,
+  snippetChars,
+  textTertiary,
+  userId,
+  userAvatar,
+  onCitationClick,
+  onOpenSources,
+  onOpenDetail,
+}) => {
+  const isUser = m.role === 'user';
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 8,
+        alignItems: 'flex-start',
+        justifyContent: isUser ? 'flex-end' : 'flex-start',
+      }}
+    >
+      {/* 头像列：AI 消息左侧显示 AI 头像；用户消息右侧显示自己头像（DOM 顺序保证 flex 下最右） */}
+      {!isUser && <AiAvatar />}
+      <div style={{ maxWidth: '85%', minWidth: 0 }}>
+        {m.content && (
+          <div
+            className={`${isUser ? 'bubble-user' : 'bubble-assistant'} ${streaming ? 'typing-cursor' : ''}`}
+            style={{
+              padding: '10px 14px',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {renderContent(m.content, m.sources, onCitationClick, snippetChars, streaming)}
+            {/* 用户点击停止后：尾部灰色小字标注（仅前端会话状态，不污染落盘内容） */}
+            {!isUser && m.stopped && !streaming && (
+              <div style={{ marginTop: 6, fontSize: 12, color: textTertiary }}>
+                （已停止生成）
+              </div>
+            )}
+          </div>
+        )}
+        {/* 回答反馈（👍👎；流式进行中/用户消息不展示） */}
+        {!isUser && !streaming && (
+          <FeedbackBar idx={idx} sessionId={sessionId} kbId={kbId} />
+        )}
+        {/* 元信息行：时间戳 + 引用来源 + 详情。三者并列一行——两个入口挨着
+            更好点，也省一行高度。各自条件独立保留：时间/详情随 created_at
+            与流式状态，引用来源随 sources 与 pending 状态（流式中仍可点开看） */}
+        {((m.created_at && !streaming)
+          || (m.sources && m.sources.length > 0 && !pending)) && (
+          <div
+            style={{
+              marginTop: 4,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 11,
+              lineHeight: '16px',
+              color: textTertiary,
+              justifyContent: isUser ? 'flex-end' : 'flex-start',
+            }}
+          >
+            {m.created_at && !streaming && (
+              <span>{dayjs(m.created_at).format('HH:mm')}</span>
+            )}
+            {/* 默认收起：一行小按钮，点击弹出来源详情 Modal */}
+            {m.sources && m.sources.length > 0 && !pending && (
+              <Button
+                type="link"
+                size="small"
+                className="source-trigger"
+                style={{ padding: 0, fontSize: 12, height: 'auto', lineHeight: '16px' }}
+                icon={<PaperClipOutlined style={{ fontSize: 12 }} />}
+                onClick={() => onOpenSources(m.sources ?? [], m.content)}
+              >
+                引用来源（{m.sources.length}）
+              </Button>
+            )}
+            {/* 请求详情入口：仅本次流式生成且带详情数据的 assistant
+                消息显示（历史会话加载的消息无这些字段，自动不显示） */}
+            {m.created_at && !streaming && !isUser
+              && ((!!m.prompt && (m.retrieval_ms !== undefined || m.total_ms !== undefined)) || !!m.agentic) && (
+              <Button
+                type="link"
+                size="small"
+                className="source-trigger"
+                style={{ padding: 0, fontSize: 11, height: 'auto', lineHeight: '16px' }}
+                onClick={() => onOpenDetail(m, question)}
+              >
+                详情
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+      {/* 用户头像在气泡右侧（与气泡同级 flex 项，顶部对齐） */}
+      {isUser && <UserAvatar userId={userId} avatarKey={userAvatar} />}
+    </div>
+  );
+};
+
+const MemoMessageItem = memo(MessageItem);
+
 const MessageList: React.FC<MessageListProps> = ({
   messages,
   waiting,
@@ -438,34 +603,31 @@ const MessageList: React.FC<MessageListProps> = ({
   }, []);
 
   // 来源弹窗内"查看原文"：先关来源弹窗，再走原溯源链路（打开 CitationTraceModal），层级清晰
-  const handleViewOriginal = (s: Source) => {
+  // （useCallback：这个回调要透传到 memo 化的 MessageItem 上，每次新建函数会让 memo 失效）
+  const handleViewOriginal = useCallback((s: Source) => {
     setModalSources(null);
     onCitationClick?.(s);
-  };
+  }, [onCitationClick]);
 
-  // 打开"请求详情"弹窗：记录目标消息，并向前找最近的 user 消息作为检索问题
-  const openDetail = (m: ChatMessage) => {
+  // 打开"引用来源"弹窗：高亮基准用清洗后文本（与气泡渲染一致，所见即所算）
+  const handleOpenSources = useCallback((sources: Source[], answerText: string) => {
+    setModalSources(sources);
+    setModalAnswerText(cleanAnswerText(answerText));
+  }, []);
+
+  // 打开"请求详情"弹窗：检索问题由 MessageItem 随消息一起传上来（在渲染处向前
+  // 找最近的 user 消息算好），这里不碰 messages——否则回调依赖 messages，每次
+  // 流式增量都换新函数，memo 就白做了
+  const handleOpenDetail = useCallback((m: ChatMessage, question: string) => {
     setDetailMsg(m);
-    let question = '';
-    const idx = messages.indexOf(m);
-    for (let i = idx - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        question = messages[i].content;
-        break;
-      }
-    }
     setDetailQuestion(question);
-  };
+  }, []);
 
   // 流式生成中（waiting）且最后一条助手消息已有内容 → 追加闪烁光标
   const last = messages[messages.length - 1];
-  const streamingLive = waiting && !!last && last.role === 'assistant' && !!last.content;
+  const streamingLive = !!(waiting && last && last.role === 'assistant' && last.content);
   // 尚未输出任何内容（等待首字）时展示思考动画
-  const showThinking = waiting && !streamingLive;
-  // 该消息是否仍在生成中（waiting 期间的最后一条消息）：后端在 meta 事件即下发
-  // sources（供行内 [n] Tooltip 映射），但"引用来源"面板要等生成完成（done → waiting
-  // 结束）才显示，避免"正在思考…"时引用面板提前出现
-  const isPendingLast = (idx: number) => waiting && idx === messages.length - 1;
+  const showThinking = !!(waiting && !streamingLive);
 
   if (messages.length === 0 && !waiting) {
     return (
@@ -490,106 +652,37 @@ const MessageList: React.FC<MessageListProps> = ({
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1200, margin: '0 auto' }}>
         {messages.map((m, idx) => {
-          const isUser = m.role === 'user';
-          const isStreamingLast = streamingLive && idx === messages.length - 1;
           // 等待回复期间最后一条 assistant 消息内容为空 → 跳过整条渲染
           // （"正在思考…"气泡自带 AI 头像，避免同一时刻出现两个 AI 头像；
           //  AI 输出内容后 thinking 消失、空消息变正常气泡，其余消息不受影响）
           if (showThinking && idx === messages.length - 1 && m.role === 'assistant') {
             return null;
           }
+          // 该条对应的用户提问（详情弹窗「检索问题」）：向前找最近的一条 user 消息。
+          // 在这里算好成字符串再传下去，MessageItem 的 memo 比较才不被新对象破坏
+          let question = '';
+          for (let i = idx - 1; i >= 0; i--) {
+            if (messages[i].role === 'user') { question = messages[i].content; break; }
+          }
           return (
-            <div
+            <MemoMessageItem
               key={idx}
-              style={{
-                display: 'flex',
-                gap: 8,
-                alignItems: 'flex-start',
-                justifyContent: isUser ? 'flex-end' : 'flex-start',
-              }}
-            >
-              {/* 头像列：AI 消息左侧显示 AI 头像；用户消息右侧显示自己头像（DOM 顺序保证 flex 下最右） */}
-              {!isUser && <AiAvatar />}
-              <div style={{ maxWidth: '85%', minWidth: 0 }}>
-                {m.content && (
-                  <div
-                    className={`${isUser ? 'bubble-user' : 'bubble-assistant'} ${isStreamingLast ? 'typing-cursor' : ''}`}
-                    style={{
-                      padding: '10px 14px',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                    }}
-                  >
-                    {renderContent(m.content, m.sources, onCitationClick, snippetChars)}
-                    {/* 用户点击停止后：尾部灰色小字标注（仅前端会话状态，不污染落盘内容） */}
-                    {!isUser && m.stopped && !isStreamingLast && (
-                      <div style={{ marginTop: 6, fontSize: 12, color: token.colorTextTertiary }}>
-                        （已停止生成）
-                      </div>
-                    )}
-                  </div>
-                )}
-                {/* 回答反馈（👍👎；流式进行中/用户消息不展示） */}
-                {!isUser && !isStreamingLast && (
-                  <FeedbackBar idx={idx} sessionId={sessionId} kbId={kbId} />
-                )}
-                {/* 元信息行：时间戳 + 引用来源 + 详情。三者并列一行——两个入口挨着
-                    更好点，也省一行高度。各自条件独立保留：时间/详情随 created_at
-                    与流式状态，引用来源随 sources 与 pending 状态（流式中仍可点开看） */}
-                {((m.created_at && !isStreamingLast)
-                  || (m.sources && m.sources.length > 0 && !isPendingLast(idx))) && (
-                  <div
-                    style={{
-                      marginTop: 4,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      fontSize: 11,
-                      lineHeight: '16px',
-                      color: token.colorTextTertiary,
-                      justifyContent: isUser ? 'flex-end' : 'flex-start',
-                    }}
-                  >
-                    {m.created_at && !isStreamingLast && (
-                      <span>{dayjs(m.created_at).format('HH:mm')}</span>
-                    )}
-                    {/* 默认收起：一行小按钮，点击弹出来源详情 Modal */}
-                    {m.sources && m.sources.length > 0 && !isPendingLast(idx) && (
-                      <Button
-                        type="link"
-                        size="small"
-                        className="source-trigger"
-                        style={{ padding: 0, fontSize: 12, height: 'auto', lineHeight: '16px' }}
-                        icon={<PaperClipOutlined style={{ fontSize: 12 }} />}
-                        onClick={() => {
-                          setModalSources(m.sources ?? null);
-                          // 高亮基准用清洗后文本（与气泡渲染一致，所见即所算）
-                          setModalAnswerText(cleanAnswerText(m.content));
-                        }}
-                      >
-                        引用来源（{m.sources.length}）
-                      </Button>
-                    )}
-                    {/* 请求详情入口：仅本次流式生成且带详情数据的 assistant
-                        消息显示（历史会话加载的消息无这些字段，自动不显示） */}
-                    {m.created_at && !isStreamingLast && !isUser
-                      && ((!!m.prompt && (m.retrieval_ms !== undefined || m.total_ms !== undefined)) || !!m.agentic) && (
-                      <Button
-                        type="link"
-                        size="small"
-                        className="source-trigger"
-                        style={{ padding: 0, fontSize: 11, height: 'auto', lineHeight: '16px' }}
-                        onClick={() => openDetail(m)}
-                      >
-                        详情
-                      </Button>
-                    )}
-                  </div>
-                )}
-              </div>
-              {/* 用户头像在气泡右侧（与气泡同级 flex 项，顶部对齐） */}
-              {isUser && <UserAvatar userId={user?.id ?? ''} avatarKey={user?.avatar} />}
-            </div>
+              m={m}
+              idx={idx}
+              // 只有正在生成的那条会重渲染；其余条目 memo 命中，整棵子树跳过
+              streaming={streamingLive && idx === messages.length - 1}
+              pending={!!(waiting && idx === messages.length - 1)}
+              question={question}
+              sessionId={sessionId}
+              kbId={kbId}
+              snippetChars={snippetChars}
+              textTertiary={token.colorTextTertiary}
+              userId={user?.id ?? ''}
+              userAvatar={user?.avatar}
+              onCitationClick={onCitationClick}
+              onOpenSources={handleOpenSources}
+              onOpenDetail={handleOpenDetail}
+            />
           );
         })}
         {showThinking && (
@@ -675,4 +768,6 @@ const MessageList: React.FC<MessageListProps> = ({
   );
 };
 
-export default MessageList;
+// memo 化：Chat 页其它 state（溯源弹窗、会话设置等）变化时不重渲染整段消息列表。
+// 流式更新仍会进来（messages 变了），但内部 MemoMessageItem 会把无变化的消息挡掉
+export default memo(MessageList);

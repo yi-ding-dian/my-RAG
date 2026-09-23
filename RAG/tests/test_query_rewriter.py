@@ -161,6 +161,18 @@ class _RecordingRetrieval:
             id="doc1_0", text="测试片段", score=0.9, document_id="doc1",
             document_name="测试文档", kb_id=kb_id, chunk_index=0)]
 
+    async def retrieve_multi(self, kb_ids, query, top_k=None, min_score=None,
+                             enable_hybrid=None, enable_rerank=None):
+        """多知识库检索入口：chat_service 自多库改造起统一走这里（单库也走）
+
+        桩只需要"能记录 query + 返回一条来源"，委托给上面的 retrieve 即可
+        ——少写一份记录逻辑，也保证两个入口的 queries 语义一致。
+        """
+        return await self.retrieve(kb_ids[0], query, top_k=top_k,
+                                   min_score=min_score,
+                                   enable_hybrid=enable_hybrid,
+                                   enable_rerank=enable_rerank)
+
 
 class TestChatRewriteIntegration:
     """chat_service 集成：查询改写接线（检索用改写 query / 事件字段）"""

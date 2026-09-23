@@ -842,8 +842,12 @@ export interface StreamCallbacks {
   onAgentic?: (info: AgenticTrace) => void;
   /** 收到 event:agentic_status，携带检索/改写/重检进度（默认关闭时不收到） */
   onAgenticStatus?: (info: AgenticStatus) => void;
-  /** 收到 event:delta，增量文本 */
-  onDelta?: (text: string) => void;
+  /**
+   * 收到 event:delta，增量文本。
+   * total_ms：仅**首条** delta 携带——后端口径的「提问→AI 生成首字」总耗时（ms），
+   * 写进 assistant 消息供请求详情展示（与落盘的 total_ms 同源同值）
+   */
+  onDelta?: (text: string, total_ms?: number) => void;
   /** 收到 event:done（gen_params = 本次实际生效的生成参数，供「详情」追溯） */
   onDone?: (info: {
     session_id: string;

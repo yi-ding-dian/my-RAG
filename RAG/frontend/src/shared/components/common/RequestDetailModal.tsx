@@ -369,7 +369,7 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           ))}
         </div>
       )}
-      {/* 耗时统计（后端统计召回/图谱构建，前端计算提问→首字总耗时）
+      {/* 耗时统计（全部后端采集：召回/图谱构建 + 首字埋点的提问→首字总耗时）
           判类型而非判 !== undefined：后端 None 序列化成 null，历史会话与归档
           里未采集的耗时是 null，判 undefined 会渲染出 "null ms" / "0 ms" */}
       <div style={{ marginBottom: 14 }}>

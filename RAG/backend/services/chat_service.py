@@ -377,6 +377,10 @@ class ChatService:
           注入空 <think> prefill 跳过思考（请求层变换，prompt 事件仍为
           组装后原始 messages，不含注入/extra_body）。
         """
+        # 「提问→AI 生成首字」总耗时基准（请求详情展示用）。放这里而不是
+        # LLM 调用前：口径是"后端收到提问 → 吐出首个字"，检索/改写/图谱
+        # 这些前置环节都要算进去，否则用户看到的总耗时会明显偏小。
+        t_start = time.perf_counter()
         session = self._load_or_create(session_id, kb_ids, message, user_id)
         answer_parts: List[str] = []
         # 本次请求的 prompt 详情（与 prompt 事件同源）：随调用透传给 _finalize，
@@ -613,7 +617,12 @@ class ChatService:
                 tip = ("未检索到相关内容，我无法回答该问题。"
                        "请尝试换一种问法，或先在知识库中上传相关文档。")
                 answer_parts.append(tip)
-                yield sse_event("delta", {"text": tip})
+                # 未调 LLM 也要记首字耗时：这段提示文案就是用户看到的第一段
+                # 输出，不记则"未命中"的问答在详情里总耗时恒为空
+                prompt_detail["total_ms"] = int(round(
+                    (time.perf_counter() - t_start) * 1000))
+                yield sse_event("delta", {"text": tip,
+                                          "total_ms": prompt_detail["total_ms"]})
                 self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
                 saved = True
                 yield sse_event("done", {
@@ -763,7 +772,16 @@ class ChatService:
                     content = delta.content if delta else None
                     if content:
                         answer_parts.append(content)
-                        yield sse_event("delta", {"text": content})
+                        payload: dict = {"text": content}
+                        # 首个 token 落地即为"AI 首字"：算一次总耗时，随这条
+                        # delta 一起下发（只在首条带，后续增量不带，省带宽）。
+                        # 随 delta 而非 done 下发——用户点「停止」时 done 不会
+                        # 发，随 done 则中断的那次问答在详情里看不到耗时
+                        if prompt_detail.get("total_ms") is None:
+                            prompt_detail["total_ms"] = int(round(
+                                (time.perf_counter() - t_start) * 1000))
+                            payload["total_ms"] = prompt_detail["total_ms"]
+                        yield sse_event("delta", payload)
             except asyncio.CancelledError:
                 logger.info("客户端中断流式问答: %s", session.id)
                 if answer_parts:
@@ -1050,8 +1068,9 @@ class ChatService:
         detail：本次请求的 prompt 详情（与 prompt 事件同源），由调用方透传，
         写入 assistant 消息供历史会话"详情"回看；无详情（早退路径）传 None。
         其中 gen_params（本次实际生效的生成参数）随消息保存，供事后追溯
-        "这条回答当时是怎么跑出来的"；rewrite_ms/rewritten_query 同理落盘
-        ——不落盘则刷新/切会话、超管会话回溯都看不到"改写了没有、改成了什么"。
+        "这条回答当时是怎么跑出来的"；rewrite_ms/rewritten_query/total_ms
+        同理落盘——不落盘则刷新/切会话、超管会话回溯都看不到"改写了没有、
+        改成了什么、首字等了多久"。
         """
         chat_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session.messages.append(ChatMessage(role="user", content=message,
@@ -1068,6 +1087,10 @@ class ChatService:
             kg_ms=detail.get("kg_ms") if detail else None,
             rewrite_ms=detail.get("rewrite_ms") if detail else None,
             rewritten_query=detail.get("rewritten_query") if detail else None,
+            # 「提问→首字」总耗时由后端在首个 token 处埋点（见 stream_chat），
+            # 随消息落盘方能切会话/刷新后回看——早先只在前端内存里算，
+            # 切走再切回就丢了
+            total_ms=detail.get("total_ms") if detail else None,
             gen_params=detail.get("gen_params", {}) if detail else {},
             created_at=chat_time,
         ))

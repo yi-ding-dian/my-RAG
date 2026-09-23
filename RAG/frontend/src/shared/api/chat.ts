@@ -42,11 +42,12 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
       }
       case 'delta':
         // 兼容两种形态：裸字符串（mock）与 {"text":"..."}（真实后端）
+        // total_ms 只有首条 delta 带（后端首字埋点），后续增量没有
         if (typeof data === 'string') {
           callbacks.onDelta?.(data);
         } else {
-          const text = (data as { text?: string })?.text;
-          if (text) callbacks.onDelta?.(text);
+          const info = (data ?? {}) as { text?: string; total_ms?: number };
+          if (info.text) callbacks.onDelta?.(info.text, info.total_ms);
         }
         break;
       case 'prompt': {
