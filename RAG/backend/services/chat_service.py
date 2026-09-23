@@ -465,6 +465,14 @@ class ChatService:
                                 rewritten_query[:50])
                     search_query = rewritten_query
 
+            # 知识图谱通道与检索**并行**：抽实体用的是原始 message（不是改写后的
+            # search_query），除 kb_id 外与检索无任何依赖——串行会让每次问答白等
+            # 一次 LLM 往返（抽实体超时上限 8s）。先把任务起起来，检索完再汇合。
+            from backend.services.knowledge_graph_service import build_kg_source
+            kg_task = asyncio.create_task(
+                build_kg_source(kb_id, message,
+                                merged_chat.get("kg_enhance", True)))
+
             # 检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
             t_retrieval = time.perf_counter()
             try:
@@ -496,11 +504,13 @@ class ChatService:
                 # 系统级故障（Embedding 服务不可用等）：打 fault 标记点亮红绿灯；
                 # warning 不透传堆栈，用户消息语义与历史一致（原样透传）
                 log.system_error("检索服务不可用: %s", e)
+                kg_task.cancel()  # 早退：并行的图谱任务不能留着空跑
                 yield sse_event("error", {"message": str(e)})
                 return
             except Exception as e:
                 # 兜底（未知异常）：不记堆栈，信息保留
                 log.system_error("检索失败: %s", e)
+                kg_task.cancel()
                 yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
 
@@ -515,16 +525,19 @@ class ChatService:
             #    不参与任何分数排序。meta 事件与 _build_refs 均按本列表顺序
             #    编号，前端行内 [n]（sources[n-1]）与面板角标（index+1）同源，
             #    任何地方不得对 sources 重排。
-            from backend.services.knowledge_graph_service import build_kg_source
-            # 图谱构建单独计时（毫秒，与检索耗时分开统计）
-            t_kg = time.perf_counter()
             kg_source = None
-            if not agentic_abstain:
-                kg_source = await build_kg_source(
-                    kb_id, message, merged_chat.get("kg_enhance", True))
+            kg_ms = 0
+            if agentic_abstain:
+                kg_task.cancel()  # 拒答：图谱用不上，别让它继续跑
+            else:
+                t_kg_wait = time.perf_counter()
+                kg_source = await kg_task
+                # 耗时统计 = **额外等待**（检索跑完后还为图谱等了多久），不是
+                # "图谱自己跑了多久"——并行之后它多半已被检索盖住，报 0 才是
+                # 常态；若报成图谱耗时，会让人误以为总耗时也多了那么多
+                kg_ms = int(round((time.perf_counter() - t_kg_wait) * 1000))
                 if kg_source:
                     sources.append(kg_source)
-            kg_ms = int(round((time.perf_counter() - t_kg) * 1000))
 
             # 2.5) Agentic 决策轨迹事件（仅开启时下发；meta 之前：
             # 前端"请求详情"展示改写/分档/尝试次数）
