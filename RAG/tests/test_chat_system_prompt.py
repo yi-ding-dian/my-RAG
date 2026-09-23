@@ -21,26 +21,6 @@ from conftest import _FakeStream, create_kb, upload_and_ingest
 REFS = "[引用 1]（来源：文档A）\n内容一\n\n[引用 2]（来源：文档B）\n内容二"
 
 
-def _make_knowledge_sources() -> list:
-    """构造 {knowledge} 测试用 sources：父块（含图片/表格）+ 无父块子块 + 纯空白"""
-    return [
-        Source(
-            id="docA_0", text="子块文本A",
-            parent_text="父块A：工程文档说明\n\n"
-                        "![示意图](/api/files/images/docA/img1.jpg)\n\n"
-                        "| 列1 | 列2 |\n| --- | --- |\n| 值甲 | 值乙 |",
-            document_id="docA", document_name="文档A", kb_id="kb1",
-        ),
-        Source(id="docB_1", text="子块文本B", parent_text=None,
-               document_id="docB", document_name="文档B", kb_id="kb1"),
-        Source(id="docC_2", text="   ", parent_text="\n  \n",
-               document_id="docC", document_name="文档C", kb_id="kb1"),
-    ]
-
-
-KNOWLEDGE = ChatService._build_knowledge(_make_knowledge_sources())
-
-
 class TestBuildSystemContent:
     """system 内容组装规则（纯函数单测）"""
 
@@ -105,70 +85,18 @@ class TestBuildSystemContent:
             "你是助手 {xyz}。\n" + _wrap_data_boundary(REFS)
 
 
-class TestBuildKnowledge:
-    """{knowledge} 纯知识文本组装：原文逐字、无来源包装、父块优先"""
-
-    def test_no_citation_wrapper(self):
-        """不出现 "[引用" / "（来源：" 字样（无任何来源包装）"""
-        k = ChatService._build_knowledge(_make_knowledge_sources())
-        assert "[引用" not in k
-        assert "（来源：" not in k
-
-    def test_parent_text_preferred_blank_line_joined(self):
-        """父块优先；多片段 \n\n 空行拼接；纯空白片段跳过"""
-        k = ChatService._build_knowledge(_make_knowledge_sources())
-        assert k.startswith("父块A：工程文档说明")
-        assert k == ("父块A：工程文档说明\n\n"
-                     "![示意图](/api/files/images/docA/img1.jpg)\n\n"
-                     "| 列1 | 列2 |\n| --- | --- |\n| 值甲 | 值乙 |\n\n"
-                     "子块文本B")
-        assert "子块文本A" not in k          # 有父块用父块，子块不出现
-        assert not k.endswith("\n\n")        # 纯空白片段跳过，末尾无多余空行
-
-    def test_markdown_image_table_kept_verbatim(self):
-        """图片标签 ![]() / 表格逐字保留（用户模板要求原文输出含图片）"""
-        k = ChatService._build_knowledge(_make_knowledge_sources())
-        assert "![示意图](/api/files/images/docA/img1.jpg)" in k
-        assert "| 列1 | 列2 |" in k and "值甲" in k
-
-    def test_empty_sources(self):
-        assert ChatService._build_knowledge([]) == ""
-
-
-class TestBuildSystemContentKnowledge:
-    """{knowledge} 占位符组装规则（与 {refs} 可并存）"""
-
-    def test_knowledge_placeholder_replaced(self):
-        """含 {knowledge} → 替换为纯知识内容；只含 {knowledge} 不追加 [引用] 段"""
-        prompt = ("工程文档助手。\n<knowledge_base>\n"
-                  "{knowledge}\n</knowledge_base>\n只输出原文，未找到说'未找到'")
-        result = ChatService._build_system_content(prompt, REFS, KNOWLEDGE)
-        assert result.startswith("工程文档助手。\n<knowledge_base>\n")
-        assert result.endswith("\n</knowledge_base>\n只输出原文，未找到说'未找到'")
-        assert _wrap_data_boundary(KNOWLEDGE) in result
-        assert "[引用" not in result        # 模板完整掌控，无兜底追加
-
-    def test_knowledge_and_refs_coexist(self):
-        """{knowledge} 与 {refs} 并存 → 各自替换（均包裹数据边界标记）"""
-        prompt = "知识：{knowledge}\n引用：{refs}"
-        result = ChatService._build_system_content(prompt, REFS, KNOWLEDGE)
-        assert result == ("知识：" + _wrap_data_boundary(KNOWLEDGE)
-                          + "\n引用：" + _wrap_data_boundary(REFS))
-
-    def test_knowledge_only_with_empty_knowledge(self):
-        """knowledge 为空串（防御）→ 替换为空，不报错"""
-        result = ChatService._build_system_content("模板：{knowledge}", REFS, "")
-        assert result == "模板："
+class TestBuildSystemContentNoPlaceholder:
+    """不含占位符 → 末尾自动追加引用段（保证引用必达）"""
 
     def test_no_placeholder_appends_refs(self):
-        """{knowledge} 与 {refs} 都不含 → 末尾自动追加引用段（包裹数据边界）与标注规则"""
-        result = ChatService._build_system_content("你是助手。", REFS, KNOWLEDGE)
+        """不含任何占位符 → 末尾自动追加引用段（包裹数据边界）与标注规则"""
+        result = ChatService._build_system_content("你是助手。", REFS)
         assert result == ("你是助手。\n\n" + _CITATION_RULE
                           + "\n[引用]\n" + _wrap_data_boundary(REFS))
 
     def test_default_template_unchanged(self):
-        """空 system_prompt → 内置默认模板（knowledge 参数不影响，引用段带边界）"""
-        assert ChatService._build_system_content("", REFS, KNOWLEDGE) == \
+        """空 system_prompt → 内置默认模板（引用段带边界）"""
+        assert ChatService._build_system_content("", REFS) == \
             _SYSTEM_PROMPT_TEMPLATE.format(refs=_wrap_data_boundary(REFS))
 
 
@@ -273,39 +201,3 @@ class TestProfileImmediateEffect:
         resp = client.get("/api/settings/profiles/active",
                           headers=admin_headers)
         assert resp.json()["chat"]["system_prompt"] == ""
-
-    def test_profile_with_knowledge_placeholder(self, client, mock_embedding,
-                                                monkeypatch, admin_headers):
-        """profile system_prompt 含 {knowledge} → 发给 LLM 的 system 为纯知识原文
-
-        模板结构（<knowledge_base> 块 + 固定话术）逐字保留，{knowledge}
-        替换为检索片段原文（无 "[引用 n]（来源：xxx）" 包装）。
-        """
-        kb = create_kb(client)
-        upload_and_ingest(client, kb["id"])
-        recorder = _RecordingLLM()
-        monkeypatch.setattr(ChatService, "_get_client",
-                            lambda self, llm_cfg=None: recorder)
-
-        active = client.get("/api/settings/profiles/active",
-                            headers=admin_headers).json()
-        custom = ("工程文档助手。\n<knowledge_base>\n{knowledge}\n"
-                  "</knowledge_base>\n只输出知识库原文，未找到说'未找到'")
-        resp = client.put(
-            f"/api/settings/profiles/{active['id']}",
-            json={"chat": {"system_prompt": custom}},
-            headers=admin_headers,
-        )
-        assert resp.status_code == 200, resp.text
-        assert get_active_config().chat.system_prompt == custom
-
-        resp = client.post("/api/chat/stream", json={
-            "kb_id": kb["id"], "query": "Python 是什么？",
-        }, headers=admin_headers)
-        assert resp.status_code == 200 and "event: done" in resp.text
-        sys0 = recorder.requests[0]["messages"][0]["content"]
-        assert sys0.startswith("工程文档助手。\n<knowledge_base>\n")
-        assert sys0.endswith(
-            "\n</knowledge_base>\n只输出知识库原文，未找到说'未找到'")
-        assert "[引用" not in sys0      # 纯知识注入，无来源包装
-        assert "Python" in sys0         # 检索片段原文确实注入

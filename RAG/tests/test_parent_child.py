@@ -357,10 +357,16 @@ class TestParentChildIngest:
         assert second["parser_config"]["parent_chunk_size"] == 300
         assert second["parser_config"]["parent_split_level"] == 2
 
-    def test_parent_text_truncated_to_meta_limit(self, client, mock_embedding,
-                                                 admin_headers):
-        """超长章节父块入库：Chroma metadata parent_text 按 8000 截断防超限
-        （父块=完整章节无上限后可能数千字，入库截断为 8000，展示侧另截 2000）"""
+    def test_parent_text_stored_in_doc_not_meta(self, client, mock_embedding,
+                                                admin_headers):
+        """超长章节父块：全文完整落**文档记录**，向量库 metadata 只留索引
+
+        旧行为是把父块全文按 8000 截断塞进 metadata——既超限丢内容（截断即
+        永久丢失，没有别处可找回），又放大约 20 倍（一份父块 × 该父块下每个
+        子块，子块数远多于父块数）。现改为父块独立存储、检索按
+        parent_chunk_index 回捞（对齐 LangChain 的 docstore / WeKnora 父块
+        独立入库：向量库只留索引）。
+        """
         from backend.services.vector_store import get_vector_store
         # 单章 > 8000 字符（父块=完整章节，无大小上限）
         content = "# 长章\n\n" + "长章节内容。" * 1500
@@ -373,16 +379,25 @@ class TestParentChildIngest:
             "parent_chunk_size": 300, "parent_split_level": 1,
         }, headers=admin_headers)
         assert resp.status_code == 200, resp.text
-        wait_for_status(client, kb["id"], doc["id"])
+        final = wait_for_status(client, kb["id"], doc["id"])
+
+        # 1) 向量库 metadata：只留索引，不再有父块全文
         metas = get_vector_store()._backend._get_collection(kb["id"]).get(
             where={"document_id": doc["id"]},
             include=["metadatas"])["metadatas"]
         assert metas, "入库后应有向量"
         for m in metas:
-            assert m["parent_text"].startswith("# 长章"), \
-                "父块文本应为完整章节开头"
-            assert len(m["parent_text"]) <= 8000, \
-                f"parent_text 应截断到 8000: {len(m['parent_text'])}"
+            assert "parent_text" not in m, \
+                "父块全文不该再进向量库 metadata（既截断又放大）"
+            assert isinstance(m.get("parent_chunk_index"), int), \
+                "应留父块索引供检索回捞"
+
+        # 2) 文档记录：父块全文完整、无截断
+        parents = final.get("parent_chunks_meta") or []
+        assert parents, "父块应落进文档记录 parent_chunks_meta"
+        assert parents[0]["text"].startswith("# 长章")
+        assert len(parents[0]["text"]) > 8000, \
+            f"父块全文应完整保留，实际 {len(parents[0]['text'])}"
 
     def test_naive_metadata_no_parent_fields(self, client, mock_embedding,
                                              admin_headers):
@@ -416,3 +431,45 @@ class TestParentChildIngest:
         assert detail["chunks"], "详情应有 chunks"
         for c in detail["chunks"]:
             assert content[c["char_start"]:c["char_end"]] == c["text"]
+
+
+class TestParentDedupe:
+    """检索结果按父块去重（同一父块下多个子块命中只留最高分那条）
+
+    父子分块的语义是"子块精准命中、父块提供上下文"——同一父块下的 N 个子块
+    命中，返回 N 份**相同**的父块上下文没有意义（重复占 prompt token、挤占
+    top_k 名额）。对齐 RAGFlow `retrieval_by_children` 的 mom_id 分组、
+    LangChain ParentDocumentRetriever 的 parent_k。
+    """
+
+    @staticmethod
+    def _src(sid, doc, parent_idx, score):
+        from backend.models.rag_models import Source
+        return Source(id=sid, document_id=doc, parent_chunk_index=parent_idx,
+                      score=score)
+
+    def test_same_parent_keeps_highest_only(self):
+        from backend.services.retrieval_service import RetrievalService
+        # 已按分数降序（检索返回前本就排序，首次出现即最高分）
+        srcs = [self._src("a1", "d1", 0, 0.9),
+                self._src("a2", "d1", 0, 0.8),   # 同 doc 同父块 → 去掉
+                self._src("a3", "d1", 1, 0.7),
+                self._src("b1", "d2", 0, 0.6)]   # 不同 doc 的 0 号父块 → 保留
+        out = RetrievalService._dedupe_by_parent(srcs)
+        assert [s.id for s in out] == ["a1", "a3", "b1"]
+
+    def test_no_parent_index_kept(self):
+        """无父块索引（非父子模式 / None / -1）照常保留、互不去重"""
+        from backend.services.retrieval_service import RetrievalService
+        srcs = [self._src("a", "d1", None, 0.9),
+                self._src("b", "d1", None, 0.8),
+                self._src("c", "d1", -1, 0.7),
+                self._src("e", "d1", -1, 0.6)]
+        out = RetrievalService._dedupe_by_parent(srcs)
+        assert [s.id for s in out] == ["a", "b", "c", "e"]
+
+    def test_empty_and_single(self):
+        from backend.services.retrieval_service import RetrievalService
+        assert RetrievalService._dedupe_by_parent([]) == []
+        one = [self._src("a", "d1", 0, 0.9)]
+        assert RetrievalService._dedupe_by_parent(one) == one

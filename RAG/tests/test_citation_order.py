@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 from backend.models.rag_models import ChatMessage, ChatSession, Source
 from backend.services.chat_service import ChatService
 
@@ -47,7 +49,7 @@ class TestBuildRefsNumbering:
     def test_refs_numbered_in_list_order(self):
         """编号 1..N 按列表顺序递增，与检索相关度排序一致"""
         sources = [_src(1), _src(2), _src(3)]
-        refs = ChatService._build_refs(sources)
+        refs = asyncio.run(ChatService._build_refs(sources))
         for i in (1, 2, 3):
             assert f"[引用 {i}]（来源：文档A）" in refs
         assert (refs.index("[引用 1]（来源")
@@ -57,7 +59,7 @@ class TestBuildRefsNumbering:
     def test_kg_last_gets_last_number(self):
         """图谱引用在末尾 → 编号为最后一个且连续（不与普通引用穿插）"""
         sources = [_src(1), _src(2), _kg()]
-        refs = ChatService._build_refs(sources)
+        refs = asyncio.run(ChatService._build_refs(sources))
         assert "[引用 3]（来源：知识图谱）" in refs
         assert refs.index("[引用 3]（来源：知识图谱）") > refs.index("[引用 2]（来源")
         # 编号 1..3 完整无跳跃（防图谱占位导致跳过）
@@ -68,14 +70,14 @@ class TestBuildRefsNumbering:
     def test_number_continuous_even_with_kg_mixed(self):
         """图谱混在中间（调用方不遵守约定的场景兜底）：编号仍按位置 1..N 连续"""
         sources = [_src(1), _kg(), _src(2)]
-        refs = ChatService._build_refs(sources)
+        refs = asyncio.run(ChatService._build_refs(sources))
         assert "[引用 2]（来源：知识图谱）" in refs
         assert "[引用 3]（来源：文档A）" in refs
         assert "[引用 4]" not in refs
 
     def test_single_source_number_one(self):
         """单条引用编号为 1"""
-        refs = ChatService._build_refs([_src(1)])
+        refs = asyncio.run(ChatService._build_refs([_src(1)]))
         assert "[引用 1]（来源：文档A）" in refs
         assert "[引用 2]" not in refs
 

@@ -44,6 +44,33 @@ const ChatPanel: React.FC = () => (
                      style={{ width: '100%' }} addonAfter="字" />
       </Form.Item>
     </Col>
+    <Col span={8}>
+      <Form.Item
+        name="chat_prompt_total_max_tokens"
+        label="上下文预算"
+        tooltip={
+          <div style={{ fontSize: 12, lineHeight: '18px' }}>
+            进 prompt 的检索片段<b>总量</b>上限（token）。超出即停止追加后续
+            片段；首条就超预算时截断它（有上下文总比一条都没有强）。
+            <div style={{ marginTop: 6 }}>
+              <b>只设总量、不设单条</b>：总量天然隐含单条约束，再配单条只会
+              无谓截断大块——而大块往往正是最相关的那条。
+            </div>
+            <div style={{ marginTop: 6 }}>
+              怎么定：<b>模型窗口 − 输出 max_tokens − 历史/系统提示的余量</b>。
+              例：窗口 15000、输出 4096 → 输入留约 6000。
+            </div>
+            <div style={{ marginTop: 6 }}>
+              token 数优先调模型服务的 /tokenize 精确计（vLLM 内置），
+              服务不支持时按 字符数 × 0.62 估算。范围 500~200000，默认 6000。
+            </div>
+          </div>
+        }
+      >
+        <InputNumber min={500} max={200000} step={500}
+                     style={{ width: '100%' }} addonAfter="token" />
+      </Form.Item>
+    </Col>
   </Row>
 );
 

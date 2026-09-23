@@ -451,6 +451,21 @@ async def rename_document(request: Request, kb_id: str, doc_id: str,
     return doc
 
 
+def _strip_heavy_fields(doc: DocumentItem) -> DocumentItem:
+    """列表接口瘦身：剔除只有详情页才用的大字段（chunks_meta / parent_chunks_meta）
+
+    实测单个文档的 chunks_meta 就有 260 KB（258 个子块全文+偏移），父块全文
+    再加约 200 KB——全量下发会让**每次刷新列表都传 MB 级数据**（实测 15 个
+    文档 1.1 MB）。列表页只用 chunk_count / chunk_preview 渲染；完整字段走
+    详情接口（`GET .../documents/{doc_id}`，图谱 Tab 也是从那里取 chunks）。
+
+    `model_copy` 浅拷贝：**不改内存里的原对象**，详情接口与内部逻辑照常拿
+    完整数据。
+    """
+    return doc.model_copy(update={"chunks_meta": [],
+                                  "parent_chunks_meta": []})
+
+
 @router.get("")
 async def list_documents(kb_id: str, page: Optional[int] = Query(None),
                          page_size: Optional[int] = Query(None),
@@ -468,7 +483,10 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
       （前端不再本地筛选，避免"筛选只作用于当前页"的误导）
     """
     await kb_or_404(db, kb_id, user)
-    docs = get_document_service().list_by_kb(kb_id)
+    # 列表只下发预览级字段（大字段剔除见 _strip_heavy_fields；筛选只用 status，
+    # 不受影响）
+    docs = [_strip_heavy_fields(d)
+            for d in get_document_service().list_by_kb(kb_id)]
     if status:
         if status not in _VALID_LIST_STATUS:
             raise HTTPException(

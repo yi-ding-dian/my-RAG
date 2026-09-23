@@ -6,8 +6,9 @@
   回答"未找到"而引用面板却有原文。
 
 修复（本文件覆盖）：
-- _REF_TEXT_MAX_LEN 提到 8000（对齐入库侧 _PARENT_TEXT_META_LIMIT，消除
-  "入库保留了、喂给模型却被截掉"的盲区）；
+- _REF_TEXT_MAX_LEN 提到 8000（只约束**进 prompt 的引用文本**；入库侧现已不再
+  截断父块——全文完整存文档记录 parent_chunks_meta、检索按索引回捞，
+  "入库保留了、喂给模型却被截掉"的盲区已从根本上消除）；
 - 引用组装改为「命中子块全文 + 相邻前后各 1 子块」窗口优先（doc_chunks 由
   文档 chunks_meta 提供，内存读取零 IO），命中词最早可见；非父子模式或
   邻块缺失时退化为父块/子块截断（现状行为不变）。
@@ -17,10 +18,12 @@ parent_child + 伪检索固定命中块 → prompt refs 断言）。
 """
 from __future__ import annotations
 
+import asyncio
+
 import json
 
 from backend.models.rag_models import Source
-from backend.services.chat_service import (ChatService, _REF_TEXT_MAX_LEN)
+from backend.services.chat_service import ChatService
 from conftest import create_kb, upload_and_ingest
 
 # parent_child 大章文档：6 段各约 100 字（chunk_size=80 时每段独立成块，
@@ -97,12 +100,16 @@ class TestRefSnippetWindow:
         assert out.startswith(hit), "命中块最前"
 
     def test_no_doc_chunks_falls_back_to_parent_text(self):
-        """无邻块数据（读取失败/非父子）：父块截断兜底（上限对齐 8000）"""
+        """无邻块数据（读取失败/非父子）：回退**完整**父块全文
+
+        不再在此截断——单条上限已移除，改由 _build_refs 的
+        chat.prompt_total_max_tokens 总量预算统一约束（只设总量不设单条：
+        总量天然隐含单条约束，再配单条只会无谓截断大块）
+        """
         par = "普通父块内容。" * 900  # > 8000
         s = _src("子块", "d", 2, "A", parent_text=par)
         out = ChatService._ref_snippet(s, None)
-        assert len(out) <= _REF_TEXT_MAX_LEN
-        assert out == par[:_REF_TEXT_MAX_LEN], "兜底=父块按上限截断"
+        assert out == par, "兜底=完整父块（不再截断）"
 
     def test_parent_text_within_limit_unchanged(self):
         """父块未超上限且无邻块数据：全量下发（现状行为零变化）"""
@@ -111,10 +118,10 @@ class TestRefSnippetWindow:
         assert ChatService._ref_snippet(s, None) == par
 
     def test_no_parent_text_uses_child_text(self):
-        """非父子模式（无父块）：子块文本截断（现状行为零变化）"""
+        """非父子模式（无父块）：回退完整子块文本（不再截断，同上）"""
         s = _src("普通块文本。" * 200, "d", 0, "A")
         out = ChatService._ref_snippet(s, {"d": ["x"]})
-        assert out == (s.text or "")[:_REF_TEXT_MAX_LEN]
+        assert out == (s.text or "")
 
     def test_build_refs_window_keeps_numbering_and_context_prefix(self):
         """_build_refs 集成：编号顺序保持、窗口生效、context 前缀仍拼接"""
@@ -122,7 +129,8 @@ class TestRefSnippetWindow:
         s1 = _src(chunks[1], "doc1", 1, "制度.txt", parent_text="父" * 9000)
         s2 = _src("图谱内容。", "doc2", 0, "知识图谱",
                   context="上下文摘要")
-        refs = ChatService._build_refs([s1, s2], doc_chunks={"doc1": chunks})
+        refs = asyncio.run(ChatService._build_refs(
+            [s1, s2], doc_chunks={"doc1": chunks}))
         assert "[引用 1]（来源：制度.txt）" in refs
         assert "[引用 2]（来源：知识图谱）" in refs
         assert "【上下文】上下文摘要" in refs, "context 前缀拼接不受窗口影响"

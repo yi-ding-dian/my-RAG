@@ -121,6 +121,11 @@ async def list_admin_documents(
     for d in docs:
         kb = kbs.get(d.kb_id)
         item = d.model_dump(mode="json")
+        # 大字段剔除（与部门内列表同源，见 crud._strip_heavy_fields）：chunks_meta
+        # 与 parent_chunks_meta 是详情页才用的 MB 级数据，列表全量下发会让每次
+        # 刷新都传 MB 级响应
+        item["chunks_meta"] = []
+        item["parent_chunks_meta"] = []
         item["kb_id"] = d.kb_id
         item["kb_name"] = kb.name if kb else d.kb_id
         item["department_id"] = kb.department_id if kb else None

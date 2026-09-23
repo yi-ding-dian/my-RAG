@@ -77,6 +77,9 @@ const NEW_PROFILE_DEFAULTS = {
   ingestion_max_upload_mb: 100,
   chat_max_query_len: 2000,
   chat_citation_snippet_chars: 600,
+  // 进 prompt 的检索片段总量预算（token）：按当前生产模型反推
+  // （Qwen3.5-9B 窗口 15000 − 输出 4096 − 历史/系统提示余量 ≈ 6000）
+  chat_prompt_total_max_tokens: 6000,
   // MySQL / MinIO 预填后端默认值（密码类留空，保存时后端用默认或保持原值）
   mysql_host: '127.0.0.1', mysql_port: 5455, mysql_user: 'ragflow',
   mysql_database: 'my_rag',

@@ -41,6 +41,7 @@ from backend.services.agentic_service import get_agentic_service
 from backend.services.query_rewriter import rewrite_query
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service)
+from backend.services.token_counter import count_tokens, truncate_to_tokens
 from backend.services.settings.service import (merge_chat_config,
                                                merge_department_llm)
 from backend.services.thinking_strategy import get_thinking_strategy
@@ -70,13 +71,9 @@ _SYSTEM_PROMPT_TEMPLATE = (
 # 自定义 system_prompt（无占位符）自动追加引用段时一并追加的行内标注规则：
 # 自定义模板覆盖内置规则，不追加标注指令则模型无 [n] 标注依据（行内引用功能失效）。
 # 标注仅添加编号不改变引用原文，与"原样输出"类模板语义兼容。
-# 引用文本单条长度上限（进 prompt 的 [引用] 段，兜底路径使用；兼顾回答依据
-# 完整性与 token 成本：默认 naive 切块 800 字基本不触发，仅标题/父块等大块生效；
-# 5 源全满上限时约 3 万字 ≈ 2.2 万 token 输入，qwen 长上下文可容纳；前端面板
-# 展示不受此限——meta 下发的 sources.text/parent_text 为完整文本，面板另有"展开全文"）
-# 取值对齐入库侧 _PARENT_TEXT_META_LIMIT（8000）：两者不一致时会出现"入库保留了、
-# 喂给模型却被截掉"的命中词盲区（常规路径已由 _ref_snippet 窗口组装规避）
-_REF_TEXT_MAX_LEN = 8000
+# （原 _REF_TEXT_MAX_LEN 单条上限已移除：改由 chat.prompt_total_max_tokens
+#   总量预算统一约束——只设总量不设单条，是因为总量天然隐含单条约束，再配
+#   单条只会无谓截断大块，而大块往往正是最相关的那条）
 
 
 _CITATION_RULE = (
@@ -582,8 +579,12 @@ class ChatService:
             temperature = merged_chat["temperature"]
             top_p = merged_chat["top_p"]
             max_tokens = merged_chat["max_tokens"]
-            refs = self._build_refs(sources, self._load_doc_chunks(sources))
-            knowledge = self._build_knowledge(sources)
+            # 引用段按 prompt_total_max_tokens 预算装配（token 数优先调模型
+            # 服务的 /tokenize 精确计，失败自动降级估算，见 token_counter）
+            refs = await self._build_refs(
+                sources, self._load_doc_chunks(sources),
+                llm_base_url=(merged_llm_dict or {}).get("base_url"),
+                llm_model=(merged_llm_dict or {}).get("model"))
             # 用户画像注入（仅聊天问答）：memory_enabled 关 / 无条目 → 空串跳过；
             # 画像段由 _build_system_content 置于引用段之前（自定义模板经
             # {memory} 占位符控制）。检索测试（/chat/retrieve）不经过本组装，
@@ -600,7 +601,7 @@ class ChatService:
                     logger.warning("读取用户画像失败（跳过注入）: %s err=%s",
                                    user_id, str(e)[:150])
             system_content = self._build_system_content(
-                sys_prompt, refs, knowledge, memory_context)
+                sys_prompt, refs, memory_context)
             messages = [{"role": "system", "content": system_content}]
             if enable_multi_turn:
                 rounds = int(history_rounds)
@@ -748,19 +749,22 @@ class ChatService:
 
     @staticmethod
     def _build_system_content(system_prompt: str, refs: str,
-                              knowledge: str = "", memory: str = "") -> str:
+                              memory: str = "") -> str:
         """组装 system 内容（配置档案 chat.system_prompt 支持自定义）
 
-        占位符规则（{knowledge} 与 {refs} 可并存，各自替换）：
+        占位符规则：
         - {memory}：用户画像段（可选，仅聊天问答注入）——含 {memory} 时
           替换为用户画像文本；内置默认模板 / 无占位符自动追加路径下，
           用户画像自动置于引用段之前（用户先看到画像背景，再是引用）；
           自定义含占位符模板未写 {memory} 则不注入（模板自行掌控）
-        - 含 {knowledge} → 替换为纯知识文本（检索片段原文逐字拼接，
-          无 "[引用 n]（来源：xxx）" 包装——用户模板要求原文逐字输出）
-        - 含 {refs} → 替换为带来源标注的引用内容（现有格式）
+        - {refs} → 替换为带来源标注的引用内容（[引用 n]（来源：xxx）包装）
         - 含任一占位符 → 模板其余原样返回（自定义覆盖全部规则：
           内置模板的"句末 [n] 标注"等由用户自己负责），不追加内容
+
+        **历史 {knowledge} 占位符已移除**：它与 {refs} 内容重叠却不带引用编号，
+        会让模型无法标注来源；且其内容逐字不截断，超大父块会撑爆模型上下文
+        （实测单个父块 36774 字 = 22730 token > 生产模型 15000 的窗口）。
+        模板里若仍写 {knowledge}，会原样保留、不被替换。
         - 不含任何占位符 → 末尾自动追加 "\n\n[引用]\n{refs}"
           （保证检索引用必达，防止用户忘写占位符导致模型无引用可依据）
         - 空 / 纯空白 → 内置默认模板（现有行为零变化，{refs} 在末尾）
@@ -772,19 +776,15 @@ class ChatService:
             # 内置默认模板：引用内容包裹数据边界标记（用户画像段在边界外）
             return _SYSTEM_PROMPT_TEMPLATE.format(
                 refs=f"{mem_block}{_wrap_data_boundary(refs)}")
-        # 先判定再替换：knowledge 内容本身即使含 "{refs}" 字样也不误判
+        # 先判定再替换：引用内容本身即使含 "{refs}" 字样也不误判
         has_memory = "{memory}" in raw
-        has_knowledge = "{knowledge}" in raw
         has_refs = "{refs}" in raw
         if has_memory:
             raw = raw.replace("{memory}", memory)
-        if has_knowledge:
-            # 用 str.replace 而非 str.format：用户模板中其他花括号不会触发 KeyError；
-            # 注入的知识内容同样包裹数据边界标记（防文档内容劫持提示词）
-            raw = raw.replace("{knowledge}", _wrap_data_boundary(knowledge))
         if has_refs:
+            # 用 str.replace 而非 str.format：用户模板中其他花括号不会触发 KeyError；
+            # 注入的引用内容包裹数据边界标记（防文档内容劫持提示词）
             raw = raw.replace("{refs}", _wrap_data_boundary(refs))
-        if has_knowledge or has_refs:
             return raw
         # 无占位符：末尾自动追加引用段 + 行内标注规则
         # （保证检索引用必达，防止用户忘写占位符导致模型无引用可依据；
@@ -793,23 +793,6 @@ class ChatService:
         #   引用内容包裹数据边界标记，与自定义模板替换路径一致）
         return f"{raw}\n\n{_CITATION_RULE}\n{mem_block}[引用]\n" \
             f"{_wrap_data_boundary(refs)}"
-
-    @staticmethod
-    def _build_knowledge(sources: List[Source]) -> str:
-        """构建纯知识文本（{knowledge} 占位符注入内容）
-
-        - 多片段按序拼接，片段间空行（\n\n）分隔
-        - 每片段用 (s.parent_text or s.text)（父块优先，上下文更完整）
-        - 不加任何 "[引用 n]（来源：xxx）" 包装：用户模板要求原文逐字输出，
-          图片标签 ![]()、表格等 Markdown 结构原样保留
-        - 纯空白片段跳过（无内容可输出）；其余逐字不截断（截断会破坏图片标签）
-        """
-        parts = []
-        for s in sources:
-            text = s.parent_text or s.text
-            if text.strip():
-                parts.append(text)
-        return "\n\n".join(parts)
 
     @staticmethod
     def _load_doc_chunks(sources: List[Source]) -> Dict[str, List[str]]:
@@ -869,39 +852,71 @@ class ChatService:
     @staticmethod
     def _ref_snippet(s: Source,
                      doc_chunks: Optional[Dict[str, List[str]]] = None) -> str:
-        """单条引用的正文文本：命中窗口优先，退化父块/子块截断
+        """单条引用的正文文本：命中窗口优先，退化用父块/子块全文
 
-        父子分块下父块是"完整章节"且无大小上限（实测存在 3 万字的长章），
+        父子分块下父块是"完整章节"且无大小上限（实测存在 3.6 万字的长章），
         若固定取 parent_text 开头若干字，命中词落在截断之后时模型看不到命中词
         → 回答"未找到"而引用面板却有原文。窗口模式改取「命中子块全文 + 前后
-        各 1 个邻块」，命中词必定可见；非父子/邻块缺失时按上限截断兜底。
+        各 1 个邻块」，命中词必定可见；非父子/邻块缺失时回退父块/子块全文。
         """
         window = ChatService._ref_window(s, doc_chunks)
         if window is not None:
             return window
-        return (s.parent_text or s.text)[:_REF_TEXT_MAX_LEN]
+        # 不在此截断：单条长度已由 _build_refs 的总量预算统一约束
+        # （见 config.ChatConfig.prompt_total_max_tokens），这里再切一刀
+        # 只会无谓削掉大块开头的上下文
+        return s.parent_text or s.text
 
     @staticmethod
-    def _build_refs(sources: List[Source],
-                    doc_chunks: Optional[Dict[str, List[str]]] = None) -> str:
+    async def _build_refs(sources: List[Source],
+                          doc_chunks: Optional[Dict[str, List[str]]] = None,
+                          llm_base_url: Optional[str] = None,
+                          llm_model: Optional[str] = None) -> str:
+        """组装引用段（[引用 n]），受 prompt_total_max_tokens 预算约束
+
         # 引用编号规则：编号 = sources 列表位置（1..N 连续），与 meta 事件
         # 下发的 sources 顺序完全一致（stream_chat 中 meta 与 _build_refs 都
         # 以同一列表为源）；前端行内 [n] 按 sources[n-1] 映射、面板角标按
         # index+1 渲染，全链路同序。列表顺序约定：普通检索引用按相关度降序
         # （retrieval_service 内排好），图谱引用（score=0）追加在末尾。
         # 调用方不得对 sources 重排/去重后传给本方法，否则编号与前端错位。
-        parts = []
+
+        **预算控制**：逐条累积 token，超出 `chat.prompt_total_max_tokens` 即
+        停止追加后续片段（已加入的保持完整、不切碎）；**首条就超预算**时截断
+        到预算并加省略标记——有上下文总比一条都没有强。token 数优先调模型
+        服务的 /tokenize 精确计，服务不支持时按字符数估算（见 token_counter）；
+        不传 llm_base_url 则直接走估算。
+        """
+        budget = int(getattr(get_active_config().chat,
+                             "prompt_total_max_tokens", 0) or 0)
+        parts: List[str] = []
+        used = 0
         for i, s in enumerate(sources, start=1):
             name = s.document_name or s.document_id
             head = f"[引用 {i}]（来源：{name}）"
-            # 引用正文：命中窗口优先，父块/子块截断兜底（见 _ref_snippet）
+            # 引用正文：命中窗口优先（见 _ref_snippet）——父子分块下窗口用
+            # 子块+邻块，远小于整个父块，天然省预算
             text = ChatService._ref_snippet(s, doc_chunks)
             # 上下文摘要：有 context 且文本未含摘要前缀时拼到引用头部——
             # 父块全文本身无摘要（摘要是对子块生成的），补前缀让引用也显示；
             # s.text 为向量化增强文本（已含【上下文】前缀）时不重复拼接
             if s.context and not text.startswith("【上下文】"):
                 text = f"【上下文】{s.context}\n{text}"
-            parts.append(f"{head}\n{text}")
+            block = f"{head}\n{text}"
+            if budget > 0:
+                n = await count_tokens(block, llm_base_url, llm_model)
+                if used + n > budget:
+                    if not parts:
+                        # 首条就超预算：只截正文、保留 head（引用编号不能丢）
+                        keep = max(budget - 32, 1)   # 32 ≈ head 的 token 开销
+                        parts.append(
+                            f"{head}\n{truncate_to_tokens(text, keep)}\n"
+                            f"…（本条过长，已按上下文预算截断）")
+                    logger.info("引用按预算截断: 上限 %d token，实际装下 %d 条",
+                                budget, len(parts))
+                    break
+                used += n
+            parts.append(block)
         return "\n\n".join(parts)
 
     @staticmethod

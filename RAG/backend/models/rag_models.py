@@ -75,6 +75,13 @@ class DocumentItem(BaseModel):
     parser_config: Optional[dict] = Field(None, description="切块参数: chunk_size/overlap/delimiter/split_level/regex_pattern")
     chunk_preview: List[str] = Field(default_factory=list, description="切块预览（限 20 条，每条截 500 字符，兼容保留）")
     chunks_meta: List[dict] = Field(default_factory=list, description="切块元数据完整列表: [{text, char_start, char_end}]（偏移相对解析全文，详情接口用）")
+    parent_chunks_meta: List[dict] = Field(
+        default_factory=list,
+        description="父块元数据（父子分块）：[{text, char_start, char_end}]，"
+                    "**父块全文的唯一权威副本**——检索时按向量库 meta 里的 "
+                    "parent_chunk_index 回到这里取完整父块（对齐 LangChain "
+                    "docstore / WeKnora 父块独立入库的做法）。历史文档为空时"
+                    "自动回退到旧的 parent_text 截断版")
     created_at: str = Field("", description="创建时间")
     updated_at: str = Field("", description="更新时间")
     deleted: bool = Field(False, description="是否已移入回收站（软删除标记，检索自动排除；缺失视为 false）")
@@ -183,6 +190,7 @@ class Source(BaseModel):
     kb_name: Optional[str] = Field(None, description="来源文档所属知识库名称（多知识库对比检索时由路由层填充）")
     chunk_index: int = Field(0, description="块序号")
     parent_text: Optional[str] = Field(None, description="父块全文（parent_child 模式且 retrieval_mode=parent 时返回，作完整上下文；child 模式或非父子文档为 None）")
+    parent_chunk_index: Optional[int] = Field(None, description="父块序号（父子分块才有，-1=无父块）：检索结果按它去重——同一父块下多个子块命中只保留最高分那条，避免同一份上下文重复占位")
     context: Optional[str] = Field(None, description="上下文摘要（上下文检索增强开启时生成；检索返回的 text 已含【上下文】前缀，此字段供前端标签展示与引用拼接）")
     vector_score: Optional[float] = Field(None, description="原始向量检索分数（混合模式下保留供调试；纯向量模式=score；BM25 单独命中为 None）")
     # score 是"排序依据"，口径随配置变（rerank 分 / RRF 融合分 / 向量 cos），

@@ -331,6 +331,16 @@ class ChatConfig(BaseModel):
     # 从头硬截会让命中整段落在窗口外、浮层里什么也标不出来。
     # 范围 100~2000 由 settings schema 限制
     citation_snippet_chars: int = 600
+    # 进 prompt 的检索片段**总量**预算（token）：超出即停止追加后续片段
+    # （已加入的保持完整、不切碎）；**首条就超预算**时截断到预算（带省略标记——
+    # 有上下文总比没有强）。
+    # **只设总量、不设单条**：总量天然隐含单条约束（一条吃掉全部预算时后面的
+    # 自然进不来），再配单条只会无谓截断大块——而大块往往正是最相关的那条。
+    # 预算怎么定：**模型窗口 − 输出 max_tokens − 历史对话/系统提示余量**。
+    # 例：Qwen3.5-9B（窗口 15000、输出 4096）→ 输入留约 6000。
+    # token 数优先调模型服务的 /tokenize 精确计（vLLM 内置，实测 3.6 万字 42ms），
+    # 服务不支持时按 字符数 × 0.62 估算（见 services/token_counter）
+    prompt_total_max_tokens: int = 6000
     # 思考模式（聊天问答 LLM 调用）：disabled=关闭思考（默认，更快更省 token）
     # | enabled_low/enabled_high/enabled_max=开启思考并指定强度。注入方式按
     # 服务商区分（见 thinking_strategy）：在线 API（api.deepseek.com 等）经

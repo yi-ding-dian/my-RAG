@@ -152,9 +152,11 @@ def _get_ingest_semaphore() -> asyncio.Semaphore:
         _ingest_semaphore_value = target
     return _ingest_semaphore
 
-# 入库 metadata 单值上限：父块全文随子块写进 Chroma metadata，章节父块可能
-# 数千字，截断防超限报错（检索展示侧另有 2000 截断，见 chat_service，这里只管入库）
-_PARENT_TEXT_META_LIMIT = 8000
+# 父块"过大"提示阈值（超过即入库告警，**不再截断**）：父块全文现已完整存进
+# 文档记录的 parent_chunks_meta（检索时按 parent_chunk_index 回捞），本阈值
+# 只用于提示"该父块会作为长上下文返回、占较多 token"。成因通常是标题层级
+# 超出父块切分层级，多个章节被并成一个父块
+_PARENT_CHUNK_WARN_CHARS = 8000
 # 上下文摘要 metadata 单值上限（Chroma metadata 单值限制；摘要本体在
 # chunks_meta.context，这里存的是检索侧副本，截断不影响展示）
 _CONTEXT_META_LIMIT = 500
@@ -1079,9 +1081,9 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 重新解析一次就把"禁用"洗白了
         doc_active = getattr(doc, "enabled", True)
         metadatas = []
-        # 超长父块（> _PARENT_TEXT_META_LIMIT，入库会被截断）记录：一个父块通常
-        # 对应多个子块，用 dict 去重（存父块索引 → 原长度），循环外统一告警一次
-        truncated_parents: Dict[int, int] = {}
+        # 过大父块（> _PARENT_CHUNK_WARN_CHARS）记录：一个父块通常对应多个子块，
+        # 用 dict 去重（存父块索引 → 原长度），循环外统一提示一次
+        oversized_parents: Dict[int, int] = {}
         for i, c in enumerate(chunk_objects):
             meta = {
                 "document_id": doc_id,
@@ -1096,31 +1098,30 @@ class IngestionService(_TraceMixin, _ImageMixin):
             if i in contexts:
                 meta["context"] = contexts[i][:_CONTEXT_META_LIMIT]
             if parser_id == "parent_child":
-                # 父块索引（-1 表示无父块，此时父块文本=子块自身）；
-                # 父块全文 + 检索模式随子块入库，检索时直接读取
+                # 父块只留**索引**：全文的唯一权威副本在文档记录的
+                # parent_chunks_meta（检索时按此索引回捞，见 retrieval_service）。
+                # 不再把父块全文塞进 metadata——旧做法存 8000 字截断版，既永久
+                # 丢内容（超限即截，无别处可找回）又放大约 20 倍（一份父块 ×
+                # 该父块下每个子块，子块数远多于父块数）
                 parent_idx = stage.child_parent_map.get(i, -1)
                 meta["parent_chunk_index"] = parent_idx
-                # 父块全文随子块入库作检索上下文；章节父块可能数千字，
-                # 按 8000 截断防 Chroma metadata 单值超限（展示侧另有 2000 截断）
-                parent_text = (
-                    stage.parent_chunks[parent_idx].text
-                    if 0 <= parent_idx < len(stage.parent_chunks)
-                    else c.text)
-                if len(parent_text) > _PARENT_TEXT_META_LIMIT:
-                    truncated_parents[parent_idx] = len(parent_text)
-                meta["parent_text"] = parent_text[:_PARENT_TEXT_META_LIMIT]
+                if 0 <= parent_idx < len(stage.parent_chunks):
+                    plen = len(stage.parent_chunks[parent_idx].text)
+                    if plen > _PARENT_CHUNK_WARN_CHARS:
+                        oversized_parents[parent_idx] = plen
                 meta["retrieval_mode"] = parser_config.get(
                     "retrieval_mode", "parent")
             metadatas.append(meta)
-        if truncated_parents:
-            # 不阻断入库（子块完整、检索照常），但父块上下文不完整这件事要留痕：
-            # 显示在文档状态列（前端标黄 + 悬浮可见），否则完全无感
+        if oversized_parents:
+            # 不阻断入库：父块全文已完整落库，这里只是**成本提示**——父块越大，
+            # 检索回捞后进 prompt 的上下文越长（token 越多），不再是数据丢失
             warn_msg = (
-                f"{len(truncated_parents)} 个父块超过 {_PARENT_TEXT_META_LIMIT} "
-                f"字符（最大 {max(truncated_parents.values())} 字），入库时已截断"
-                f"——检索返回的父块上下文不完整；常见成因是标题层级超出父块"
-                f"切分层级，导致多个章节被并成一个父块")
-            logger.warning("父块截断告警: %s (%s) %s",
+                f"{len(oversized_parents)} 个父块超过 {_PARENT_CHUNK_WARN_CHARS} "
+                f"字符（最大 {max(oversized_parents.values())} 字），检索时会作为"
+                f"完整上下文返回（占用较多 token）；常见成因是标题层级超出父块"
+                f"切分层级，导致多个章节被并成一个父块——调大「父块分割标题层级」"
+                f"可切细")
+            logger.warning("父块过大提示: %s (%s) %s",
                            doc.original_name, doc_id, warn_msg)
             self._mark_stage_warn(doc_id, warn_msg)
         await vec.add(doc.kb_id, doc_id, doc.original_name, embed_texts,
@@ -1156,6 +1157,14 @@ class IngestionService(_TraceMixin, _ImageMixin):
                  **({"label": stage.agentic_labels[i]}
                     if i in stage.agentic_labels else {})}
                 for i, c in enumerate(chunk_objects)],
+            # 父块全文（父子分块才有）：**唯一权威副本**——检索按向量库 meta 里的
+            # parent_chunk_index 回到这里取完整父块。此前父块全文随每个子块塞进
+            # 向量库 metadata，既超限截断（8000）又放大 20 倍（子块数/父块数）；
+            # 非父子分块为空列表，检索侧自然回退
+            "parent_chunks_meta": [
+                {"text": c.text, "char_start": c.char_start,
+                 "char_end": c.char_end}
+                for c in stage.parent_chunks],
             "parser_id": parser_id,
             "parser_config": parser_config,
         }

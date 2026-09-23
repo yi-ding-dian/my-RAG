@@ -389,6 +389,12 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             "citation_snippet_chars": {"condition": "truthy", "whitelist": True,
                                        "fill_missing": True,
                                        "range": (100, 2000)},
+            # 进 prompt 的检索片段总量预算（token，默认 6000；部门可覆盖）：
+            # 按"模型窗口 − 输出 max_tokens − 余量"反推，见 config.ChatConfig
+            "prompt_total_max_tokens": {"condition": "truthy",
+                                        "whitelist": True,
+                                        "fill_missing": True,
+                                        "range": (500, 200000)},
             "max_query_len": {"fill_missing": True, "range": (100, 20000)},
             # 思考模式（聊天问答）：disabled=关闭思考（默认）| enabled_low/
             # enabled_high/enabled_max=开启并指定强度。部门可覆盖（whitelist），

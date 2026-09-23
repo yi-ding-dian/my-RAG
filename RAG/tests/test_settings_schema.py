@@ -140,7 +140,7 @@ class TestWhitelistFromSchema:
             "history_rounds", "system_prompt", "system_prompt_ref",
             "kg_enhance",
             "query_rewrite", "query_rewrite_rounds", "thinking_mode",
-            "citation_snippet_chars"}
+            "citation_snippet_chars", "prompt_total_max_tokens"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
         assert set(ss.LLM_FIELD_NAMES) == {
@@ -208,6 +208,8 @@ class TestCoerceBehavior:
                                "query_rewrite_rounds": 3,
                                "citation_snippet_chars":
                                    build_default_config().chat.citation_snippet_chars,
+                               "prompt_total_max_tokens":
+                                   build_default_config().chat.prompt_total_max_tokens,
                                "max_query_len": 2000}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()

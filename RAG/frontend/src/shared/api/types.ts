@@ -1171,6 +1171,9 @@ export interface ChatConfig {
   max_query_len?: number;
   /** 引用摘要字数（默认 600）：悬停回答里的引用标 [n] 时浮层显示的窗口大小（字） */
   citation_snippet_chars?: number;
+  /** 进 prompt 的检索片段总量预算（token，默认 6000）：超出即停止追加后续
+   *  片段；只设总量不设单条（总量天然隐含单条约束） */
+  prompt_total_max_tokens?: number;
 }
 
 export interface MySQLConfigProfile {
@@ -1343,6 +1346,8 @@ export interface ChatSettingsPayload {
     thinking_mode?: ThinkingMode;
     /** 引用摘要字数（默认 600；引用浮层的窗口大小，见配置档案「聊天设置」） */
     citation_snippet_chars?: number;
+    /** 进 prompt 的检索片段总量预算（token，默认 6000；见配置档案「聊天设置」） */
+    prompt_total_max_tokens?: number;
   };
   /** Agentic 检索增强（默认关闭；分档：分数 ≥ recheck 直接答，< abstain 拒答） */
   agentic?: {

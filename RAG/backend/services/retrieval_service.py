@@ -133,7 +133,15 @@ class RetrievalService:
         else:
             sources = self._assemble(kb_id, query, hits, min_score)
 
-        # 4) Rerank（启用且配置完整才执行；失败降级保留原顺序）
+        # 4) 按父块去重（在 rerank **之前**做：同一父块下多个子块最终返回的是
+        #    同一份父块上下文，提前合并既省 rerank 算力，又保证后面对 top_k 的
+        #    截断是"top_k 个不同上下文"，而不是被重复项挤占名额）
+        before = len(sources)
+        sources = self._dedupe_by_parent(sources)
+        if len(sources) < before:
+            logger.info("父块去重: kb=%s %d → %d 条", kb_id, before, len(sources))
+
+        # 5) Rerank（启用且配置完整才执行；失败降级保留原顺序）
         if rerank_ready and sources:
             sources = await self._rerank(query, sources, rcfg, top_k)
         else:
@@ -339,6 +347,37 @@ class RetrievalService:
     # ================= 组装 =================
 
     @staticmethod
+    def _resolve_parent_text(meta: dict) -> Optional[str]:
+        """父块全文：优先文档记录里的完整副本，回退 meta 里的截断版（历史数据）
+
+        - **新流程**：父块全文存文档记录 `parent_chunks_meta`，按向量库 meta 里的
+          `parent_chunk_index` 取——完整无截断（对齐 LangChain 的 docstore /
+          WeKnora 父块独立入库：向量库只留索引，父块另存）
+        - **历史数据**：meta["parent_text"] 是 8000 字截断版，取到即用——不至于
+          因为老数据没有新字段就丢了上下文
+        - 都取不到（索引越界/文档已删）→ None，调用方退化用子块文本
+
+        文档服务是**内存**字典（`_docs`），这里零 IO。
+        """
+        idx = meta.get("parent_chunk_index")
+        if isinstance(idx, int) and idx >= 0:
+            try:
+                from backend.services.document_service import (
+                    get_document_service)
+                doc = get_document_service().get(meta.get("document_id") or "")
+                parents = getattr(doc, "parent_chunks_meta", None) or []
+                if 0 <= idx < len(parents):
+                    item = parents[idx]
+                    full = (item.get("text") if isinstance(item, dict)
+                            else getattr(item, "text", None))
+                    if full:
+                        return full
+            except Exception:
+                # 读取失败不阻断检索：回退到下面的历史字段/子块
+                pass
+        return meta.get("parent_text") or None
+
+    @staticmethod
     def _build_source(kb_id: str, cid: str, text: str, meta: dict,
                       score: float, vector_score: float | None,
                       score_type: str) -> Source:
@@ -349,9 +388,7 @@ class RetrievalService:
         """
         parent_text = None
         if meta.get("retrieval_mode") == "parent":
-            pt = meta.get("parent_text")
-            if pt:
-                parent_text = pt
+            parent_text = RetrievalService._resolve_parent_text(meta)
         return Source(
             id=cid,
             text=text,
@@ -361,6 +398,10 @@ class RetrievalService:
             kb_id=kb_id,
             chunk_index=int(meta.get("chunk_index", 0)),
             parent_text=parent_text,
+            # 父块序号（父子分块才有）：供 _dedupe_by_parent 判同一父块
+            parent_chunk_index=(meta.get("parent_chunk_index")
+                                if isinstance(meta.get("parent_chunk_index"), int)
+                                else None),
             context=meta.get("context"),
             vector_score=round(vector_score, 4) if vector_score is not None else None,
             score_type=score_type,
@@ -369,6 +410,36 @@ class RetrievalService:
             char_start=int(meta.get("char_start", -1)),
             char_end=int(meta.get("char_end", -1)),
         )
+
+
+    @staticmethod
+    def _dedupe_by_parent(sources: List[Source]) -> List[Source]:
+        """按父块去重：同一父块下的多个子块命中，只保留最先出现（分数最高）的那条
+
+        父子分块的语义是"子块精准命中、父块提供上下文"——同一父块下的 N 个子块
+        命中，返回 N 份**相同**的父块上下文没有意义：既重复占用 prompt token，
+        又挤占 top_k 名额、让真正不同的上下文进不来。对齐 RAGFlow
+        `retrieval_by_children` 的 mom_id 分组、LangChain ParentDocumentRetriever
+        的 parent_k 语义。
+
+        sources 已按相关性降序，故"首次出现"即"最高分"，无需再比较。
+        无父块索引的条目（非父子模式 / 历史数据 / 索引为 -1）照常保留。
+        """
+        if not sources:
+            return sources
+        seen = set()
+        out: List[Source] = []
+        for s in sources:
+            idx = getattr(s, "parent_chunk_index", None)
+            if idx is None or idx < 0:
+                out.append(s)          # 无父块：各自独立上下文，不去重
+                continue
+            key = (s.document_id, idx)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+        return out
 
 
 _retrieval_service: RetrievalService | None = None

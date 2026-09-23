@@ -551,7 +551,7 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
     - 鉴权：Authorization: Bearer {token}（配置不存在/错 token/停用 → 401）
     - 限流：每 config 每分钟 RATE_LIMIT_PER_MIN 次（超限 → 429）
     - 流程复用现有能力：多库检索（每库 top_k）→ sources 合并 → system 组装
-      （config.system_prompt 优先，{knowledge}/{refs} 占位符支持）→ LLM 流式
+      （config.system_prompt 优先，{refs} 占位符支持）→ LLM 流式
       （全局活跃 LLM 配置，temperature/top_p/max_tokens 由 config 覆盖）→
       无命中直接告知；查询审计日志落盘；多轮上下文（内存，仅同 session_id 内）
     """
@@ -613,13 +613,18 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                 return
 
             # 3) 组装 prompt（复用 chat_service 的 system 组装：config 的
-            #    system_prompt 优先（支持 {knowledge}/{refs} 占位符），
+            #    system_prompt 优先（支持 {refs} 占位符），
             #    空/缺省 → 内置默认模板）
-            refs = ChatService._build_refs(sources)
-            knowledge = ChatService._build_knowledge(sources)
+            # LLM 配置在此提前解析：引用段装配要拿 base_url 调模型服务的
+            # /tokenize 精确计 token（见 services/token_counter），
+            # 下方流式调用处会再解析一次（纯函数、无副作用）
+            llm_cfg = resolve_llm_config(conf)
+            refs = await ChatService._build_refs(
+                sources, llm_base_url=llm_cfg.get("base_url"),
+                llm_model=llm_cfg.get("model"))
             system_content = ChatService._build_system_content(
                 resolve_system_prompt(conf, cfg.chat.system_prompt),
-                refs, knowledge)
+                refs)
             # 图片引导追加在组装结果之后：内置默认模板与自定义模板两条路径
             # 都能覆盖，且不改动 chat_service 的共用组装逻辑（内部聊天零影响）
             if conf.get("enable_images", True):
@@ -765,7 +770,7 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
       RATE_LIMIT_PER_MIN 次，超限 → 429）
     - 流程复用现有能力：多库检索（每库 top_k 候选 → 合并按 score 降序取
       全局 top_k）→ system 组装（config.system_prompt 优先，
-      {knowledge}/{refs} 占位符支持）→ **非流式** LLM（stream=False 一次
+      {refs} 占位符支持）→ **非流式** LLM（stream=False 一次
       返回；temperature/top_p/max_tokens 由 config 覆盖）→ 无命中直接
       固定文案不调 LLM；每次查询落审计日志（同一 ext_query_logs.jsonl，
       仅 query 摘要与命中数）
@@ -820,12 +825,15 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
         return {"answer": _NO_HIT_TIP, "sources": []}
 
     # 3) 组装 prompt（复用 chat_service 的 system 组装：config.system_prompt
-    #    优先（支持 {knowledge}/{refs} 占位符），空/缺省 → 内置默认模板；
+    #    优先（支持 {refs} 占位符），空/缺省 → 内置默认模板；
     #    同步查询无会话概念，不带多轮历史）
-    refs = ChatService._build_refs(sources)
-    knowledge = ChatService._build_knowledge(sources)
+    # LLM 配置在此解析：引用段装配要拿 base_url 调 /tokenize 精确计 token
+    llm_cfg = resolve_llm_config(conf)
+    refs = await ChatService._build_refs(
+        sources, llm_base_url=llm_cfg.get("base_url"),
+        llm_model=llm_cfg.get("model"))
     system_content = ChatService._build_system_content(
-        resolve_system_prompt(conf, cfg.chat.system_prompt), refs, knowledge)
+        resolve_system_prompt(conf, cfg.chat.system_prompt), refs)
     if conf.get("enable_images", True):
         system_content += _IMAGE_OUTPUT_RULE
     messages: List[dict] = [{"role": "system", "content": system_content},

@@ -274,19 +274,22 @@ class TestExtChat:
 
     def test_system_prompt_override(self, client, admin_headers,
                                     mock_embedding, mock_llm):
-        """config.system_prompt 覆盖默认模板；{knowledge} 占位符替换为检索原文"""
+        """config.system_prompt 覆盖默认模板；{refs} 占位符替换为带来源标注的引用
+
+        （原 {knowledge} 占位符已移除——它与 {refs} 内容重叠却不带引用编号，
+          会让模型无法标注来源；且其内容逐字不截断，超大父块会撑爆上下文。）
+        """
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])
         item = create_ext(client, admin_headers, kb_ids=[kb["id"]],
-                          config={"system_prompt": "你是测试助手，请逐字输出原文。\n{knowledge}"})
+                          config={"system_prompt": "你是测试助手，请逐字输出原文。\n{refs}"})
         state = mock_llm()
         r = self._chat(client, item["id"], item["token"], "Python 是什么？")
         assert r.status_code == 200, r.text
         sys_content = state.instances[0].last_kwargs["messages"][0]["content"]
         assert sys_content.startswith("你是测试助手，请逐字输出原文。")
-        assert "Python" in sys_content, "{knowledge} 占位符应替换为检索原文"
-        assert "[引用 1]" not in sys_content, \
-            "knowledge 是原文逐字拼接，不应带引用包装"
+        assert "Python" in sys_content, "{refs} 占位符应替换为检索片段"
+        assert "[引用 1]" in sys_content, "{refs} 带引用编号与来源标注"
 
     def test_default_template_when_prompt_empty(self, client, admin_headers,
                                                 mock_embedding, mock_llm):

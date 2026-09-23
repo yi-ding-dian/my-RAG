@@ -223,6 +223,8 @@ export interface ProfileFormValues {
   chat_max_query_len: number;
   /** 引用摘要字数（悬停引用标 [n] 时浮层显示的窗口大小） */
   chat_citation_snippet_chars: number;
+  /** 进 prompt 的检索片段总量预算（token，默认 6000） */
+  chat_prompt_total_max_tokens: number;
   mysql_host: string;
   mysql_port: number;
   mysql_user: string;
@@ -361,6 +363,7 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
   chat: {
     max_query_len: vals.chat_max_query_len,
     citation_snippet_chars: vals.chat_citation_snippet_chars,
+    prompt_total_max_tokens: vals.chat_prompt_total_max_tokens,
   },
   // 系统提示词库：始终提交（空数组 = 清空库）；过滤掉没填名称的半成品条目
   prompts: {
@@ -409,6 +412,7 @@ export const toFormValues = (p: ServiceProfile) => ({
   ingestion_max_upload_mb: p.ingestion?.max_upload_mb ?? 100,
   chat_max_query_len: p.chat?.max_query_len ?? 2000,
   chat_citation_snippet_chars: p.chat?.citation_snippet_chars ?? 600,
+  chat_prompt_total_max_tokens: p.chat?.prompt_total_max_tokens ?? 6000,
   mysql_host: p.mysql?.host,
   mysql_port: p.mysql?.port,
   mysql_user: p.mysql?.user,
