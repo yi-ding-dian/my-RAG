@@ -70,7 +70,7 @@ class AgenticState(TypedDict, total=False):
     - top_k / min_score：检索参数（None=活跃配置默认；部门合并后的有效值
       由 chat_service 传入，保证部门覆盖与全局语义一致）
     """
-    kb_id: str
+    kb_ids: List[str]
     query: str
     original_query: str
     sources: List[Source]
@@ -116,8 +116,8 @@ class AgenticService:
 
         async def retrieve_node(state: AgenticState) -> AgenticState:
             """节点：检索（复用 retrieval_service，多租户/混合/rerank 天然继承）"""
-            sources = await get_retrieval_service().retrieve(
-                state["kb_id"], state["query"],
+            sources = await get_retrieval_service().retrieve_multi(
+                state["kb_ids"], state["query"],
                 top_k=state.get("top_k"), min_score=state.get("min_score"))
             # best_score：取本轮最高向量相似度（Rerank 后 Source.score 语义
             # 已变，不采用；vector_score 保持原始 cos 语义才与阈值同量纲）
@@ -218,27 +218,27 @@ class AgenticService:
             self._graph = self._build_graph(*spec)
             self._graph_spec = spec
 
-    async def run(self, kb_id: str, query: str, *,
+    async def run(self, kb_ids: List[str], query: str, *,
                   llm_cfg: Optional[dict] = None,
                   top_k: Optional[int] = None,
                   min_score: Optional[float] = None) -> AgenticResult:
         """执行检索决策循环，返回最终决策（answer/abstain）与轨迹
 
-        - kb_id/query：知识库与原始问题
+        - kb_ids/query：知识库列表（多库时各库并行检索后合并）与原始问题
         - llm_cfg：合并后的 LLM 配置 dict（query rewrite 用；None=全局活跃配置）
         - top_k/min_score：检索参数（None=活跃配置默认）
         - 检索不可用（RetrievalUnavailableError）原样上抛（chat_service 透传）
         """
         result = None
         async for kind, payload in self.run_iter(
-                kb_id, query, llm_cfg=llm_cfg, top_k=top_k,
+                kb_ids, query, llm_cfg=llm_cfg, top_k=top_k,
                 min_score=min_score):
             if kind == "result":
                 result = payload
         assert result is not None
         return result
 
-    async def run_iter(self, kb_id: str, query: str, *,
+    async def run_iter(self, kb_ids: List[str], query: str, *,
                        llm_cfg: Optional[dict] = None,
                        top_k: Optional[int] = None,
                        min_score: Optional[float] = None):
@@ -257,7 +257,7 @@ class AgenticService:
         """
         self._ensure_graph()
         initial: AgenticState = {
-            "kb_id": kb_id,
+            "kb_ids": kb_ids,
             "query": query,
             "original_query": query,
             "sources": [],

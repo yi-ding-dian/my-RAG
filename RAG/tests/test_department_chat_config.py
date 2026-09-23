@@ -167,9 +167,16 @@ class TestDeptChatAssembly:
             return await real_svc.retrieve(
                 kb_id, query, top_k=top_k, min_score=min_score, **kw)
 
+        async def _wrapper_multi(kb_ids, query, top_k=None, min_score=None,
+                                 **kw):
+            """单库场景转调 _wrapper：保持 retrieval_calls 口径不变"""
+            return await _wrapper(kb_ids[0], query, top_k=top_k,
+                                  min_score=min_score, **kw)
+
         monkeypatch.setattr(
             "backend.services.chat_service.get_retrieval_service",
-            lambda: SimpleNamespace(retrieve=_wrapper))
+            lambda: SimpleNamespace(retrieve=_wrapper,
+                                    retrieve_multi=_wrapper_multi))
         recorder = _RecordingLLM()
         monkeypatch.setattr(ChatService, "_get_client", lambda self, llm_cfg=None: recorder)
 

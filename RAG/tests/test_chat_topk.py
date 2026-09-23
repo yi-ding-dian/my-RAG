@@ -19,6 +19,14 @@ class FakeRetrieval:
         self.calls.append(top_k)
         return []
 
+    async def retrieve_multi(self, kb_ids, query, top_k=None, min_score=None,
+                             enable_hybrid=None, enable_rerank=None):
+        """单库场景转调 retrieve：保持 calls 口径（每次问答一次）不变"""
+        return await self.retrieve(kb_ids[0], query, top_k=top_k,
+                                   min_score=min_score,
+                                   enable_hybrid=enable_hybrid,
+                                   enable_rerank=enable_rerank)
+
 
 def _patch_retrieval(monkeypatch) -> FakeRetrieval:
     fake = FakeRetrieval()

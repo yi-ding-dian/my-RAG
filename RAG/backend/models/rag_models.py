@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class KnowledgeBase(BaseModel):
@@ -231,7 +231,9 @@ class ChatMessage(BaseModel):
 class ChatSession(BaseModel):
     """聊天会话（落盘 data/chat/{session_id}.json）"""
     id: str = Field(..., description="会话 ID")
-    kb_id: str = Field("", description="关联知识库 ID")
+    kb_ids: List[str] = Field(
+        default_factory=list,
+        description="关联知识库 ID 列表（多库对话；单库时为单元素列表）")
     user_id: Optional[str] = Field(None, description="归属用户 ID（旧数据为空=super_admin 归属）")
     title: str = Field("", description="会话标题（问题前 20 字）")
     messages: List[ChatMessage] = Field(default_factory=list, description="消息列表")
@@ -243,11 +245,23 @@ class ChatSession(BaseModel):
     # 此处不声明则归档里写了也读不出来）
     trimmed: bool = Field(False, description="归档时是否已裁剪（仅归档文件可能为 True）")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_kb_id(cls, data):
+        """旧会话文件只有 kb_id（单库）→ 读取时迁移成 kb_ids
+
+        就地兼容、不改历史文件：读进来是单元素列表，下次落盘自然写成新结构。
+        """
+        if isinstance(data, dict) and not data.get("kb_ids") and data.get("kb_id"):
+            data = {**data, "kb_ids": [data["kb_id"]]}
+        return data
+
 
 class ChatHistoryItem(BaseModel):
     """会话历史列表项"""
     id: str
-    kb_id: str
+    kb_ids: List[str] = Field(default_factory=list,
+                              description="关联知识库 ID 列表（多库对话）")
     user_id: Optional[str] = Field(None, description="归属用户 ID")
     title: str
     message_count: int
@@ -257,7 +271,10 @@ class ChatHistoryItem(BaseModel):
 
 class ChatRequest(BaseModel):
     """聊天请求（契约字段 query，保留 message 向后兼容）"""
-    kb_id: str = Field(..., description="知识库 ID")
+    kb_id: Optional[str] = Field(
+        None, description="知识库 ID（单库；与 kb_ids 二选一）")
+    kb_ids: Optional[List[str]] = Field(
+        None, description="知识库 ID 数组（1~5 个，多库对话；与 kb_id 二选一，都传时优先）")
     query: str = Field("", description="用户问题（契约字段，优先）")
     message: Optional[str] = Field(None, description="用户问题（向后兼容字段）")
     session_id: Optional[str] = Field(None, description="会话 ID（续聊时传）")

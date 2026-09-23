@@ -180,17 +180,20 @@ class ChatService:
                 encoding="utf-8",
             )
 
-    def _load_or_create(self, session_id: Optional[str], kb_id: str,
+    def _load_or_create(self, session_id: Optional[str], kb_ids: List[str],
                         message: str, user_id: Optional[str] = None) -> ChatSession:
-        """加载已有会话（kb 不一致则新建）或创建新会话（注入 user_id）"""
+        """加载已有会话（知识库集合不一致则新建）或创建新会话（注入 user_id）
+
+        知识库比较用**集合**：同一组库换个选择顺序仍是同一个会话，不该新开。
+        """
         if session_id:
             session = self.get_session(session_id)
-            if session and session.kb_id == kb_id:
+            if session and set(session.kb_ids) == set(kb_ids):
                 return session
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return ChatSession(
             id=uuid.uuid4().hex[:12],
-            kb_id=kb_id,
+            kb_ids=list(kb_ids),
             user_id=user_id,
             title=message.strip()[:20] or "新会话",
             messages=[],
@@ -223,11 +226,14 @@ class ChatService:
                             continue
                     elif s_user_id != user_id:
                         continue
-                if kb_id and data.get("kb_id") != kb_id:
+                # 会话关联的库（旧文件只有 kb_id，读时按单元素列表兼容）
+                s_kb_ids = (data.get("kb_ids")
+                            or ([data["kb_id"]] if data.get("kb_id") else []))
+                if kb_id and kb_id not in s_kb_ids:
                     continue
                 items.append(ChatHistoryItem(
                     id=data["id"],
-                    kb_id=data.get("kb_id", ""),
+                    kb_ids=s_kb_ids,
                     user_id=s_user_id,
                     title=data.get("title", ""),
                     message_count=len(data.get("messages", [])),
@@ -346,7 +352,7 @@ class ChatService:
 
     # ---------- 流式问答 ----------
 
-    async def stream_chat(self, kb_id: str, message: str,
+    async def stream_chat(self, kb_ids: List[str], message: str,
                           session_id: Optional[str] = None,
                           user_id: Optional[str] = None,
                           top_k: Optional[int] = None,
@@ -354,6 +360,8 @@ class ChatService:
         """SSE 流：meta(sources) -> prompt(完整提示词+耗时) -> delta(文本)
         -> done(session_id, message_count) / error
 
+        kb_ids: 本次对话的知识库列表（1~5 个；多库时各库并行检索后按 score
+          合并取**全局** top_k，图谱也跨库合并成一条引用）
         top_k: 检索条数覆盖（None=取配置 retrieval.top_k，聊天页选择器透传）
         dept_config: 当前用户所在部门的完整配置（{"llm": {...},
           "chat": {...}, "retrieval": {...}}；None/空 = 纯全局活跃档案，
@@ -368,7 +376,7 @@ class ChatService:
           注入空 <think> prefill 跳过思考（请求层变换，prompt 事件仍为
           组装后原始 messages，不含注入/extra_body）。
         """
-        session = self._load_or_create(session_id, kb_id, message, user_id)
+        session = self._load_or_create(session_id, kb_ids, message, user_id)
         answer_parts: List[str] = []
         # 本次请求的 prompt 详情（与 prompt 事件同源）：随调用透传给 _finalize，
         # 落进 assistant 消息供历史会话"详情"回看。**必须放局部变量**——
@@ -466,12 +474,17 @@ class ChatService:
                     search_query = rewritten_query
 
             # 知识图谱通道与检索**并行**：抽实体用的是原始 message（不是改写后的
-            # search_query），除 kb_id 外与检索无任何依赖——串行会让每次问答白等
-            # 一次 LLM 往返（抽实体超时上限 8s）。先把任务起起来，检索完再汇合。
-            from backend.services.knowledge_graph_service import build_kg_source
+            # search_query），除知识库集合外与检索无任何依赖——串行会让每次问答
+            # 白等一次 LLM 往返（抽实体超时上限 8s）。先把任务起起来，检索完再汇合。
+            # 单库走 build_kg_source（引用能溯源到该库）；多库走 multi 版本，
+            # 抽实体只做一次再跨库合并（逐库各抽一次 = 白烧 N-1 次 LLM 调用）。
+            from backend.services.knowledge_graph_service import (
+                build_kg_source, build_kg_source_multi)
+            kg_enabled = merged_chat.get("kg_enhance", True)
             kg_task = asyncio.create_task(
-                build_kg_source(kb_id, message,
-                                merged_chat.get("kg_enhance", True)))
+                build_kg_source_multi(kb_ids, message, kg_enabled)
+                if len(kb_ids) > 1
+                else build_kg_source(kb_ids[0], message, kg_enabled))
 
             # 检索耗时统计（毫秒，供前端"请求详情"展示；异常路径直接 return 不产出）
             t_retrieval = time.perf_counter()
@@ -481,7 +494,7 @@ class ChatService:
                     # 前端按阶段换提示（检索中/改写中/重新检索中），不干等
                     agentic_result = None
                     async for kind, payload in get_agentic_service().run_iter(
-                            kb_id, message, llm_cfg=merged_llm_dict,
+                            kb_ids, message, llm_cfg=merged_llm_dict,
                             top_k=eff_top_k, min_score=eff_min_score):
                         if kind == "phase":
                             yield sse_event("agentic_status", payload)
@@ -496,8 +509,8 @@ class ChatService:
                     if agentic_abstain:
                         sources = []
                 else:
-                    sources = await get_retrieval_service().retrieve(
-                        kb_id, search_query, top_k=eff_top_k,
+                    sources = await get_retrieval_service().retrieve_multi(
+                        kb_ids, search_query, top_k=eff_top_k,
                         min_score=eff_min_score)
                 retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
@@ -1028,7 +1041,7 @@ class ChatService:
         """会话导出为 Markdown（问答正文 + [n] 引用与来源片段）
 
         格式：
-        # 会话标题（kb_id、时间）
+        # 会话标题（关联知识库、时间）
         ## 用户
         问题
         ## 助手
@@ -1040,7 +1053,8 @@ class ChatService:
         对应其 sources 快照顺序；无消息时仅输出标题模板。
         """
         lines = [
-            f"# {session.title or '未命名会话'}（kb_id: {session.kb_id or '—'}，"
+            f"# {session.title or '未命名会话'}（知识库: "
+            f"{'、'.join(session.kb_ids) or '—'}，"
             f"时间: {session.updated_at or session.created_at}）",
             "",
         ]

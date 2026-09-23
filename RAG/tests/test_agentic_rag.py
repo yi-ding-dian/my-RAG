@@ -49,6 +49,12 @@ def _stub_retrieve(scores, monkeypatch):
             score = scores[min(idx, len(scores) - 1)]
             return [_source(score)]
 
+        async def retrieve_multi(self, kb_ids, query, top_k=None,
+                                 min_score=None):
+            """单库场景转调 retrieve：保证 calls 口径（每轮一次）不变"""
+            return await self.retrieve(kb_ids[0], query,
+                                       top_k=top_k, min_score=min_score)
+
     monkeypatch.setattr("backend.services.agentic_service.get_retrieval_service",
                         lambda: _StubRetrieval())
     return calls
@@ -92,7 +98,7 @@ def _run(monkeypatch, scores, query="问题", rewritten="改写后的问题",
     _stub_rewrite(monkeypatch, rewritten=rewritten, fail=rewrite_fail)
     _stub_active_config(monkeypatch, **kw)
     from backend.services.agentic_service import get_agentic_service
-    result = asyncio.run(get_agentic_service().run("kb_x", query))
+    result = asyncio.run(get_agentic_service().run(["kb_x"], query))
     return result, calls
 
 
@@ -196,11 +202,16 @@ class TestAgenticDecisionGraph:
                 s.vector_score = None  # BM25-only 命中
                 return [s]
 
+            async def retrieve_multi(self, kb_ids, query, top_k=None,
+                                     min_score=None):
+                return await self.retrieve(kb_ids[0], query,
+                                           top_k=top_k, min_score=min_score)
+
         monkeypatch.setattr("backend.services.agentic_service.get_retrieval_service",
                             lambda: _StubRetrieval())
         _stub_active_config(monkeypatch)
         from backend.services.agentic_service import get_agentic_service
-        result = asyncio.run(get_agentic_service().run("kb_x", "关键词问题"))
+        result = asyncio.run(get_agentic_service().run(["kb_x"], "关键词问题"))
         assert result.decision == "answer"
 
     def test_run_iter_phase_sequence_rewrite(self, monkeypatch):
@@ -213,7 +224,7 @@ class TestAgenticDecisionGraph:
 
         async def collect():
             async for kind, payload in get_agentic_service().run_iter(
-                    "kb_x", "口语化的问题"):
+                    ["kb_x"], "口语化的问题"):
                 events.append((kind, payload))
 
         asyncio.run(collect())
@@ -233,7 +244,7 @@ class TestAgenticDecisionGraph:
 
         async def collect():
             async for kind, payload in get_agentic_service().run_iter(
-                    "kb_x", "乱问的问题"):
+                    ["kb_x"], "乱问的问题"):
                 events.append((kind, payload))
 
         asyncio.run(collect())

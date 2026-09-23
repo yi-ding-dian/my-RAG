@@ -68,7 +68,7 @@ class TestExportContent:
         # Markdown 内容结构
         text = resp.text
         assert f"# {session['title']}" in text, "标题行缺失"
-        assert "kb_id:" in text and "时间:" in text
+        assert "知识库: " in text and "时间:" in text
         assert "## 用户" in text
         assert "## 助手" in text
         assert "Python 是什么语言？" in text, "问题内容缺失"
@@ -176,7 +176,7 @@ class TestExportPermission:
                           headers=admin_headers)
         assert resp.status_code == 200
         text = resp.text
-        assert text.startswith("# 空会话（kb_id:")
+        assert text.startswith("# 空会话（知识库:")
         assert "## 用户" not in text
         assert "## 助手" not in text
         assert text.strip().endswith("时间: 2026-08-10 10:00:00）")

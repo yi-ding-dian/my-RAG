@@ -33,7 +33,9 @@ from backend.services import audit_service, department_service
 from backend.services.chat_service import get_chat_service, sse_event
 from backend.services.feedback_service import (create_feedback,
                                                get_feedback_msg_idxs)
-from backend.services.knowledge_graph_service import build_kg_source
+from backend.services.knowledge_graph_service import (build_kg_source,
+                                                      extract_query_entities,
+                                                      has_any_graph)
 from backend.services.retrieval_service import get_retrieval_service
 from backend.logger import AppLog
 
@@ -54,7 +56,15 @@ def _check_session_owner(session, user: UserPublic):
 async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
                       user: UserPublic = Depends(get_current_user)):
     """SSE 流式问答（请求体 query 优先，message 向后兼容）"""
-    await kb_or_404(db, body.kb_id, user)
+    # kb_id / kb_ids 二选一（都传时 kb_ids 优先）：逐个校验存在 + 可访问
+    # （任一不满足 → 404 伪装，与检索调试接口同口径）
+    kb_ids = body.kb_ids if body.kb_ids else ([body.kb_id] if body.kb_id else [])
+    if not kb_ids:
+        raise HTTPException(status_code=422, detail="kb_id 与 kb_ids 至少传一个")
+    if len(kb_ids) > 5:
+        raise HTTPException(status_code=400, detail="知识库数量需为 1~5 个")
+    for kid in kb_ids:
+        await kb_or_404(db, kid, user)
     question = (body.query or body.message or "").strip()
     if not question:
         raise HTTPException(status_code=422, detail="query 与 message 均缺失")
@@ -83,7 +93,7 @@ async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
     async def event_generator():
         try:
             async for ev in chat_svc.stream_chat(
-                    body.kb_id, question, body.session_id,
+                    kb_ids, question, body.session_id,
                     user_id=user.id, top_k=body.top_k,
                     dept_config=dept_config):
                 yield ev
@@ -134,25 +144,12 @@ async def retrieve(body: RetrieveRequest, db: AsyncSession = Depends(get_db),
     kb_name_map = {kb.id: kb.name for kb in kbs}
     try:
         retrieve_svc = get_retrieval_service()
-        if len(kb_ids) == 1:
-            # 单库：与既有行为完全一致
-            sources = await retrieve_svc.retrieve(
-                kb_ids[0], body.query.strip(), top_k=body.top_k,
-                min_score=body.similarity_threshold,
-                enable_hybrid=body.enable_hybrid,
-                enable_rerank=body.enable_rerank)
-        else:
-            # 多库：各自独立检索 top_k 候选 → 合并按 score 降序取全局 top_k
-            top_k = body.top_k or get_active_config().retrieval.top_k
-            merged: List = []
-            for kid in kb_ids:
-                merged.extend(await retrieve_svc.retrieve(
-                    kid, body.query.strip(), top_k=body.top_k,
-                    min_score=body.similarity_threshold,
-                    enable_hybrid=body.enable_hybrid,
-                    enable_rerank=body.enable_rerank))
-            merged.sort(key=lambda s: s.score, reverse=True)
-            sources = merged[:top_k]
+        # 多库各库并行检索后合并（单库走同一条路径，行为与既有完全一致）
+        sources = await retrieve_svc.retrieve_multi(
+            kb_ids, body.query.strip(), top_k=body.top_k,
+            min_score=body.similarity_threshold,
+            enable_hybrid=body.enable_hybrid,
+            enable_rerank=body.enable_rerank)
         # 知识图谱增强通道（与普通检索并行注入）：开关开且有图谱时，
         # 每个库独立尝试图谱上下文，作为"知识图谱"来源引用追加在末尾
         # （不参与排序/rerank；无图谱/失败自动跳过，不影响检索结果）。
@@ -163,12 +160,18 @@ async def retrieve(body: RetrieveRequest, db: AsyncSession = Depends(get_db),
         kg_enabled = body.enable_kg
         if kg_enabled is None:
             kg_enabled = get_active_config().chat.kg_enhance
-        if kg_enabled:
-            for kid in kb_ids:
-                kg = await build_kg_source(kid, body.query.strip(), enabled=True)
-                if kg:
-                    kg.kb_name = kb_name_map.get(kid, kg.kb_name)
-                    sources.append(kg)
+        if kg_enabled and has_any_graph(kb_ids):
+            # 抽实体只做一次，各库复用（逐库各抽一次 = 白烧 N-1 次 LLM 调用）；
+            # 先查图谱存在性，一个图谱都没有时零成本跳过、不抽实体
+            names = await extract_query_entities(body.query.strip())
+            if names:
+                for kid in kb_ids:
+                    kg = await build_kg_source(kid, body.query.strip(),
+                                               enabled=True,
+                                               query_entities=names)
+                    if kg:
+                        kg.kb_name = kb_name_map.get(kid, kg.kb_name)
+                        sources.append(kg)
         for s in sources:
             s.kb_name = kb_name_map.get(s.kb_id, s.kb_name)
         return RetrieveResponse(sources=sources)

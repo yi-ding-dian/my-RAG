@@ -207,8 +207,10 @@ export const retrieveChat = async (data: RetrieveChatParams, signal?: AbortSigna
 
 // ========== 会话历史 API ==========
 
-export const listSessions = (kbId: string) =>
-  api.get<ChatSession[]>('/chat/history', { params: { kb_id: kbId } });
+/** 会话列表（kbId 省略 = 不过滤返回全部；问答页用全局一份列表，会话自带 kb_ids） */
+export const listSessions = (kbId?: string) =>
+  api.get<ChatSession[]>('/chat/history',
+    { params: kbId ? { kb_id: kbId } : undefined });
 
 /**
  * 会话详情。includeDeleted=true（仅超管生效）时，会话已被用户删除则回退读

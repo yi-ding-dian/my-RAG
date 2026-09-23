@@ -329,7 +329,7 @@ class TestHistory:
         item = next(h for h in history if h["id"] == session_id)
         assert item["message_count"] == 2
         assert item["title"]  # 标题取问题前 20 字
-        assert item["kb_id"] == kb["id"]
+        assert item["kb_ids"] == [kb["id"]]
 
         # 详情：user + assistant 消息，assistant 带 sources 快照
         detail = client.get(f"/api/chat/history/{session_id}",

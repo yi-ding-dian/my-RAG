@@ -957,25 +957,18 @@ _MAX_CTX_RELATIONS = 40
 _CTX_DESC_CHARS = 60
 
 
-def build_graph_context(graph: dict, query_entities: List[str]) -> dict:
-    """组装图谱上下文（纯函数）：匹配 → 1-hop 扩展 → CSV 文本组装
+def assemble_context_text(entities: List[dict], relations: List[dict],
+                          all_entities: Optional[List[dict]] = None) -> str:
+    """实体/关系 → CSV 文本（单库与多库版本共用）
 
     文本形式（参照 KnowFlow KGSearch）：
       【知识图谱实体】
       {name}({type}|{description}|{count})
       【知识图谱关系】
       {source}|{type}|{target}|{description}
-    - 实体/关系超限截断（30/40 条），描述截断 60 字
-    - 返回 {"entities": [...], "relations": [...], "context_text": str,
-      "source_chunks": [...]}；无匹配实体 → context_text="" 其余空结构
+    实体/关系超限由调用方截断；描述截断 60 字。all_entities 传"截断前的全量
+    实体"时用它的 id→name 映射，防被截掉的实体在关系行里显示成裸 id。
     """
-    matched = match_entities(graph, query_entities)
-    if not matched:
-        return {"entities": [], "relations": [], "context_text": "",
-                "source_chunks": []}
-    expanded = expand_neighbors(graph, matched, hop=1)
-    entities = expanded["entities"][:_MAX_CTX_ENTITIES]
-    relations = expanded["relations"][:_MAX_CTX_RELATIONS]
     lines: List[str] = []
     if entities:
         lines.append("【知识图谱实体】")
@@ -987,7 +980,7 @@ def build_graph_context(graph: dict, query_entities: List[str]) -> dict:
     if relations:
         lines.append("【知识图谱关系】")
         name_of = {e.get("id"): e.get("name")
-                   for e in expanded["entities"]}  # 全量实体映射，防截断丢名
+                   for e in (all_entities if all_entities is not None else entities)}
         for r in relations:
             s_name = name_of.get(r.get("source"), r.get("source"))
             t_name = name_of.get(r.get("target"), r.get("target"))
@@ -995,16 +988,36 @@ def build_graph_context(graph: dict, query_entities: List[str]) -> dict:
             if len(desc) > _CTX_DESC_CHARS:
                 desc = desc[:_CTX_DESC_CHARS] + "…"
             lines.append(f"{s_name}|{r.get('type')}|{t_name}|{desc}")
+    return "\n".join(lines)
+
+
+def build_graph_context(graph: dict, query_entities: List[str]) -> dict:
+    """组装图谱上下文（纯函数）：匹配 → 1-hop 扩展 → CSV 文本组装
+
+    - 实体/关系超限截断（30/40 条），描述截断 60 字
+    - 返回 {"entities": [...], "relations": [...], "context_text": str,
+      "source_chunks": [...]}；无匹配实体 → context_text="" 其余空结构
+    """
+    matched = match_entities(graph, query_entities)
+    if not matched:
+        return {"entities": [], "relations": [], "context_text": "",
+                "source_chunks": []}
+    expanded = expand_neighbors(graph, matched, hop=1)
+    entities = expanded["entities"][:_MAX_CTX_ENTITIES]
+    relations = expanded["relations"][:_MAX_CTX_RELATIONS]
     return {
         "entities": entities,
         "relations": relations,
-        "context_text": "\n".join(lines),
+        "context_text": assemble_context_text(
+            entities, relations, expanded["entities"]),
         "source_chunks": expanded["source_chunks"],
     }
 
 
 async def build_kg_source(kb_id: str, query: str,
-                          enabled: bool = True) -> Optional[Source]:
+                          enabled: bool = True,
+                          query_entities: Optional[List[str]] = None
+                          ) -> Optional[Source]:
     """图谱检索增强通道：抽实体 → 匹配/扩展 → 组装"知识图谱"引用
 
     - enabled=False（开关关）→ None；无图谱文件/无实体 → None（零成本跳过）
@@ -1029,7 +1042,10 @@ async def build_kg_source(kb_id: str, query: str,
             graph = filter_graph_by_inactive_docs(graph, inactive)
             if not graph.get("entities"):
                 return None
-        query_entities = await extract_query_entities(query)
+        # query_entities 传了就直接用（多库调用方已抽过一次，避免逐库重复
+        # 烧 LLM 调用）；没传才自己抽
+        query_entities = (query_entities if query_entities is not None
+                          else await extract_query_entities(query))
         if not query_entities:
             return None
         ctx = build_graph_context(graph, query_entities)
@@ -1051,4 +1067,99 @@ async def build_kg_source(kb_id: str, query: str,
         )
     except Exception as e:
         logger.warning("知识图谱增强失败（跳过，不影响查询）: %s", str(e)[:150])
+        return None
+
+
+def has_any_graph(kb_ids: List[str]) -> bool:
+    """选中的库里是否至少有一个已建图谱（实体非空）
+
+    用于"要不要花一次 LLM 抽实体"的预判。抽实体是 query 级的、一旦开抽就
+    挡不住那次 LLM 调用，所以必须**先查图谱存在性**再决定——否则一个图谱都
+    没有的库白白等一次 8s 上限的 LLM 往返（与 build_kg_source 内部"无图谱
+    直接 return、绝不抽实体"的语义对齐）。
+    """
+    return any(load_graph(kid).get("entities") for kid in kb_ids)
+
+
+def _round_robin(groups: List[List[dict]], limit: int) -> List[dict]:
+    """按组轮流取，直到取满 limit（每轮每组各取一个，取完的组跳过）
+
+    多库合并用：避免排在前面的库把名额一次占满。
+    """
+    out: List[dict] = []
+    idx = 0
+    while len(out) < limit and any(idx < len(g) for g in groups):
+        for g in groups:
+            if idx < len(g) and len(out) < limit:
+                out.append(g[idx])
+        idx += 1
+    return out
+
+
+async def build_kg_source_multi(kb_ids: List[str], query: str,
+                                enabled: bool = True) -> Optional[Source]:
+    """多知识库图谱增强：**抽实体只做一次**，各库匹配后合并成一条引用
+
+    与 build_kg_source 的关键差别：抽实体是 query 级的、与库无关，多库时
+    逐库重复抽取会白烧 N-1 次 LLM 调用——这里只抽一次，再让各库共用它匹配。
+
+    - 合并策略：实体/关系**轮流从各库取**（round-robin），保证每个库都有机会
+      露脸，而不是排在前面的库把 30 个名额占满；总量仍受 _MAX_CTX_* 约束——
+      **加库不加量**（与 RAGFlow 多库图谱的做法一致），避免 prompt 随选库数膨胀
+    - 任一库无图谱/无匹配 → 静默跳过；全部无匹配 → None（查询完全照旧）
+    - 返回单个 Source：内容来自多库，kb_id 留空不做单库归属（引用标题仍是
+      "知识图谱"）
+    """
+    if not enabled or not kb_ids:
+        return None
+    if not has_any_graph(kb_ids):
+        return None  # 全部无图谱：零成本跳过，不抽实体（省一次 LLM 往返）
+    try:
+        query_entities = await extract_query_entities(query)
+        if not query_entities:
+            return None
+        # 各库独立匹配（加载 → 剔除已禁用文档 → 匹配 → 1-hop 扩展）
+        per_kb: List[dict] = []
+        for kid in kb_ids:
+            graph = load_graph(kid)
+            if not graph.get("entities"):
+                continue  # 无图谱（未构建/空图谱）自动跳过
+            inactive = _inactive_doc_ids(kid)
+            if inactive:
+                graph = filter_graph_by_inactive_docs(graph, inactive)
+                if not graph.get("entities"):
+                    continue
+            matched = match_entities(graph, query_entities)
+            if not matched:
+                continue
+            expanded = expand_neighbors(graph, matched, hop=1)
+            per_kb.append({"entities": expanded["entities"],
+                           "relations": expanded["relations"]})
+        if not per_kb:
+            return None
+        entities = _round_robin([g["entities"] for g in per_kb],
+                                _MAX_CTX_ENTITIES)
+        relations = _round_robin([g["relations"] for g in per_kb],
+                                 _MAX_CTX_RELATIONS)
+        # 名称映射用各库截断前的全量实体，防被截掉的实体在关系行显示成裸 id
+        context_text = assemble_context_text(
+            entities, relations,
+            [e for g in per_kb for e in g["entities"]])
+        if not context_text:
+            return None
+        logger.info("图谱增强命中（多库）: 库数=%d query=%r 实体=%d 关系=%d",
+                    len(kb_ids), query[:30], len(entities), len(relations))
+        return Source(
+            id=f"kg:multi:{'+'.join(kb_ids)}",
+            text=context_text,
+            score=0.0,
+            document_id="",
+            document_name="知识图谱",
+            kb_id="",
+            chunk_index=-1,
+            char_start=-1,
+            char_end=-1,
+        )
+    except Exception as e:
+        logger.warning("多库图谱增强失败（跳过，不影响查询）: %s", str(e)[:150])
         return None

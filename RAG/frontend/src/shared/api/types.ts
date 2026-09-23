@@ -355,7 +355,8 @@ export interface Source {
 
 export interface ChatSession {
   id: string;
-  kb_id: string;
+  /** 关联知识库 ID 列表（多库对话；单库时为单元素列表，旧会话后端读时自动迁移） */
+  kb_ids: string[];
   title: string;
   message_count: number;
   created_at: string;
@@ -365,7 +366,7 @@ export interface ChatSession {
 /** 会话详情（GET /chat/history/{id}）：含完整消息与引用快照，用于回溯问答现场 */
 export interface ChatSessionDetail {
   id: string;
-  kb_id: string;
+  kb_ids: string[];
   /** 归属用户 ID（旧会话无此字段 = super_admin 归属） */
   user_id?: string | null;
   title: string;
@@ -811,7 +812,10 @@ export interface KnowledgeGraph {
 // ========== 对话 ==========
 
 export interface StreamChatParams {
-  kb_id: string;
+  /** 知识库 ID 数组（1~5 个多库对话；与单值 kb_id 二选一，都传时本字段优先） */
+  kb_ids?: string[];
+  /** 单库（旧调用；与服务端 kb_id/kb_ids 二选一的契约一致） */
+  kb_id?: string;
   query: string;
   session_id?: string;
   top_k?: number;

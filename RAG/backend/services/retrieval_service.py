@@ -160,6 +160,37 @@ class RetrievalService:
             logger.exception("检索日志记录异常: kb=%s", kb_id)
         return sources
 
+    async def retrieve_multi(self, kb_ids: List[str], query: str,
+                             top_k: int | None = None,
+                             min_score: float | None = None,
+                             enable_hybrid: bool | None = None,
+                             enable_rerank: bool | None = None
+                             ) -> List[Source]:
+        """多知识库检索：各库**并行**独立检索，合并后按 score 降序取全局 top_k
+
+        - kb_ids 只有 1 个 → 直接走 retrieve，与既有单库调用行为完全一致
+        - top_k 是**最终条数**，不是每库条数：每库各自取 top_k 候选后合并排序
+        - 跨库不做去重：同一父块在两个库里各存一份属于两份独立知识，都保留
+          （各库内部的父块去重已在 retrieve 里做过）
+        - 任一库检索抛异常 → 整体抛出（与既有串行 for 循环的语义一致）
+        """
+        if not kb_ids:
+            return []
+        if len(kb_ids) == 1:
+            return await self.retrieve(
+                kb_ids[0], query, top_k=top_k, min_score=min_score,
+                enable_hybrid=enable_hybrid, enable_rerank=enable_rerank)
+        results = await asyncio.gather(*[
+            self.retrieve(kid, query, top_k=top_k, min_score=min_score,
+                          enable_hybrid=enable_hybrid,
+                          enable_rerank=enable_rerank)
+            for kid in kb_ids
+        ])
+        merged: List[Source] = [s for group in results for s in group]
+        merged.sort(key=lambda s: s.score, reverse=True)
+        eff_top_k = top_k or get_active_config().retrieval.top_k
+        return merged[:eff_top_k]
+
     # ================= 纯向量路径 =================
 
     def _assemble(self, kb_id: str, query: str, hits, min_score: float) -> List[Source]:

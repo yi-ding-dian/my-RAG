@@ -35,7 +35,7 @@ const KB_ID_KEY = 'myrag.kb_id';
 const DRAFT_SESSION_ID = '__draft__';
 // 草稿会话在列表顶部的占位项（条数/时间不展示，由渲染分支单独处理）
 const DRAFT_SESSION: ChatSession = {
-  id: DRAFT_SESSION_ID, kb_id: '', title: '新会话',
+  id: DRAFT_SESSION_ID, kb_ids: [], title: '新会话',
   message_count: 0, created_at: '', updated_at: '',
 };
 
@@ -48,10 +48,22 @@ const ChatPage: React.FC = () => {
   const isAdmin = !!user && user.role !== 'user';
 
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
-  const [kbId, setKbId] = useState<string | undefined>(() => {
+  // 知识库多选：存 id 数组（旧版本 localStorage 存的是单个字符串，按单元素兼容）
+  const [kbIds, setKbIds] = useState<string[]>(() => {
     const saved = localStorage.getItem(KB_ID_KEY);
-    return saved || undefined;
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(x => typeof x === 'string');
+      }
+    } catch {
+      // 旧格式是裸 id 字符串（非 JSON），落到下面按单值处理
+    }
+    return [saved];
   });
+  /** kbIds 的稳定键：数组直接进 deps 每次渲染都是新引用，会触发死循环 */
+  const kbIdsKey = kbIds.join(',');
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
@@ -101,14 +113,19 @@ const ChatPage: React.FC = () => {
       const res = await listKbs();
       setKbs(res.data);
       if (res.data.length === 0) {
-        setKbId(undefined);
-      } else if (!kbId || !res.data.some(k => k.id === kbId)) {
-        setKbId(res.data[0].id);
+        setKbIds([]);
+      } else {
+        // 选中的库可能已被删除：只保留仍存在的；一个都不剩 → 回落到第一个
+        const valid = kbIds.filter(id => res.data.some(k => k.id === id));
+        if (valid.length !== kbIds.length) {
+          setKbIds(valid.length ? valid : [res.data[0].id]);
+        }
       }
     } catch {
       message.error('加载知识库列表失败');
     }
-  }, [kbId, message]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kbIdsKey, message]);
 
   useEffect(() => {
     loadKbs();
@@ -116,8 +133,9 @@ const ChatPage: React.FC = () => {
 
   // 记忆知识库选择
   useEffect(() => {
-    if (kbId) localStorage.setItem(KB_ID_KEY, kbId);
-  }, [kbId]);
+    if (kbIds.length) localStorage.setItem(KB_ID_KEY, JSON.stringify(kbIds));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kbIdsKey]);
 
   // ---------- 会话列表 ----------
   // 打开指定会话：加载消息并高亮（失败只提示，不改动当前选中）
@@ -127,6 +145,8 @@ const ChatPage: React.FC = () => {
         const res = await getSession(id);
         setMessages(res.data.messages);
         setActiveSessionId(id);
+        // 会话记着自己用的库：点开时把选择器切回那几个（多库会话一并恢复）
+        if (res.data.kb_ids?.length) setKbIds(res.data.kb_ids);
       } catch {
         message.error('加载会话失败');
       }
@@ -136,10 +156,14 @@ const ChatPage: React.FC = () => {
 
   // autoOpenFirst：首次进入 / 切换知识库时自动打开第一个（最新）会话。
   // 发完消息刷新列表必须传 false —— 否则会把用户手动选中的/新建的会话拽回第一个
+  // autoOpenFirst：进入页面时自动打开最新一个会话（会话自带 kb_ids，打开时会
+  // 切换知识库选择器）。发完消息刷新列表必须传 false —— 否则会把用户手动选中的/
+  // 新建的会话拽回第一个
   const loadSessions = useCallback(
-    async (id: string, autoOpenFirst = false) => {
+    async (autoOpenFirst = false) => {
       try {
-        const res = await listSessions(id);
+        // 全局一份列表（不按当前选中的库过滤）：会话自己记着它用的库
+        const res = await listSessions();
         setSessions(res.data);
         if (autoOpenFirst && res.data.length > 0) {
           await openSessionById(res.data[0].id);
@@ -151,17 +175,11 @@ const ChatPage: React.FC = () => {
     [message, openSessionById],
   );
 
+  // 进入页面：拉全局会话列表并自动打开最新一个（打开时会切回它自己的库）。
+  // 会话列表是**全局一份**，不随选择器变化重建——想看别的会话直接点即可
   useEffect(() => {
-    if (!kbId) {
-      setSessions([]);
-      return;
-    }
-    // 切换知识库：旧会话属于旧库，残留会串库（消息区仍显示旧库内容、继续提问写进旧会话）
-    // → 先清空当前会话，再由 loadSessions 自动打开新库的第一个会话
-    setActiveSessionId(undefined);
-    setMessages([]);
-    loadSessions(kbId, true);
-  }, [kbId, loadSessions]);
+    loadSessions(true);
+  }, [loadSessions]);
 
   const handleNewSession = () => {
     if (streamingRef.current) return;
@@ -179,14 +197,14 @@ const ChatPage: React.FC = () => {
   };
 
   const handleDeleteSession = async (id: string) => {
-    if (!kbId) return;
+    if (!kbIds.length) return;
     try {
       await deleteSession(id);
       if (id === activeSessionId) {
         setActiveSessionId(undefined);
         setMessages([]);
       }
-      await loadSessions(kbId);
+      await loadSessions();
       message.success('会话已删除');
     } catch {
       message.error('删除会话失败');
@@ -224,7 +242,7 @@ const ChatPage: React.FC = () => {
       await renameSession(renameTarget.id, title);
       message.success('会话已重命名');
       setRenameTarget(null);
-      if (kbId) await loadSessions(kbId);
+      if (kbIds.length) await loadSessions();
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '重命名失败');
     } finally {
@@ -340,8 +358,8 @@ const ChatPage: React.FC = () => {
     streamingRef.current = false;
     setStreaming(false);
     abortRef.current = null;
-    if (kbId) loadSessions(kbId); // 刷新会话列表（含新建会话）
-  }, [flushDelta, kbId, loadSessions]);
+    loadSessions(); // 刷新会话列表（含新建会话）
+  }, [flushDelta, loadSessions]);
 
   const handleDone = useCallback(
     (info: { session_id: string; message_count: number; gen_params?: GenParams }) => {
@@ -402,7 +420,7 @@ const ChatPage: React.FC = () => {
 
   const handleSend = useCallback(
     (text: string) => {
-      if (!kbId) {
+      if (!kbIds.length) {
         message.warning('请先创建并选择一个知识库');
         return;
       }
@@ -424,7 +442,7 @@ const ChatPage: React.FC = () => {
 
       abortRef.current = streamChat(
         {
-          kb_id: kbId,
+          kb_ids: kbIds,
           query: text,
           // 草稿会话不传 session_id：后端据此新建会话，done 事件回来的真实 id 再写回
           session_id: activeSessionId === DRAFT_SESSION_ID ? undefined : activeSessionId,
@@ -441,7 +459,7 @@ const ChatPage: React.FC = () => {
         },
       );
     },
-    [kbId, activeSessionId, topK, handleMeta, handlePrompt, handleDelta, handleDone, handleStreamError, message],
+    [kbIdsKey, activeSessionId, topK, handleMeta, handlePrompt, handleDelta, handleDone, handleStreamError, message],
   );
 
   // 组件卸载时中止未完成的流
@@ -603,10 +621,18 @@ const ChatPage: React.FC = () => {
         >
           <Typography.Text strong>知识库</Typography.Text>
           <Select
-            value={kbId}
-            onChange={setKbId}
+            mode="multiple"
+            value={kbIds}
+            onChange={(v: string[]) => {
+              if (v.length > 5) {
+                message.warning('最多同时选 5 个知识库');
+                return;
+              }
+              setKbIds(v);
+            }}
+            maxTagCount="responsive"
             style={{ width: 240 }}
-            placeholder="选择知识库"
+            placeholder="选择知识库（可多选）"
             options={kbs.map(k => ({
               value: k.id,
               // 库名旁悬停显示文档数（下拉内嵌 AntD Tooltip 会遮挡其他选项，用原生 title 最稳）
@@ -618,8 +644,8 @@ const ChatPage: React.FC = () => {
           {isAdmin && (
             <Button
               icon={<FolderOpenOutlined />}
-              disabled={!kbId}
-              onClick={() => navigate(`/documents?kb_id=${kbId}`)}
+              disabled={!kbIds.length}
+              onClick={() => navigate(`/documents?kb_id=${kbIds[0]}`)}
             >
               管理文档
             </Button>
@@ -653,7 +679,7 @@ const ChatPage: React.FC = () => {
           )}
         </div>
         <Card size="small" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }} styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}>
-          {kbId ? (
+          {kbIds.length ? (
             // key 随会话切换重置消息列表滚动状态（新会话默认贴底查看最新消息）
             <MessageList
               key={activeSessionId}
@@ -662,7 +688,7 @@ const ChatPage: React.FC = () => {
               waitingHint={statusHint}
               // 草稿态不传 id：反馈条要的是真实 session_id，哨兵值后端不认
               sessionId={activeSessionId === DRAFT_SESSION_ID ? undefined : activeSessionId}
-              kbId={kbId}
+              kbId={kbIds[0]}
               citationSnippetChars={citationSnippetChars}
               onCitationClick={(s) => {
                 setTraceSource(s);
@@ -678,7 +704,7 @@ const ChatPage: React.FC = () => {
             </div>
           )}
           <div style={{ paddingTop: 12, borderTop: `1px solid ${token.colorBorderSecondary}`, marginTop: 12 }}>
-            <ChatInput onSend={handleSend} onStop={handleStop} streaming={streaming} disabled={!kbId} />
+            <ChatInput onSend={handleSend} onStop={handleStop} streaming={streaming} disabled={!kbIds.length} />
           </div>
         </Card>
       </div>
@@ -714,7 +740,7 @@ const ChatPage: React.FC = () => {
       {/* 引用溯源弹窗：定位高亮到被点击引用的 chunk 原文 */}
       <CitationTraceModal
         open={!!traceSource}
-        kbId={kbId}
+        kbId={kbIds[0]}
         source={traceSource}
         onClose={() => setTraceSource(null)}
         answerText={traceAnswerText}
