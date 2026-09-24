@@ -58,7 +58,7 @@ interface SessionListProps {
  *
  * **必须 memo 化**：messages 是本页的顶层 state，流式输出时每 50ms 变一次 → ChatPage
  * 整棵树重渲染。会话条数一多（实测某账号 154 条，每条 24 个 DOM 节点、内含
- * Popconfirm + 2 个 Tooltip + 2 个 Button），每帧就得把上千个节点连同 antd 组件重新
+ * Popconfirm + 3 个 Button），每帧就得把上千个节点连同 antd 组件重新
  * 创建一遍，主线程被堵 300+ms，50ms 的流式节流被反噬成 2.4Hz —— 肉眼就是"输出一卡
  * 一卡"。而会话列表在流式期间根本不变，没有任何理由跟着重建。
  * 生效前提：回调 prop 全部稳定（见 ChatPage 里的 useCallback）。
@@ -119,7 +119,7 @@ const SessionItem = memo(function SessionItem({
       </List.Item>
     );
   }
-  // 会话名默认最多显示 8 个字符，超出用 ... 省略（悬停 Tooltip 看完整名）
+  // 会话名默认最多显示 8 个字符，超出用 ... 省略（悬停看完整名：span 的原生 title 属性）
   const name = item.title || '未命名会话';
   const shortName = name.length > 8 ? `${name.slice(0, 8)}...` : name;
   return (
@@ -141,11 +141,16 @@ const SessionItem = memo(function SessionItem({
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
         <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Tooltip title={name} placement="topLeft">
-            <span style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}>
-              {shortName}
-            </span>
-          </Tooltip>
+          {/* 悬停看全名：用 DOM 原生 title，不用 antd Tooltip——每条会话挂 4 个 Tooltip
+              时，139 条就是 500+ 个 Tooltip 实例（每个含 Trigger/Context/state/事件监听），
+              首屏光渲染列表实测阻塞 881ms。原生 title 提示效果等价（浮层样式改用浏览器
+              默认，项目内知识库选择器同款取舍） */}
+          <span
+            title={name}
+            style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}
+          >
+            {shortName}
+          </span>
           <div
             style={{
               display: 'flex',
@@ -166,44 +171,43 @@ const SessionItem = memo(function SessionItem({
                 marginLeft: '3em',
               }}
             >
-              <Tooltip title="重命名">
+              {/* 三个图标按钮的悬停提示同样用原生 title：与上面会话名同因（省掉
+                  每条 3 个 Tooltip 实例）。Popconfirm 是删除确认功能，保留不动 */}
+              <Button
+                title="重命名"
+                type="text"
+                size="small"
+                className="session-rename-btn"
+                icon={<EditOutlined />}
+                onClick={e => {
+                  e.stopPropagation();
+                  onRename(item);
+                }}
+              />
+              <Button
+                title="导出会话"
+                type="text"
+                size="small"
+                className="session-export-btn"
+                icon={<DownloadOutlined />}
+                onClick={e => {
+                  e.stopPropagation();
+                  onExport(item.id);
+                }}
+              />
+              <Popconfirm
+                title="删除该会话？"
+                onConfirm={() => onDelete(item.id)}
+              >
                 <Button
+                  title="删除会话"
                   type="text"
                   size="small"
-                  className="session-rename-btn"
-                  icon={<EditOutlined />}
-                  onClick={e => {
-                    e.stopPropagation();
-                    onRename(item);
-                  }}
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={e => e.stopPropagation()}
                 />
-              </Tooltip>
-              <Tooltip title="导出会话">
-                <Button
-                  type="text"
-                  size="small"
-                  className="session-export-btn"
-                  icon={<DownloadOutlined />}
-                  onClick={e => {
-                    e.stopPropagation();
-                    onExport(item.id);
-                  }}
-                />
-              </Tooltip>
-              <Tooltip title="删除会话">
-                <Popconfirm
-                  title="删除该会话？"
-                  onConfirm={() => onDelete(item.id)}
-                >
-                  <Button
-                    type="text"
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={e => e.stopPropagation()}
-                  />
-                </Popconfirm>
-              </Tooltip>
+              </Popconfirm>
             </span>
           </div>
         </div>
@@ -220,6 +224,12 @@ const SessionItem = memo(function SessionItem({
   && prev.isActive === next.isActive
   && prev.textTertiary === next.textTertiary);
 
+/** 会话项行高（px）：实测普通项 64、草稿项 60（草稿项第二行是纯文字，比带按钮的普通项矮 4px） */
+const SESSION_ROW_H = 64;
+const DRAFT_ROW_H = 60;
+/** 可视区上下各多渲染的行数：快速滚动时新行已在 DOM 里，避免出现瞬时空白 */
+const SESSION_OVERSCAN = 4;
+
 const SessionList = memo(function SessionList({
   sessions,
   activeSessionId,
@@ -231,6 +241,56 @@ const SessionList = memo(function SessionList({
   onExport,
   onDelete,
 }: SessionListProps) {
+  // 虚拟滚动：只把「可视区 + 上下缓冲」的条目交给 antd List 渲染。
+  // 该账号 139 条会话时全量渲染光列表就阻塞主线程 881ms、首屏近 2s 才出得来；
+  // 而滚动容器高 813px、每条 64px —— 真正看得见的只有 12 条左右，其余白渲染。
+  // 做法：外层 div 撑出总高度（滚动条长度/位置与全量渲染完全一致），
+  // 内层按起始项偏移整体 translateY，条目仍由 antd List + SessionItem 渲染（样式不变）。
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+
+  // items 与原 dataSource 同源：草稿会话（新建后未落库）固定插在第 0 位
+  const items = activeSessionId === DRAFT_SESSION_ID ? [DRAFT_SESSION, ...sessions] : sessions;
+  const hasDraft = items.length > 0 && items[0].id === DRAFT_SESSION_ID;
+
+  /** 第 i 项的顶部偏移：草稿项矮 4px，其后的普通项整体上移 4px */
+  const offsetOf = (i: number) =>
+    i * SESSION_ROW_H + (hasDraft && i > 0 ? DRAFT_ROW_H - SESSION_ROW_H : 0);
+  const totalH = hasDraft
+    ? DRAFT_ROW_H + Math.max(0, items.length - 1) * SESSION_ROW_H
+    : items.length * SESSION_ROW_H;
+
+  // 首帧 viewportH 还是 0，只渲染缓冲的几行；测量后立刻补齐，用户看不到这一瞬
+  const start = Math.max(0, Math.floor(scrollTop / SESSION_ROW_H) - SESSION_OVERSCAN);
+  const end = Math.min(
+    items.length,
+    Math.ceil((scrollTop + viewportH) / SESSION_ROW_H) + SESSION_OVERSCAN);
+  const visible = items.slice(start, end);
+
+  // rAF 节流：滚动事件每帧最多触发一次重渲染
+  const tickingRef = useRef(false);
+  const handleScroll = useCallback(() => {
+    if (tickingRef.current) return;
+    tickingRef.current = true;
+    requestAnimationFrame(() => {
+      tickingRef.current = false;
+      const el = scrollRef.current;
+      if (el) setScrollTop(el.scrollTop);
+    });
+  }, []);
+
+  // 可视区高度：挂载时测量，容器尺寸变化（窗口缩放/侧栏伸缩）时重测
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () => setViewportH(el.clientHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
     <Card
       title="会话列表"
@@ -243,31 +303,42 @@ const SessionList = memo(function SessionList({
       style={{ width: 230, display: 'flex', flexDirection: 'column' }}
       styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
     >
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        <List
-          // rowKey 必须显式指定：antd 的 List 在无 rowKey 且 item 无 key 字段时，
-          // 回退用**数组下标**给每个条目包 Fragment（antd/es/list/index.js: renderInternalItem）。
-          // 下标做 key 的后果——只要数组长度变化，其后所有条目下标整体偏移、key 全变，
-          // React 就卸载整列再挂载整列（实测：新建会话 150/150 重建卡 998ms、
-          // 删除会话 148/149 重建卡 973ms）。此时 SessionItem 上的 memo **完全不参与**
-          // （重挂载不走比较函数），上一轮"切会话已修好、删除新建仍卡"正是这个原因。
-          // 用会话 id 做 key 后：切会话/新建/删除都只重渲染真正变化的那一两条。
-          rowKey="id"
-          dataSource={activeSessionId === DRAFT_SESSION_ID ? [DRAFT_SESSION, ...sessions] : sessions}
-          locale={{ emptyText: <Empty description="暂无会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-          renderItem={item => (
-            <SessionItem
-              key={item.id}
-              item={item}
-              isActive={item.id === activeSessionId}
-              textTertiary={textTertiary}
-              onOpen={onOpen}
-              onRename={onRename}
-              onExport={onExport}
-              onDelete={onDelete}
-            />
-          )}
-        />
+      <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto' }}>
+        {items.length === 0 ? (
+          <List
+            dataSource={[]}
+            locale={{ emptyText: <Empty description="暂无会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          />
+        ) : (
+          // 外层撑出总高度（滚动条长度/位置与全量渲染一致），内层按起始项偏移整体位移
+          <div style={{ height: totalH, position: 'relative' }}>
+            <div style={{ transform: `translateY(${offsetOf(start)}px)` }}>
+              <List
+                // rowKey 必须显式指定：antd 的 List 在无 rowKey 且 item 无 key 字段时，
+                // 回退用**数组下标**给每个条目包 Fragment（antd/es/list/index.js: renderInternalItem）。
+                // 下标做 key 的后果——只要数组长度变化，其后所有条目下标整体偏移、key 全变，
+                // React 就卸载整列再挂载整列（实测：新建会话 150/150 重建卡 998ms、
+                // 删除会话 148/149 重建卡 973ms）。此时 SessionItem 上的 memo **完全不参与**
+                // （重挂载不走比较函数），上一轮"切会话已修好、删除新建仍卡"正是这个原因。
+                // 用会话 id 做 key 后：切会话/新建/删除都只重渲染真正变化的那一两条。
+                rowKey="id"
+                dataSource={visible}
+                renderItem={item => (
+                  <SessionItem
+                    key={item.id}
+                    item={item}
+                    isActive={item.id === activeSessionId}
+                    textTertiary={textTertiary}
+                    onOpen={onOpen}
+                    onRename={onRename}
+                    onExport={onExport}
+                    onDelete={onDelete}
+                  />
+                )}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </Card>
   );
