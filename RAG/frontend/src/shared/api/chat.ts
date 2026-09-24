@@ -225,6 +225,16 @@ export const getSession = (sessionId: string, includeDeleted = false) =>
 export const deleteSession = (sessionId: string) =>
   api.delete(`/chat/history/${sessionId}`);
 
+/**
+ * 批量删除会话（列表页「管理」多选删除）。
+ * 一次请求删多条：后端逐条校验归属，越权/不存在的自动跳过，返回 {deleted, skipped}
+ * 供调用方如实提示——skipped 不为 0 时不能谎报"全部删除成功"。
+ */
+export const batchDeleteSessions = (sessionIds: string[]) =>
+  api.post<{ deleted: number; skipped: number }>('/chat/history/batch-delete', {
+    session_ids: sessionIds,
+  });
+
 export const renameSession = (sessionId: string, title: string) =>
   api.post<{ message: string; title: string }>(`/chat/history/${sessionId}/rename`, { title });
 

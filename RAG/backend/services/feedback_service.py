@@ -90,3 +90,32 @@ async def get_feedback_msg_idxs(session_id: str) -> Optional[set]:
     except Exception as e:
         logger.warning("查询会话 %s 的反馈下标失败: %s", session_id, e)
         return None
+
+
+async def get_feedback_msg_idxs_bulk(
+        session_ids: List[str]) -> Dict[str, Optional[set]]:
+    """批量版：一次查出多个会话的反馈下标（列表页批量删除会话时用）
+
+    单条版每调一次就开一个 DB 会话，批量删 100+ 条会话会是 100+ 次往返；这里合并成
+    一次 IN 查询。语义与单条版保持一致：
+
+    - 返回 {session_id: set}：查询成功。**没出现在结果里的 id = 该会话无反馈**（空集）
+    - 返回 {session_id: None}：查询失败 —— 调用方必须退化为"归档**完整**会话"，
+      绝不能当成"无反馈"而把仍带反馈证据的会话物理删掉
+    """
+    ids = [sid for sid in session_ids if sid]
+    if not ids:
+        return {}
+    try:
+        async with get_session() as session:
+            rows = (await session.execute(
+                select(FeedbackORM.session_id, FeedbackORM.msg_idx)
+                .where(FeedbackORM.session_id.in_(ids)))).all()
+        out: Dict[str, set] = {}
+        for sid, idx in rows:
+            if isinstance(idx, int) and idx >= 0:
+                out.setdefault(sid, set()).add(idx)
+        return out
+    except Exception as e:
+        logger.warning("批量查询反馈下标失败（%d 个会话）: %s", len(ids), e)
+        return {sid: None for sid in ids}

@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import List, Optional
 from urllib.parse import quote
@@ -24,7 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
-from backend.models.rag_models import (ChatHistoryItem, ChatRequest,
+from backend.models.rag_models import (BatchDeleteSessionRequest,
+                                       ChatHistoryItem, ChatRequest,
                                        FeedbackRequest,
                                        RenameSessionRequest, RetrieveRequest,
                                        RetrieveResponse)
@@ -32,7 +34,8 @@ from backend.models.user_models import UserPublic
 from backend.services import audit_service, department_service
 from backend.services.chat_service import get_chat_service, sse_event
 from backend.services.feedback_service import (create_feedback,
-                                               get_feedback_msg_idxs)
+                                               get_feedback_msg_idxs,
+                                               get_feedback_msg_idxs_bulk)
 from backend.services.knowledge_graph_service import (build_kg_source,
                                                       extract_query_entities,
                                                       has_any_graph)
@@ -42,6 +45,9 @@ from backend.logger import AppLog
 logger = logging.getLogger(__name__)
 log = AppLog(__name__)
 router = APIRouter(prefix="/api/chat", tags=["聊天"])
+
+# 批量删除单次上限：够一次清掉积累的测试会话，又不至于让单次请求退化成无界操作
+MAX_BATCH_DELETE = 200
 
 
 def _check_session_owner(session, user: UserPublic):
@@ -243,6 +249,73 @@ async def delete_history(request: Request, session_id: str,
         target_id=session_id,
         target_name=(session.title or "会话")[:100], request=request)
     return {"message": "会话已删除"}
+
+
+@router.post("/history/batch-delete")
+async def batch_delete_history(body: BatchDeleteSessionRequest, request: Request,
+                               db: AsyncSession = Depends(get_db),
+                               user: UserPublic = Depends(get_current_user)):
+    """批量删除会话（列表页「管理」多选删除；owner 或 super_admin）
+
+    逐条复用单条删除的规则，越权/不存在的**一律跳过**（不报 404——否则可据返回
+    差异探测他人会话是否存在），返回 {deleted, skipped} 供前端如实提示。
+
+    **同步文件操作放线程池**：读会话（get_session）与删除（delete_session）都是
+    同步读写 JSON 文件，批量 100+ 条若直接跑在事件循环里，会把正在进行的 SSE
+    流式输出一起卡住（与 list_sessions 同类隐患）。
+
+    审计合并为一条（记条数），不逐条写，避免审计表被一次批量操作灌爆。
+    """
+    if not body.session_ids:
+        raise HTTPException(status_code=400, detail="session_ids 不能为空")
+    if len(body.session_ids) > MAX_BATCH_DELETE:
+        raise HTTPException(
+            status_code=400, detail=f"单次最多删除 {MAX_BATCH_DELETE} 条会话")
+    chat_svc = get_chat_service()
+
+    # ① 读会话 + 校验归属（线程池）：筛出真正有权限删的
+    def _pick_deletable():
+        picked: List[str] = []
+        for sid in body.session_ids:
+            session = chat_svc.get_session(sid)
+            if not session:
+                continue
+            # 与 _check_session_owner 同规则，只是批量场景不抛异常、改为跳过
+            if user.role != "super_admin" and session.user_id != user.id:
+                continue
+            picked.append(sid)
+        return picked
+
+    picked = await asyncio.to_thread(_pick_deletable)
+    if not picked:
+        return {"deleted": 0, "skipped": len(body.session_ids)}
+
+    # ② 反馈关联（一次 IN 查询，不逐条开 DB 会话）：决定各会话归档还是物理删除
+    keep_map = await get_feedback_msg_idxs_bulk(picked)
+
+    # ③ 执行删除（线程池）
+    def _do_delete():
+        done = 0
+        for sid in picked:
+            # 不在 keep_map 里 = 确认无反馈 → 空集（物理删除）；
+            # 值为 None = 查询失败 → 归档完整会话（与单条删除同语义，宁可多留）
+            keep = keep_map.get(sid, set())
+            try:
+                if chat_svc.delete_session(sid, keep_msg_idxs=keep):
+                    done += 1
+            except OSError as e:
+                logger.warning("批量删除会话 %s 失败: %s", sid, e)
+        return done
+
+    deleted = await asyncio.to_thread(_do_delete)
+    if deleted:
+        await audit_service.record_action(
+            user, action="chat.delete", target_type="chat",
+            target_id=f"batch:{deleted}",
+            target_name=f"批量删除 {deleted} 条会话",
+            detail={"deleted": deleted, "requested": len(body.session_ids)},
+            request=request)
+    return {"deleted": deleted, "skipped": len(body.session_ids) - deleted}
 
 
 @router.post("/history/{session_id}/rename")

@@ -287,6 +287,15 @@ class RenameSessionRequest(BaseModel):
     title: str = Field(..., description="新标题（1~50 字）")
 
 
+class BatchDeleteSessionRequest(BaseModel):
+    """批量删除会话请求（列表页「管理」多选删除用）
+
+    条目数上限在路由层校验（与既有路由的手动校验风格一致），
+    模型这里只约定形状。
+    """
+    session_ids: List[str] = Field(..., description="要删除的会话 ID 数组")
+
+
 class RetrieveRequest(BaseModel):
     """检索调试请求（参数全可选，不传与既有行为完全一致，旧调用不破坏）
 

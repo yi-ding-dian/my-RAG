@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import AppModal from '../../shared/components/common/AppModal';
-import { App as AntApp,  Button,  Card,  Empty,  Input,  List,  Popconfirm,  Select,  Tooltip,  Typography,  theme } from 'antd';
-import { DeleteOutlined, DownloadOutlined, EditOutlined, FolderOpenOutlined, MessageOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
+import { App as AntApp,  Button,  Card,  Checkbox,  Empty,  Input,  List,  Popconfirm,  Select,  Tooltip,  Typography,  theme } from 'antd';
+import { CloseOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, FolderOpenOutlined, MessageOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
@@ -13,6 +13,7 @@ import {
   GenParams,
   KnowledgeBase,
   Source,
+  batchDeleteSessions,
   deleteSession,
   exportSession,
   getSession,
@@ -51,6 +52,8 @@ interface SessionListProps {
   onRename: (item: ChatSession) => void;
   onExport: (id: string) => void;
   onDelete: (id: string) => void;
+  /** 批量删除选中的会话（二次确认与调接口都在 ChatPage，这里只管选中态与触发） */
+  onBatchDelete: (ids: string[]) => void;
 }
 
 /**
@@ -72,12 +75,44 @@ const sameSession = (a: ChatSession, b: ChatSession): boolean =>
   && a.created_at === b.created_at
   && (a.kb_ids ?? []).join(',') === (b.kb_ids ?? []).join(',');
 
+/**
+ * 会话条目的相对时间（显示在「n 条消息」前面）。
+ *
+ * 时间源用 updated_at：后端每次问答都会刷新它，会话列表也按它倒序排列，
+ * 所以这里显示的正是"这条会话最近一次说话是多久以前"。
+ *
+ * 分档：5 分钟内=刚刚 / 5~59 分钟=n分钟前 / 1~23 小时=n小时前 /
+ *       1~7 天=n天前 / 超过 7 天=月日（如 9月23日）
+ *
+ * 文本刻意不带空格（"30分钟前"而非"30 分钟前"）：这一行还要并排放三个操作按钮，
+ * 230px 的卡片宽度塞不下，去掉空格并压低字号才放得下（实测裁剪情况见 Git 记录）
+ */
+const formatSessionTime = (ts?: string): string => {
+  if (!ts) return '';
+  const t = dayjs(ts);
+  if (!t.isValid()) return '';
+  const now = dayjs();
+  const mins = now.diff(t, 'minute');
+  if (mins < 5) return '刚刚';
+  if (mins < 60) return `${mins}分钟前`;
+  const hours = now.diff(t, 'hour');
+  if (hours < 24) return `${hours}小时前`;
+  const days = now.diff(t, 'day');
+  if (days <= 7) return `${days}天前`;
+  return t.format('M月D日');
+};
+
 interface SessionItemProps {
   item: ChatSession;
   /** 是否当前打开的会话（高亮选中态） */
   isActive: boolean;
   /** token.colorTextTertiary（条数/「等待提问…」灰字） */
   textTertiary: string;
+  /** 多选管理模式：图标位换成复选框、点整条 = 切换勾选（不开会话）、隐藏操作按钮 */
+  selectable?: boolean;
+  /** 多选模式下本条是否已勾选 */
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
   onOpen: (id: string) => void;
   onRename: (item: ChatSession) => void;
   onExport: (id: string) => void;
@@ -97,6 +132,9 @@ const SessionItem = memo(function SessionItem({
   item,
   isActive,
   textTertiary,
+  selectable,
+  selected,
+  onToggleSelect,
   onOpen,
   onRename,
   onExport,
@@ -125,6 +163,11 @@ const SessionItem = memo(function SessionItem({
   return (
     <List.Item
       onClick={e => {
+        // 多选管理模式：整条点击 = 切换勾选（不打开会话）
+        if (selectable) {
+          onToggleSelect?.(item.id);
+          return;
+        }
         // 操作按钮区/浮层点击不触发展开会话：
         // Popconfirm「确定」按钮渲染在 portal 浮层（React 事件沿组件
         // 树冒泡到本项），不拦截会在删除同时 getSession → 竞态：
@@ -137,9 +180,23 @@ const SessionItem = memo(function SessionItem({
       className={`session-item${isActive ? ' session-item--active' : ''}`}
       style={{ cursor: 'pointer' }}
     >
-      {/* 两列布局：左气泡图标，右（第一行会话名 / 第二行条数+操作按钮） */}
+      {/* 两行布局：第一行 = 图标 + 会话名（两列）；第二行 = 时间/条数/操作按钮。
+          第二行**不**缩进到图标列之后——正是为了用上左侧那 34px：这一行要并排放
+          时间文本和三个按钮，缩进的话时间会被挤成省略号（实测） */}
+      <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
-        <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
+        {/* 多选模式：同一位置换成复选框（不额外占宽、不会把会话名挤短）。
+            复选框自己负责切换并阻止冒泡，否则会连同整条的 onClick 切换两次 */}
+        {selectable ? (
+          <Checkbox
+            checked={!!selected}
+            onClick={e => e.stopPropagation()}
+            onChange={() => onToggleSelect?.(item.id)}
+            style={{ marginTop: 3, flexShrink: 0 }}
+          />
+        ) : (
+          <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
+        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* 悬停看全名：用 DOM 原生 title，不用 antd Tooltip——每条会话挂 4 个 Tooltip
               时，139 条就是 500+ 个 Tooltip 实例（每个含 Trigger/Context/state/事件监听），
@@ -151,78 +208,97 @@ const SessionItem = memo(function SessionItem({
           >
             {shortName}
           </span>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              marginTop: 2,
-            }}
-          >
-            <span style={{ fontSize: 12, color: textTertiary, flexShrink: 0 }}>
-              {item.message_count} 条消息
+        </div>
+      </div>
+      {/* 第二行：整行宽度（不缩进到图标列之后），时间 + 条数 + 操作按钮 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          marginTop: 2,
+          width: '100%',
+        }}
+      >
+            {/* 相对时间 + 条数：时间在前（形如「刚刚 · 2 条消息」）。
+                时间戳取 updated_at——问答后后端会刷新它，列表也随之置顶。
+                本行占满整行宽度（不缩进），所以 12px 字号也放得下；文本仍不带空格
+                （"30分钟前"而非"30 分钟前"）留出余量。
+                **不要**给它 flexShrink/ellipsis——本行右侧按钮用了 margin-left:auto，
+                auto margin 会先吃掉全部剩余空间，再让 flexShrink 判定"空间不足"，
+                文本会被压成「31分钟前 · 2 条…」（已实测踩过）。保持 flexShrink:0 */}
+            <span style={{ fontSize: 12, color: textTertiary, flexShrink: 0, whiteSpace: 'nowrap' }}>
+              {formatSessionTime(item.updated_at)} · {item.message_count} 条消息
             </span>
-            {/* 操作按钮组：重命名 → 导出 → 删除（顺序按用户要求）；与条数标签留 3 个汉字间距 */}
-            <span
-              className="session-item-actions"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 2,
-                marginLeft: '3em',
-              }}
-            >
-              {/* 三个图标按钮的悬停提示同样用原生 title：与上面会话名同因（省掉
-                  每条 3 个 Tooltip 实例）。Popconfirm 是删除确认功能，保留不动 */}
-              <Button
-                title="重命名"
-                type="text"
-                size="small"
-                className="session-rename-btn"
-                icon={<EditOutlined />}
-                onClick={e => {
-                  e.stopPropagation();
-                  onRename(item);
+            {/* 操作按钮组：重命名 → 导出 → 删除（顺序按用户要求）。
+                左边距用 auto 而非固定间距——加上时间标签后这一行更挤，靠右对齐让
+                「时间+条数」与按钮组自动分配空间。
+                多选管理模式整组隐藏——那种模式下由顶部「删除选中」统一删，留着单个删除按钮
+                既挤占宽度又容易误触 */}
+            {!selectable && (
+              <span
+                className="session-item-actions"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 0,
+                  marginLeft: 'auto',
+                  flexShrink: 0,
                 }}
-              />
-              <Button
-                title="导出会话"
-                type="text"
-                size="small"
-                className="session-export-btn"
-                icon={<DownloadOutlined />}
-                onClick={e => {
-                  e.stopPropagation();
-                  onExport(item.id);
-                }}
-              />
-              <Popconfirm
-                title="删除该会话？"
-                onConfirm={() => onDelete(item.id)}
               >
+                {/* 三个图标按钮的悬停提示同样用原生 title：与上面会话名同因（省掉
+                    每条 3 个 Tooltip 实例）。Popconfirm 是删除确认功能，保留不动 */}
                 <Button
-                  title="删除会话"
+                  title="重命名"
                   type="text"
                   size="small"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={e => e.stopPropagation()}
+                  className="session-rename-btn"
+                  icon={<EditOutlined />}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onRename(item);
+                  }}
                 />
-              </Popconfirm>
-            </span>
-          </div>
-        </div>
+                <Button
+                  title="导出会话"
+                  type="text"
+                  size="small"
+                  className="session-export-btn"
+                  icon={<DownloadOutlined />}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onExport(item.id);
+                  }}
+                />
+                <Popconfirm
+                  title="删除该会话？"
+                  onConfirm={() => onDelete(item.id)}
+                >
+                  <Button
+                    title="删除会话"
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={e => e.stopPropagation()}
+                  />
+                </Popconfirm>
+              </span>
+            )}
+      </div>
       </div>
     </List.Item>
   );
 }, (prev, next) =>
-  // 只比"影响显示"的三个 prop，**回调 prop 一律忽略**：它们只在点击那一刻用，
+  // 只比"影响显示"的 prop，**回调 prop 一律忽略**：它们只在点击那一刻用，
   // 而 AntApp.useApp() 的 message 一旦换新对象，依赖它的 useCallback 会全部跟着换，
   // 默认浅比较就判定 "props 变了" → 上百个条目整列重建（实测一次删除渲染数百次、
   // 主线程堵 800ms）。点击时闭包里的旧回调功能等价——需要状态的地方（当前会话 id /
   // 已选知识库）已经改用 ref 读取，不存在过期问题
   prev.item === next.item
   && prev.isActive === next.isActive
-  && prev.textTertiary === next.textTertiary);
+  && prev.textTertiary === next.textTertiary
+  && prev.selectable === next.selectable
+  && prev.selected === next.selected);
 
 /** 会话项行高（px）：实测普通项 64、草稿项 60（草稿项第二行是纯文字，比带按钮的普通项矮 4px） */
 const SESSION_ROW_H = 64;
@@ -240,6 +316,7 @@ const SessionList = memo(function SessionList({
   onRename,
   onExport,
   onDelete,
+  onBatchDelete,
 }: SessionListProps) {
   // 虚拟滚动：只把「可视区 + 上下缓冲」的条目交给 antd List 渲染。
   // 该账号 139 条会话时全量渲染光列表就阻塞主线程 881ms、首屏近 2s 才出得来；
@@ -249,6 +326,39 @@ const SessionList = memo(function SessionList({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(0);
+
+  // 多选管理模式：选中集合按会话 id 存，与虚拟滚动正交（只渲染可视项不影响选中状态）
+  const [managing, setManaging] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // 可勾选的会话 id：草稿会话尚未落库，不参与多选（选它没有意义）
+  const selectableIds = sessions.map(s => s.id);
+  const allSelected = selectableIds.length > 0 && selected.size === selectableIds.length;
+  const someSelected = selected.size > 0 && !allSelected;
+
+  const toggleOne = useCallback((id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(selectableIds));
+  const exitManaging = useCallback(() => {
+    setManaging(false);
+    setSelected(new Set());
+  }, []);
+
+  // 列表刷新后剔除已不存在的选中项：刚被删掉的会话若还留在集合里，
+  // "已选 N 条"就会与实际能删的数量对不上（还会把无效 id 发给后端）
+  useEffect(() => {
+    setSelected(prev => {
+      if (prev.size === 0) return prev;
+      const alive = new Set(sessions.map(s => s.id));
+      const next = new Set([...prev].filter(id => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [sessions]);
 
   // items 与原 dataSource 同源：草稿会话（新建后未落库）固定插在第 0 位
   const items = activeSessionId === DRAFT_SESSION_ID ? [DRAFT_SESSION, ...sessions] : sessions;
@@ -296,13 +406,54 @@ const SessionList = memo(function SessionList({
       title="会话列表"
       size="small"
       extra={
-        <Button size="small" type="primary" icon={<PlusOutlined />} onClick={onNew} disabled={streaming}>
-          新建
-        </Button>
+        // 管理模式隐藏头部按钮：此时列表上方有「全选 / 已选 N 条 / 删除 / 退出」整行工具条，
+        // 230px 宽的卡片头塞不下两组按钮
+        managing ? null : (
+          <>
+            <Button size="small" onClick={() => setManaging(true)} disabled={streaming}>
+              管理
+            </Button>
+            <Button size="small" type="primary" icon={<PlusOutlined />} onClick={onNew} disabled={streaming}>
+              新建
+            </Button>
+          </>
+        )
       }
       style={{ width: 230, display: 'flex', flexDirection: 'column' }}
       styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
     >
+      {/* 多选工具条：压在列表上方（不放 Card 头部——230px 宽度塞不下两组按钮） */}
+      {managing && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, paddingBottom: 6, flexShrink: 0 }}>
+          <Checkbox
+            checked={allSelected}
+            indeterminate={someSelected}
+            onChange={toggleAll}
+            disabled={!selectableIds.length}
+          >
+            <span style={{ fontSize: 12 }}>全选</span>
+          </Checkbox>
+          <span style={{ marginLeft: 'auto', fontSize: 12, color: textTertiary }}>
+            已选 {selected.size} 条
+          </span>
+          <Button
+            size="small"
+            type="text"
+            danger
+            icon={<DeleteOutlined />}
+            disabled={!selected.size}
+            title={selected.size ? `删除选中的 ${selected.size} 条会话` : '请先勾选会话'}
+            onClick={() => onBatchDelete([...selected])}
+          />
+          <Button
+            size="small"
+            type="text"
+            icon={<CloseOutlined />}
+            title="退出管理"
+            onClick={exitManaging}
+          />
+        </div>
+      )}
       <div ref={scrollRef} onScroll={handleScroll} style={{ flex: 1, overflowY: 'auto' }}>
         {items.length === 0 ? (
           <List
@@ -329,6 +480,9 @@ const SessionList = memo(function SessionList({
                     item={item}
                     isActive={item.id === activeSessionId}
                     textTertiary={textTertiary}
+                    selectable={managing}
+                    selected={selected.has(item.id)}
+                    onToggleSelect={toggleOne}
                     onOpen={onOpen}
                     onRename={onRename}
                     onExport={onExport}
@@ -345,7 +499,7 @@ const SessionList = memo(function SessionList({
 });
 
 const ChatPage: React.FC = () => {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const { token } = theme.useToken();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -550,6 +704,41 @@ const ChatPage: React.FC = () => {
     // 两个都是"读取当前值"而非"跟随变化"，用 ref 取最新即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSessions, message]);
+
+  // 批量删除（列表页「管理」模式）：二次确认统一在这里做，SessionList 只管选中态与触发。
+  // 用 modal.confirm 而非每条挂 Popconfirm——后者在 139 条时就是 139 个重组件
+  const handleBatchDelete = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    modal.confirm({
+      title: `确定删除选中的 ${ids.length} 条会话？`,
+      content: '删除后不可恢复，会话中的问答记录会一并消失。'
+        + '（被点踩过、需要留档回溯的会话会自动归档保留）',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const res = await batchDeleteSessions(ids);
+          const { deleted, skipped } = res.data;
+          // 删掉的包含当前打开的会话 → 清空消息区（与单条删除同处理）
+          const cur = activeSessionIdRef.current;
+          if (cur && ids.includes(cur)) {
+            setActiveSessionId(undefined);
+            setMessages([]);
+          }
+          await loadSessions();
+          // 如实提示：被跳过的（无权限/已不存在）不能算进"删除成功"
+          if (skipped) {
+            message.warning(`已删除 ${deleted} 条，${skipped} 条无权限或已不存在`);
+          } else {
+            message.success(`已删除 ${deleted} 条会话`);
+          }
+        } catch {
+          message.error('批量删除失败');
+        }
+      },
+    });
+  }, [modal, message, loadSessions]);
 
   // 导出会话为 Markdown：fetch 拿 blob 走浏览器下载（与 PDF 预览同模式，不裸传 token）
   const handleExportSession = useCallback(async (id: string) => {
@@ -820,6 +1009,7 @@ const ChatPage: React.FC = () => {
         onRename={openRenameModal}
         onExport={handleExportSession}
         onDelete={handleDeleteSession}
+        onBatchDelete={handleBatchDelete}
       />
 
       {/* 右栏：对话区（minHeight: 0 允许内部消息列表收缩滚动，防止撑高导致整页滚动） */}
