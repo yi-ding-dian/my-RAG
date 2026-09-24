@@ -915,6 +915,29 @@ export interface RagasTask {
   scores?: Record<string, number>;
 }
 
+/** AI 出题的草稿样本：带来源供审核时对着原文核对 */
+export interface RagasGeneratedSample {
+  question: string;
+  ground_truth: string;
+  /** 来源文档 id（内部标识，按文档筛选用） */
+  source_doc: string;
+  /** 来源文档名——**审核时用它认是哪个文档**（id 是哈希，认不出来） */
+  source_doc_name: string;
+  /** 来源块序号（取不到为 null） */
+  source_chunk_index: number | null;
+}
+
+/** POST /api/stats/ragas/generate-questions 响应：草稿样本 + 采样统计 */
+export interface RagasGeneratedQuestions {
+  samples: RagasGeneratedSample[];
+  /** 该库切块总数（含已删文档的） */
+  chunk_total: number;
+  /** 可出题的块数（已排除软删文档） */
+  active_total?: number;
+  /** 实际抽样块数（成功出题数 ≤ 它） */
+  picked: number;
+}
+
 /** 本地评估集：一份可反复重跑的固定题集——分数可比的前提 */
 export interface RagasDataset {
   id: string;

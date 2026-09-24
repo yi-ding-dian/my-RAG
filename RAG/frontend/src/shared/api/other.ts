@@ -24,6 +24,7 @@ import type {
   RagasEvaluationPreview,
   RagasEvaluationRequest,
   RagasEvaluationResult,
+  RagasGeneratedQuestions,
   RagasPrecheck,
   RagasReport,
   RagasSampleInput,
@@ -68,6 +69,18 @@ export const addRagasDatasetSamples = (datasetId: string,
                                        samples: RagasSampleInput[]) =>
   api.post<{ added: number; skipped: number; total: number }>(
     `/stats/ragas/datasets/${datasetId}/samples`, { samples });
+
+/**
+ * AI 出题：从知识库切块抽样让 LLM 出题 + 参考答案。
+ * **返回的是草稿**——必须让用户审核（可编辑/删除/勾选）后再调 createRagasDataset
+ * 存成正式评估集，AI 出的题和答案不能直接拿来就用。
+ * docIds 非空则只在指定文档里取材（不传=全库，按文档分散抽样）。
+ */
+export const generateRagasQuestions = (kbId: string, count: number,
+                                       docIds?: string[]) =>
+  api.post<RagasGeneratedQuestions>('/stats/ragas/generate-questions',
+    { kb_id: kbId, count, ...(docIds?.length ? { doc_ids: docIds } : {}) },
+    { timeout: 300000 });   // 每题一次 LLM，给足超时
 
 // ========== 检索质量统计（近 30 天） ==========
 

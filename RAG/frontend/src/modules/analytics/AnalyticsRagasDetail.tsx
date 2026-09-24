@@ -9,12 +9,12 @@ import { useNavigate } from 'react-router-dom';
 import AppModal from '../../shared/components/common/AppModal';
 import {
   App as AntApp, Card, Col, Row, Statistic, Table, Tag, Typography, Alert,
-  Space, Tooltip, Button, Empty, Select, Checkbox, Form, Input, Segmented, List,
-  Popconfirm, Radio, Skeleton,
+  Space, Tooltip, Button, Empty, Select, Checkbox, Form, Input, InputNumber,
+  Segmented, List, Popconfirm, Radio, Skeleton,
 } from 'antd';
 import {
   DeleteOutlined, EyeOutlined, FileExcelOutlined, FileTextOutlined,
-  ImportOutlined, PlusOutlined, ReloadOutlined, SaveOutlined,
+  ImportOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined,
   StopOutlined, SyncOutlined, PlayCircleOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -23,8 +23,9 @@ import {
   cancelRagasEvaluation, getRagasStatus, getRagasReport,
   listKbs, startRagasEvaluation, previewRagasSamples, ragasPrecheck,
   listRagasDatasets, createRagasDataset, deleteRagasDataset, getLlmModelList,
+  generateRagasQuestions, listDocuments,
   KnowledgeBase, RagasStatus, RagasTask, RagasReport, RagasSampleInput,
-  RagasDataset, ParserLlmModelItem,
+  RagasDataset, ParserLlmModelItem, RagasGeneratedSample, DocumentItem,
 } from '../../shared/api/client';
 import { useAuth } from '../../shared/auth/AuthContext';
 import AppEmpty from '../../shared/components/common/AppEmpty';
@@ -101,6 +102,18 @@ const AnalyticsRagasDetailPage: React.FC = () => {
   const [newDsKbIds, setNewDsKbIds] = useState<string[]>([]);
   const [newDsText, setNewDsText] = useState('');
   const [newDsSubmitting, setNewDsSubmitting] = useState(false);
+  // AI 出题（合成测试集）：生成的是**草稿**，审核通过才存成评估集
+  const [genOpen, setGenOpen] = useState(false);
+  const [genKbId, setGenKbId] = useState<string | undefined>(undefined);
+  const [genCount, setGenCount] = useState(10);
+  const [genLoading, setGenLoading] = useState(false);
+  const [genSamples, setGenSamples] = useState<RagasGeneratedSample[]>([]);
+  const [genChecked, setGenChecked] = useState<boolean[]>([]);
+  const [genName, setGenName] = useState('');
+  const [genSaving, setGenSaving] = useState(false);
+  // 取材范围：选中的文档（空 = 全库）；只列已入库的（软删的块后端会排除）
+  const [genDocs, setGenDocs] = useState<DocumentItem[]>([]);
+  const [genDocIds, setGenDocIds] = useState<string[]>([]);
   // 评估用的**评委模型**（数据源 = 当前档案的 LLM 模型列表）：
   // 换评委分数不可比，所以默认跟随"当前使用"的那个，不选即维持现状
   const [llmModelList, setLlmModelList] = useState<ParserLlmModelItem[]>([]);
@@ -569,6 +582,89 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       message.error(detail || '新建评估集失败');
     } finally {
       setNewDsSubmitting(false);
+    }
+  };
+
+  // ===== AI 出题（合成测试集）：给"还没人问过、也没人写题"的新库用 =====
+
+  const resetGen = () => {
+    setGenSamples([]);
+    setGenChecked([]);
+    setGenName('');
+  };
+
+  // 换知识库 → 拉它的文档列表供"取材范围"多选（只列已入库的；
+  // 软删的文档块会被后端直接排除，列出来反而误导）
+  const handleGenKbChange = async (kbId: string | undefined) => {
+    setGenKbId(kbId);
+    setGenDocIds([]);
+    setGenDocs([]);
+    if (!kbId) return;
+    try {
+      const res = await listDocuments(kbId);
+      const arr = Array.isArray(res.data) ? res.data : (res.data.items || []);
+      setGenDocs(arr.filter(d => d.status === 'ingested'));
+    } catch {
+      setGenDocs([]);
+    }
+  };
+
+  const handleGenerateQuestions = async () => {
+    if (!genKbId) {
+      message.error('请选择知识库');
+      return;
+    }
+    setGenLoading(true);
+    try {
+      const res = await generateRagasQuestions(genKbId, genCount, genDocIds);
+      const samples = res.data.samples || [];
+      setGenSamples(samples);
+      setGenChecked(samples.map(() => true));  // 默认全选，用户再取消不要的
+      if (samples.length === 0) {
+        message.warning(
+          `抽了 ${res.data.picked} 个片段都没能出题（内容太少或模型判断不适合出题），`
+          + '换个知识库或调大条数再试', 6);
+      } else {
+        message.success(`已生成 ${samples.length} 条草稿，请审核后采用`);
+      }
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail || 'AI 出题失败（检查 LLM 服务与知识库是否有切块）', 6);
+    } finally {
+      setGenLoading(false);
+    }
+  };
+
+  // 采用勾选的草稿 → 建成正式评估集
+  const handleAdoptGenerated = async () => {
+    const picked = genSamples.filter((_, i) => genChecked[i]);
+    if (picked.length === 0) {
+      message.error('请至少勾选一条样本');
+      return;
+    }
+    const name = genName.trim();
+    if (!name) {
+      message.error('请填写评估集名称');
+      return;
+    }
+    if (!genKbId) return;
+    setGenSaving(true);
+    try {
+      const res = await createRagasDataset({
+        kb_id: genKbId, name, source: 'ai',
+        samples: picked.map(s => ({
+          question: s.question, ground_truth: s.ground_truth,
+        })),
+      });
+      setEvalDatasets(prev => [res.data, ...prev]);
+      setGenOpen(false);
+      resetGen();
+      message.success(`评估集「${name}」已创建（${picked.length} 条）`);
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail || '保存评估集失败');
+    } finally {
+      setGenSaving(false);
     }
   };
 
@@ -1367,6 +1463,13 @@ const AnalyticsRagasDetailPage: React.FC = () => {
         onCancel={() => setDatasetMgrOpen(false)}
         footer={[
           <Button
+            key="ai"
+            icon={<RobotOutlined />}
+            onClick={() => setGenOpen(true)}
+          >
+            AI 生成题集
+          </Button>,
+          <Button
             key="new"
             type="primary"
             icon={<PlusOutlined />}
@@ -1473,6 +1576,164 @@ const AnalyticsRagasDetailPage: React.FC = () => {
             </Text>
           </div>
         </Space>
+      </AppModal>
+
+      {/* AI 出题：草稿 → 人工审核 → 采用（给还没人问过、也没人写题的新库用） */}
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 780, h: 640 }}
+        rememberKey="ana-dataset-ai"
+        title="AI 生成题集（草稿，需审核）"
+        open={genOpen}
+        onCancel={() => { setGenOpen(false); resetGen(); }}
+        footer={genSamples.length === 0 ? [
+          <Button key="cancel" onClick={() => { setGenOpen(false); resetGen(); }}>取消</Button>,
+          <Button key="gen" type="primary" loading={genLoading} onClick={handleGenerateQuestions}>
+            开始生成
+          </Button>,
+        ] : [
+          <Button key="regen" onClick={resetGen}>重新生成</Button>,
+          <Button key="cancel2" onClick={() => { setGenOpen(false); resetGen(); }}>取消</Button>,
+          <Button key="adopt" type="primary" loading={genSaving} onClick={handleAdoptGenerated}>
+            采用选中的 {genChecked.filter(Boolean).length} 条
+          </Button>,
+        ]}
+        width={780}
+      >
+        {genSamples.length === 0 ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={14}>
+            <Alert
+              type="info"
+              showIcon
+              message="AI 读知识库的切块，自己出题 + 写参考答案"
+              description="生成结果是**草稿**：你可以逐条改、删、勾选，确认后才存成评估集。
+                参考答案是基于原文生成的，但仍建议对着「来源」核对一遍——AI 出的题和答案不能直接拿来就用。"
+            />
+            <div>
+              <Text strong>知识库</Text>
+              <Select
+                style={{ width: '100%', marginTop: 4 }}
+                placeholder="选择要出题的知识库"
+                value={genKbId}
+                onChange={handleGenKbChange}
+                options={kbs.map(k => ({
+                  value: k.id,
+                  label: `${k.name}（${k.chunk_count} 个切块）`,
+                }))}
+                notFoundContent={<Empty description="暂无可用知识库" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+              />
+            </div>
+            {genKbId && (
+              <div>
+                <Text strong>取材文档</Text>
+                <Select
+                  style={{ width: '100%', marginTop: 4 }}
+                  mode="multiple"
+                  maxTagCount="responsive"
+                  allowClear
+                  placeholder="不选 = 全库（按文档分散抽样）"
+                  value={genDocIds}
+                  onChange={(v: string[]) => setGenDocIds(v)}
+                  // 用**原始文件名**：与出题来源显示的块 metadata.document_name 是同一个名字。
+                  // 若这里用 name（内部存储名 xxx.docx），下拉里选的与来源里看到的对不上
+                  options={genDocs.map(d => ({
+                    value: d.id, label: d.original_name || d.name,
+                  }))}
+                  notFoundContent={<Empty description="该知识库暂无已入库文档"
+                                             image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  只从选中的文档取材；不选则整库。AI 读的是**切块**（被检索的正是它），
+                  不是原始文档——这样才能保证出的题"检索得到"，评估才公平。
+                  已删除的文档一律不参与
+                </Text>
+              </div>
+            )}
+            <div>
+              <Text strong>生成条数</Text>
+              <div style={{ marginTop: 4 }}>
+                <InputNumber
+                  min={1}
+                  max={20}
+                  value={genCount}
+                  onChange={v => setGenCount(Number(v) || 10)}
+                />
+                <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                  1~20 条；出题会分散到不同文档取材，每条一次 LLM 调用，越多越慢
+                </Text>
+              </div>
+            </div>
+          </Space>
+        ) : (
+          <Space direction="vertical" style={{ width: '100%' }} size={10}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              共 {genSamples.length} 条草稿，已默认全选。可直接编辑问题和参考答案，
+              取消勾选不要的；「来源」是出题用的原文位置，方便核对答案准不准。
+            </Text>
+            <div style={{ maxHeight: 370, overflowY: 'auto' }}>
+              {genSamples.map((s, i) => (
+                <div
+                  key={i}
+                  style={{
+                    padding: '8px 10px', marginBottom: 8,
+                    border: '1px solid #f0f0f0', borderRadius: 8,
+                  }}
+                >
+                  <Space align="start" style={{ width: '100%' }}>
+                    <Checkbox
+                      checked={genChecked[i]}
+                      onChange={e => {
+                        const next = [...genChecked];
+                        next[i] = e.target.checked;
+                        setGenChecked(next);
+                      }}
+                      style={{ marginTop: 6 }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <Input
+                        value={s.question}
+                        placeholder="问题"
+                        onChange={e => {
+                          const next = [...genSamples];
+                          next[i] = { ...s, question: e.target.value };
+                          setGenSamples(next);
+                        }}
+                      />
+                      <Input.TextArea
+                        style={{ marginTop: 6 }}
+                        rows={2}
+                        value={s.ground_truth}
+                        placeholder="参考答案"
+                        onChange={e => {
+                          const next = [...genSamples];
+                          next[i] = { ...s, ground_truth: e.target.value };
+                          setGenSamples(next);
+                        }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        来源：{s.source_doc_name
+                          ? `${s.source_doc_name} · 块 ${s.source_chunk_index ?? '?'}`
+                          : (s.source_doc
+                            ? `${s.source_doc.slice(0, 12)}… · 块 ${s.source_chunk_index ?? '?'}`
+                            : '（后端未能从块元数据取到）')}
+                      </Text>
+                    </div>
+                  </Space>
+                </div>
+              ))}
+            </div>
+            <div>
+              <Text strong>存入哪个评估集</Text>
+              <Input
+                style={{ marginTop: 4 }}
+                placeholder="评估集名称（1~50 字）"
+                maxLength={50}
+                value={genName}
+                onChange={e => setGenName(e.target.value)}
+              />
+            </div>
+          </Space>
+        )}
       </AppModal>
 
       {/* 另存为评估集：把当前测试集沉淀成可复用题集 */}

@@ -274,6 +274,183 @@ def cleanup_sessions(session_ids: List[str]) -> int:
     return removed
 
 
+# ==================== AI 出题（合成测试集） ====================
+#
+# 从知识库切块里抽一批 → 每块让 LLM 出一道题 + 参考答案。
+# 用途：新建的知识库没有历史提问、没人手写题时也能评估；且答案可作 ground_truth，
+# 解锁需要参考答案的指标（context_recall / answer_correctness 等）。
+#
+# **生成的样本必须先人工审核再用**——小模型出的题可能太浅或跑偏、答案可能有幻觉，
+# 所以生成结果只是"草稿"，由调用方交给用户过目。
+
+# 出题并发：每条 = 一次 LLM 调用，串行几十条会等到 HTTP 超时
+QUESTION_GEN_CONCURRENCY = 3
+# 单次最多生成条数（同步接口，再多就该改异步任务了）
+MAX_GENERATED_QUESTIONS = 20
+# 喂给 LLM 的片段截断：太长既费 token 又容易让小模型跑偏
+GEN_CHUNK_CHARS = 1500
+
+QUESTION_PROMPT = """你是出题专家。请**只根据**下面这段文档内容，出一道能用它回答的问题，并给出参考答案。
+
+要求：
+1. 问题要具体、可独立理解。不要"这段讲了什么"这类泛泛的问题，也不要出现"本文档""这段""上面"之类的指代
+2. 参考答案**必须只依据片段内容**，不得引入片段之外的任何知识；答案要完整到能独立当标准答案
+3. 如果这段内容信息太少、不足以出一道有意义的题，question 就返回空字符串
+
+文档片段：
+---
+{chunk}
+---
+
+只输出 JSON，不要任何多余文字或代码块标记：
+{{"question": "...", "answer": "..."}}"""
+
+
+def _chunk_meta(item: tuple) -> tuple:
+    """从 (id, text, metadata) 取 (文档id, 文档名, 块序号) 供溯源与筛选
+
+    metadata 的键名各后端/各版本不尽相同，一律容错——**取不到也要能跑**，
+    只是审核界面少显示一个来源标记。文档名优先（审核时要认得出来），
+    id 用于按文档筛选。
+    """
+    meta = item[2] if len(item) > 2 and isinstance(item[2], dict) else {}
+    doc_id = str(meta.get("document_id") or meta.get("doc_id") or "")
+    doc_name = str(meta.get("document_name") or "")
+    idx = meta.get("chunk_index")
+    return doc_id, doc_name, (idx if isinstance(idx, int) else None)
+
+
+def _is_active_chunk(item: tuple) -> bool:
+    """块所属文档是否未删除
+
+    get_all 是**全量拉取、不过滤 doc_active**（检索那边才带 where={'doc_active': True}），
+    所以这里必须自己滤掉软删文档的块——否则会拿已删文档出题，出的题在检索里
+    永远命中不了，纯属无效样本。
+    doc_active 缺省视为 True：与 vector_store._ensure_doc_active 的老数据兼容口径一致。
+    """
+    meta = item[2] if len(item) > 2 and isinstance(item[2], dict) else {}
+    return meta.get("doc_active", True) is not False
+
+
+def pick_spread_chunks(items: List[tuple], count: int) -> List[tuple]:
+    """从切块里**分散**抽样，避免 N 道题全出自同几个文档
+
+    做法：先按文档分组，再跨文档轮流取（每轮各文档出一个块）——文档多的库能覆盖
+    得更广。文档数不足时自然退化为全部取完。
+    """
+    if count <= 0 or not items:
+        return []
+    by_doc: Dict[str, List[tuple]] = {}
+    for it in items:
+        doc_id, doc_name, _ = _chunk_meta(it)
+        by_doc.setdefault(doc_id or doc_name or "unknown", []).append(it)
+
+    picked: List[tuple] = []
+    docs = list(by_doc.keys())
+    round_idx = 0
+    while len(picked) < count and docs:
+        doc = docs[round_idx % len(docs)]
+        bucket = by_doc[doc]
+        if bucket:
+            picked.append(bucket.pop(0))
+        else:
+            docs.remove(doc)
+            continue
+        round_idx += 1
+    return picked[:count]
+
+
+def _parse_question_json(text: str) -> Optional[Dict]:
+    """从 LLM 输出里抠出 {"question","answer"}（容忍 ```json 包裹/前后废话）"""
+    if not text:
+        return None
+    s = text.strip()
+    if s.startswith("```"):
+        # 去掉 ```json ... ``` 围栏
+        s = s.split("\n", 1)[-1] if "\n" in s else s
+        s = s.rsplit("```", 1)[0]
+    start, end = s.find("{"), s.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(s[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    q = str(data.get("question") or "").strip()
+    a = str(data.get("answer") or "").strip()
+    if not q:
+        return None  # 模型自判"这段出不了题"
+    return {"question": q, "ground_truth": a}
+
+
+async def generate_questions(kb_id: str, count: int,
+                             user_id: Optional[str] = None,
+                             doc_ids: Optional[List[str]] = None) -> Dict:
+    """AI 出题：抽样切块 → 并发让 LLM 出题 → 返回**待审核**的草稿样本
+
+    - 只从**未删除**文档的块里出题（软删文档的块命中不了，出了也是废样本）
+    - doc_ids 非空时**只在这些文档里抽样**（不传=全库，文档间分散）
+    - 返回 {"samples": [...], "chunk_total": N, "picked": M}，样本形如
+      {question, ground_truth, source_doc, source_doc_name, source_chunk_index}
+      ——**带来源**是为了审核时能对着原文核对（审核能生效的前提）
+
+    注意：只出题不落盘——由调用方展示给用户审核后再决定是否存成评估集。
+    """
+    from backend.config import get_active_config
+    from backend.services.llm_client import get_llm_client, llm_completion
+    from backend.services.vector_store import get_vector_store
+
+    count = max(1, min(int(count), MAX_GENERATED_QUESTIONS))
+    items = await get_vector_store().get_all(kb_id)
+    total = len(items)
+    # 先滤掉软删文档的块（见 _is_active_chunk 说明）
+    items = [it for it in items if _is_active_chunk(it)]
+    # 再按指定文档收窄（不传 doc_ids = 全库）
+    if doc_ids:
+        wanted = {str(d) for d in doc_ids if d}
+        items = [it for it in items if _chunk_meta(it)[0] in wanted]
+    if not items:
+        return {"samples": [], "chunk_total": total, "picked": 0,
+                "active_total": 0}
+
+    picked = pick_spread_chunks(items, count)
+    llm = get_active_config().llm
+    client = get_llm_client()
+    sem = asyncio.Semaphore(QUESTION_GEN_CONCURRENCY)
+
+    async def one(item: tuple) -> Optional[Dict]:
+        chunk = str(item[1] or "").strip() if len(item) > 1 else ""
+        if not chunk:
+            return None
+        async with sem:
+            try:
+                resp = await llm_completion(
+                    client, model=llm.model,
+                    messages=[{"role": "user",
+                               "content": QUESTION_PROMPT.format(
+                                   chunk=chunk[:GEN_CHUNK_CHARS])}],
+                    max_tokens=1024, temperature=0.3, timeout=90)
+                content = resp.choices[0].message.content or ""
+            except Exception as e:
+                logger.warning("AI 出题单条失败: %s", e)
+                return None
+        parsed = _parse_question_json(content)
+        if not parsed:
+            return None
+        doc_id, doc_name, idx = _chunk_meta(item)
+        return {**parsed, "source_doc": doc_id, "source_doc_name": doc_name,
+                "source_chunk_index": idx}
+
+    results = await asyncio.gather(*(one(it) for it in picked))
+    samples = [r for r in results if r]
+    logger.info("AI 出题: kb=%s 全部块=%d 可用块=%d 抽样=%d 成功=%d",
+                kb_id, total, len(items), len(picked), len(samples))
+    return {"samples": samples, "chunk_total": total,
+            "active_total": len(items), "picked": len(picked)}
+
+
 # ==================== 本地任务元数据 ====================
 
 def load_task_meta() -> List[Dict]:

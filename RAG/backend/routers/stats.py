@@ -261,6 +261,15 @@ class RagasDatasetAddSamplesRequest(BaseModel):
     samples: List[RagasSampleInput] = Field(..., description="要追加的样本（1~100 条）")
 
 
+class RagasGenerateQuestionsRequest(BaseModel):
+    """AI 出题请求（合成测试集草稿）"""
+    kb_id: str = Field(..., description="知识库 ID")
+    count: int = Field(10, description="生成条数（1~20）")
+    doc_ids: Optional[List[str]] = Field(
+        None, description="只在指定的这些文档里取材；不传=全库（按文档分散抽样）。"
+                          "**已软删的文档一律排除**（它们的块检索不到，出了也是废题）")
+
+
 @router.get("/ragas")
 async def ragas_status(user: UserPublic = Depends(get_current_user)):
     """探测 RAGAS 8090：3s 超时，失败返回 {available:false}（自身统计不受影响）
@@ -738,6 +747,26 @@ async def add_ragas_dataset_samples(dataset_id: str,
              for s in body.samples])
     except KeyError:
         raise HTTPException(status_code=404, detail="评估集不存在")
+
+
+@router.post("/ragas/generate-questions")
+async def generate_ragas_questions(body: RagasGenerateQuestionsRequest,
+                                   db: AsyncSession = Depends(get_db),
+                                   user: UserPublic = Depends(get_current_user)):
+    """AI 出题：从知识库切块抽样，让 LLM 出题 + 给参考答案（**草稿，须人工审核**）
+
+    给"新建的库还没人问过、也没人写题"的场景用——不依赖历史提问就能攒出测试集；
+    参考答案还能当 ground_truth，解锁需要参考答案的指标。
+
+    只出题**不落盘**：前端展示给用户过目（可编辑/删除/勾选），确认后再调
+    POST /ragas/datasets 存成正式评估集。返回 {samples, chunk_total, picked}，
+    samples 带 source_doc/source_chunk_index 供审核时对着原文核对。
+    """
+    if not _can_manage_ragas(user):
+        raise HTTPException(status_code=403, detail="仅管理员可生成测试题")
+    kb = await kb_or_404(db, body.kb_id, user)
+    return await ragas_sampling.generate_questions(
+        kb.id, body.count, user.id, body.doc_ids)
 
 
 def _probe_to_available(r: dict) -> dict:
