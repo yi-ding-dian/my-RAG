@@ -8,10 +8,18 @@
  * - 会话彻底不可回溯（归档也过保留期被清理）→ 显式提示，不静默空白
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Button, Drawer, Skeleton, Space, Tag, Tooltip, Typography } from 'antd';
-import { getSession, type ChatMessage, type ChatSessionDetail } from '../../shared/api/client';
+import {
+  App as AntApp, Button, Drawer, Empty, Input, Select, Skeleton, Space, Tag, Tooltip, Typography,
+} from 'antd';
+import {
+  addRagasDatasetSamples,
+  getSession, listRagasDatasets,
+  type ChatMessage, type ChatSessionDetail, type RagasDataset,
+} from '../../shared/api/client';
 import AppEmpty from '../../shared/components/common/AppEmpty';
+import AppModal from '../../shared/components/common/AppModal';
 import RequestDetailModal from '../../shared/components/common/RequestDetailModal';
+import { useAuth } from '../../shared/auth/AuthContext';
 import { isKgSource, scoreBadge } from '../../shared/utils/sourceScore';
 
 const { Text } = Typography;
@@ -41,8 +49,19 @@ const SessionReplayDrawer: React.FC<SessionReplayDrawerProps> = ({
   feedback,
   onClose,
 }) => {
+  const { message } = AntApp.useApp();
+  const { user } = useAuth();
+  // 「加入评估集」仅对管理员开放（与后端 /ragas/datasets 的权限口径一致）
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'dept_admin';
   const [session, setSession] = useState<ChatSessionDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  // 「加入评估集」弹窗：把被点踩的问答沉淀成回归用例，让踩过的坑不再复发
+  const [dsOpen, setDsOpen] = useState(false);
+  const [dsList, setDsList] = useState<RagasDataset[]>([]);
+  const [dsId, setDsId] = useState<string | undefined>(undefined);
+  const [dsQuestion, setDsQuestion] = useState('');
+  const [dsTruth, setDsTruth] = useState('');
+  const [dsSubmitting, setDsSubmitting] = useState(false);
   /** notfound = 会话不存在，或已删除但没有反馈关联（无反馈的会话不保留归档） */
   const [error, setError] = useState<'notfound' | 'failed' | null>(null);
   /** 请求详情弹窗目标（消息下标 + 该回答对应的用户提问） */
@@ -93,6 +112,56 @@ const SessionReplayDrawer: React.FC<SessionReplayDrawerProps> = ({
       }
     }
     setDetail({ idx, question });
+  };
+
+  /** 打开「加入评估集」弹窗：提问取该回答前最近的用户消息，参考答案预填反馈里的原因 */
+  const openAddToDataset = (idx: number) => {
+    const msgs = session?.messages || [];
+    let q = '';
+    for (let i = idx - 1; i >= 0; i--) {
+      if (msgs[i].role === 'user') {
+        q = (msgs[i].content || '').trim();
+        break;
+      }
+    }
+    if (!q) {
+      message.warning('这条回答前面没有对应的用户提问，无法加入评估集');
+      return;
+    }
+    setDsQuestion(q);
+    // 点踩时填的「哪里不对」预填为参考答案的起点——它未必就是正确答案，
+    // 所以只作预填、留给使用者改成真正的期望答案
+    setDsTruth(feedback?.reason || '');
+    setDsId(undefined);
+    setDsOpen(true);
+    listRagasDatasets()
+      .then(r => setDsList(r.data.datasets || []))
+      .catch(() => setDsList([]));
+  };
+
+  const handleAddToDataset = async () => {
+    if (!dsId) {
+      message.error('请选择要加入的评估集');
+      return;
+    }
+    setDsSubmitting(true);
+    try {
+      const res = await addRagasDatasetSamples(dsId, [
+        { question: dsQuestion, ground_truth: dsTruth.trim() },
+      ]);
+      const { added, skipped } = res.data;
+      if (added) {
+        message.success('已加入评估集——以后用该评估集重跑评估会覆盖这条');
+      } else if (skipped) {
+        message.warning('该问题已在评估集里（按问题去重）');
+      }
+      setDsOpen(false);
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail || '加入评估集失败');
+    } finally {
+      setDsSubmitting(false);
+    }
   };
 
   const renderBody = () => {
@@ -156,20 +225,34 @@ const SessionReplayDrawer: React.FC<SessionReplayDrawerProps> = ({
               </div>
               {/* 请求详情：与聊天页同一组件、同一显示条件（消息带 prompt+耗时
                   或 agentic 轨迹才有入口）。归档裁剪保留整条消息，详情不受影响 */}
-              {!isUser
-                && ((!!m.prompt
-                  && (m.retrieval_ms !== undefined || m.total_ms !== undefined))
-                  || !!m.agentic)
-                && (
-                  <Button
-                    type="link"
-                    size="small"
-                    style={{ padding: 0, marginTop: 4 }}
-                    onClick={() => openDetail(session.messages, idx)}
-                  >
-                    详情
-                  </Button>
-                )}
+              {!isUser && (
+                <Space size={12} style={{ marginTop: 4 }}>
+                  {((!!m.prompt
+                    && (m.retrieval_ms !== undefined || m.total_ms !== undefined))
+                    || !!m.agentic)
+                    && (
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ padding: 0 }}
+                        onClick={() => openDetail(session.messages, idx)}
+                      >
+                        详情
+                      </Button>
+                    )}
+                  {/* 把这条问答沉淀成评估集样本：点踩现场 → 永久回归用例 */}
+                  {isAdmin && (
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0 }}
+                      onClick={() => openAddToDataset(idx)}
+                    >
+                      加入评估集
+                    </Button>
+                  )}
+                </Space>
+              )}
               {m.sources && m.sources.length > 0 && (
                 <div style={{ marginTop: 6, maxWidth: '92%' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
@@ -245,6 +328,62 @@ const SessionReplayDrawer: React.FC<SessionReplayDrawerProps> = ({
       feedback={feedback}
       onClose={() => setDetail(null)}
     />
+    {/* 加入评估集弹窗（同样放在 Drawer 外，避免层级约束） */}
+    <AppModal
+      dimension="auto"
+      defaultSize={{ w: 520, h: 440 }}
+      rememberKey="replay-add-dataset"
+      title="加入评估集"
+      open={dsOpen}
+      onCancel={() => setDsOpen(false)}
+      onOk={handleAddToDataset}
+      okText="加入"
+      cancelText="取消"
+      confirmLoading={dsSubmitting}
+      width={520}
+    >
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        加进固定题集后，以后每次用该评估集重跑都会覆盖这条——让踩过的坑变成永久回归用例。
+      </Text>
+      <div style={{ marginTop: 12 }}>
+        <Text strong>问题</Text>
+        <div style={{
+          marginTop: 4, padding: '6px 8px', borderRadius: 6, fontSize: 13,
+          background: 'rgba(0,0,0,0.03)', wordBreak: 'break-word',
+        }}
+        >
+          {dsQuestion}
+        </div>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <Text strong>参考答案</Text>
+        <Input.TextArea
+          style={{ marginTop: 4 }}
+          rows={3}
+          maxLength={2000}
+          placeholder="期望的正确回答（留空则该样本评不了需要参考答案的指标）"
+          value={dsTruth}
+          onChange={e => setDsTruth(e.target.value)}
+        />
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <Text strong>加入哪个评估集</Text>
+        <Select
+          style={{ width: '100%', marginTop: 4 }}
+          placeholder="选择评估集"
+          value={dsId}
+          onChange={setDsId}
+          options={dsList.map(d => ({
+            value: d.id,
+            label: `${d.name}（${d.samples?.length ?? 0} 条 · ${d.kb_name}）`,
+          }))}
+          notFoundContent={
+            <Empty description="还没有评估集，请先到 RAGAS 评测页创建"
+                   image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          }
+        />
+      </div>
+    </AppModal>
     </>
   );
 };

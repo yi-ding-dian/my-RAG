@@ -888,6 +888,7 @@ export interface Stats {
 export interface RagasTask {
   id: string;
   name: string;
+  /** 本次评估在 RAGAS 服务端新建的数据集 id（一次一换，仅溯源用） */
   dataset_id?: string;
   dataset_name?: string;
   status: string;
@@ -898,10 +899,35 @@ export interface RagasTask {
   completed_at?: string;
   /** 以下为知识库本地发起任务合并的元数据（非本地任务无此字段） */
   kb_name?: string;
-  source?: 'logs' | 'chat';
+  /** 样本来源：logs/chat=自动采样，manual=手动填写/导入，dataset=本地评估集重跑 */
+  source?: 'logs' | 'chat' | 'manual' | 'dataset';
   sample_count?: number;
   /** 发起人 user id（取消按钮按当前用户比对显隐；旧任务无此字段） */
   user_id?: string;
+  /** 本地评估集 id：同一题集的历史任务靠它分组做分数对比（自动采样任务无此字段） */
+  local_dataset_id?: string | null;
+  /** 本次用的**评委**模型：换评委分数不可比，前端只在同评委间显示 ↑↓ 对比 */
+  eval_model?: string;
+  /** answer 来源：dataset=题集参考答案（测检索）/ generate=实时生成（测端到端）。
+   *  两种模式测的东西不同，也不能混着比 */
+  answer_source?: 'dataset' | 'generate';
+  /** 各指标分数快照（后端把已完成任务的 aggregate.scores 回写本地，列表直接展示） */
+  scores?: Record<string, number>;
+}
+
+/** 本地评估集：一份可反复重跑的固定题集——分数可比的前提 */
+export interface RagasDataset {
+  id: string;
+  name: string;
+  kb_id: string;
+  kb_name: string;
+  /** 题集内容（评估时实时检索填 contexts，故不存 contexts） */
+  samples: Array<{ question: string; ground_truth: string }>;
+  /** manual=手动填写/导入，chat=从聊天历史导入，feedback=点踩沉淀 */
+  source: string;
+  user_id: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface RagasSample {
@@ -941,7 +967,11 @@ export interface RagasSampleInput {
 
 /** 从知识库发起 RAGAS 评估请求体 */
 export interface RagasEvaluationRequest {
-  kb_id: string;
+  /** 知识库 ID（单库；与 kb_ids 二选一，传 dataset_id 时忽略、以评估集绑定的为准） */
+  kb_id?: string;
+  /** 知识库 ID 数组（1~5 个，多库评估；与 kb_id 二选一，都传时优先）。
+   *  多库问答的问题拿去评估时，检索/生成都按这组库走，才和用户实际用的是同一条链路 */
+  kb_ids?: string[];
   /** 评估指标（默认：需 ground_truth 的上下文召回率/答案正确性/答案相似度） */
   metrics?: string[];
   /** 自动采样样本数 1~100，默认 20（传 samples 时忽略） */
@@ -952,6 +982,15 @@ export interface RagasEvaluationRequest {
   top_k?: number;
   /** 手动测试集 1~100 条；传了 samples 时优先于自动采样 */
   samples?: RagasSampleInput[];
+  /** 本地评估集 id：传了则用该题集重跑（优先于 samples 与自动采样），
+   *  知识库以评估集绑定的为准——同一份题集反复跑，分数才可比 */
+  dataset_id?: string;
+  /** 评估用的评委模型（取当前档案模型列表的 name）；留空=当前激活模型。
+   *  **换评委分数不可比**，任务会记下实际用的模型供对比区分 */
+  llm_model?: string;
+  /** answer 来源："dataset"=题集里的参考答案（默认，快，测检索）；
+   *  "generate"=系统实时生成（走完整问答链路，慢，测端到端质量） */
+  answer_source?: 'dataset' | 'generate';
   /** 预览模式：仅采样返回样本列表，不发起评估（从聊天历史导入用） */
   preview?: boolean;
 }

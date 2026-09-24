@@ -9,12 +9,12 @@ import { useNavigate } from 'react-router-dom';
 import AppModal from '../../shared/components/common/AppModal';
 import {
   App as AntApp, Card, Col, Row, Statistic, Table, Tag, Typography, Alert,
-  Space, Tooltip, Button, Empty, Select, Checkbox, Form, Input, Segmented, List, Popconfirm,
-  Skeleton,
+  Space, Tooltip, Button, Empty, Select, Checkbox, Form, Input, Segmented, List,
+  Popconfirm, Radio, Skeleton,
 } from 'antd';
 import {
   DeleteOutlined, EyeOutlined, FileExcelOutlined, FileTextOutlined,
-  ImportOutlined, PlusOutlined, ReloadOutlined,
+  ImportOutlined, PlusOutlined, ReloadOutlined, SaveOutlined,
   StopOutlined, SyncOutlined, PlayCircleOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -22,7 +22,9 @@ import * as XLSX from 'xlsx';
 import {
   cancelRagasEvaluation, getRagasStatus, getRagasReport,
   listKbs, startRagasEvaluation, previewRagasSamples, ragasPrecheck,
+  listRagasDatasets, createRagasDataset, deleteRagasDataset, getLlmModelList,
   KnowledgeBase, RagasStatus, RagasTask, RagasReport, RagasSampleInput,
+  RagasDataset, ParserLlmModelItem,
 } from '../../shared/api/client';
 import { useAuth } from '../../shared/auth/AuthContext';
 import AppEmpty from '../../shared/components/common/AppEmpty';
@@ -36,6 +38,14 @@ import {
 } from './analytics-shared';
 
 const { Text } = Typography;
+
+/** 任务的平均分（各指标算术平均）；没有分数快照时返回 null */
+const avgScore = (scores?: Record<string, number>): number | null => {
+  if (!scores) return null;
+  const vals = Object.values(scores).filter(v => typeof v === 'number');
+  if (vals.length === 0) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+};
 
 const AnalyticsRagasDetailPage: React.FC = () => {
   const { message } = AntApp.useApp();
@@ -72,10 +82,33 @@ const AnalyticsRagasDetailPage: React.FC = () => {
 
   // 发起评估 Modal（手动测试集）
   const [evalOpen, setEvalOpen] = useState(false);
-  const [evalKbId, setEvalKbId] = useState<string | undefined>(undefined);
+  /** 评估用的知识库（**可多选**）：多库问答的问题评估时也走多库链路，
+   *  否则评的不是用户实际用的那条 */
+  const [evalKbIds, setEvalKbIds] = useState<string[]>([]);
   const [evalMetrics, setEvalMetrics] = useState<string[]>(DEFAULT_METRICS);
   const [evalSubmitting, setEvalSubmitting] = useState(false);
   const [evalImporting, setEvalImporting] = useState(false);
+  // 本地评估集（可反复重跑的固定题集）：选中后用它重跑，分数才可与历史对比
+  const [evalDatasets, setEvalDatasets] = useState<RagasDataset[]>([]);
+  const [evalDatasetId, setEvalDatasetId] = useState<string | undefined>(undefined);
+  const [datasetMgrOpen, setDatasetMgrOpen] = useState(false);
+  // 「另存为评估集」小弹窗：把当前测试集沉淀成可复用的题集
+  const [saveDsOpen, setSaveDsOpen] = useState(false);
+  const [saveDsName, setSaveDsName] = useState('');
+  // 「新建评估集」（评估集管理弹窗入口）：不经过发起评估，直接建题集
+  const [newDsOpen, setNewDsOpen] = useState(false);
+  const [newDsName, setNewDsName] = useState('');
+  const [newDsKbIds, setNewDsKbIds] = useState<string[]>([]);
+  const [newDsText, setNewDsText] = useState('');
+  const [newDsSubmitting, setNewDsSubmitting] = useState(false);
+  // 评估用的**评委模型**（数据源 = 当前档案的 LLM 模型列表）：
+  // 换评委分数不可比，所以默认跟随"当前使用"的那个，不选即维持现状
+  const [llmModelList, setLlmModelList] = useState<ParserLlmModelItem[]>([]);
+  /** 当前激活模型在列表里的下标（下拉里标"当前使用"） */
+  const [llmActiveIdx, setLlmActiveIdx] = useState(0);
+  const [evalModel, setEvalModel] = useState<string | undefined>(undefined);
+  /** answer 来源：dataset=题集里的参考答案（快，测检索）；generate=系统实时生成（慢，测端到端） */
+  const [answerSource, setAnswerSource] = useState<'dataset' | 'generate'>('dataset');
   const [evalForm] = Form.useForm<{ samples: EvalSampleRow[] }>();
   // 测试集有效行数（问题 + 正确答案均非空）：为 0 时禁止发起评估
   const evalSamples = Form.useWatch('samples', evalForm);
@@ -112,6 +145,17 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       ]);
       setRagas(ragasRes.data);
       setKbs(kbsRes.data);
+      // 评估集列表失败不影响任务列表（静默降级为空，发起评估里等同"没有评估集"）
+      listRagasDatasets()
+        .then(r => setEvalDatasets(r.data.datasets || []))
+        .catch(() => setEvalDatasets([]));
+      // 评委模型候选（当前档案的 LLM 模型列表）；失败则下拉为空 = 只能跟随激活模型
+      getLlmModelList()
+        .then(r => {
+          setLlmModelList(r.data.models || []);
+          setLlmActiveIdx(r.data.active ?? 0);
+        })
+        .catch(() => setLlmModelList([]));
     } catch {
       setRagas({ available: false, tasks: [], message: '自身统计接口异常' });
       setKbs([]);
@@ -183,14 +227,15 @@ const AnalyticsRagasDetailPage: React.FC = () => {
 
   // 从聊天历史导入：调 preview 采样 → 弹选择弹窗（勾选想要的样本后追加）
   const handleImportFromChat = async () => {
-    if (!evalKbId) {
+    if (evalKbIds.length === 0) {
       message.error('请先选择要评估的知识库');
       return;
     }
     setEvalImporting(true);
     try {
       const res = await previewRagasSamples({
-        kb_id: evalKbId,
+        // 采样接口按单个库读会话历史：多库时取第一个
+        kb_id: evalKbIds[0],
         sample_source: 'chat',
         sample_count: 20,
         preview: true,
@@ -396,7 +441,8 @@ const AnalyticsRagasDetailPage: React.FC = () => {
 
   // 发起评估提交（手动测试集：问题 + 正确答案，answer 由后端自动=ground_truth）
   const handleStartEvaluation = async () => {
-    if (!evalKbId) {
+    // 评估集模式：知识库以评估集绑定的为准，既不必选库、也不校验下方测试集
+    if (!evalDatasetId && evalKbIds.length === 0) {
       message.error('请选择要评估的知识库');
       return;
     }
@@ -404,18 +450,21 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       message.error('请至少选择一个评估指标');
       return;
     }
-    let values: { samples?: EvalSampleRow[] };
-    try {
-      values = await evalForm.validateFields();
-    } catch {
-      return; // 表单校验错误已就地提示
-    }
-    const rows = (values.samples || [])
-      .filter(r => r.question?.trim() && r.ground_truth?.trim())
-      .map(r => ({ question: r.question!.trim(), ground_truth: r.ground_truth!.trim() }));
-    if (rows.length === 0) {
-      message.error('请至少填写一条有效测试样本（问题 + 正确答案）');
-      return;
+    let rows: RagasSampleInput[] = [];
+    if (!evalDatasetId) {
+      let values: { samples?: EvalSampleRow[] };
+      try {
+        values = await evalForm.validateFields();
+      } catch {
+        return; // 表单校验错误已就地提示
+      }
+      rows = (values.samples || [])
+        .filter(r => r.question?.trim() && r.ground_truth?.trim())
+        .map(r => ({ question: r.question!.trim(), ground_truth: r.ground_truth!.trim() }));
+      if (rows.length === 0) {
+        message.error('请至少填写一条有效测试样本（问题 + 正确答案）');
+        return;
+      }
     }
     setEvalSubmitting(true);
     try {
@@ -441,10 +490,16 @@ const AnalyticsRagasDetailPage: React.FC = () => {
         }
       }
       const res = await startRagasEvaluation({
-        kb_id: evalKbId,
+        ...(evalDatasetId
+          // 评估集重跑：知识库后端忽略（以评估集绑定的为准，避免题集与库不配套）
+          ? { kb_ids: evalKbIds, dataset_id: evalDatasetId }
+          : { kb_ids: evalKbIds, samples: rows }),
         metrics: evalMetrics,
         top_k: 3,
-        samples: rows,
+        // 评委模型：不选 = 跟随当前激活模型（现状行为）
+        llm_model: evalModel,
+        // 回答来源：dataset=题集参考答案 / generate=走真实链路实时生成
+        answer_source: answerSource,
       });
       message.success(`评估任务已创建：${res.data.name}（${res.data.sample_count} 条样本），运行中可查看进度`);
       // —— 魔法注入动画：测试集注入任务列表（0.6s）→ 新任务行高亮 + 滚动 ——
@@ -464,6 +519,107 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       message.error(detail || '发起评估失败，请确认 RAGAS 服务已启动（端口 8090）');
     } finally {
       setEvalSubmitting(false);
+    }
+  };
+
+  // 解析「问题<TAB>答案」文本（与「文本导入」同口径，也兼容 | 分隔；答案可留空——
+  // 配合「实时生成」模式时不需要标准答案）
+  const parseDatasetText = (text: string): RagasSampleInput[] => {
+    const rows: RagasSampleInput[] = [];
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      const parts = t.split(/\t|\s*\|\s*/);
+      const q = (parts[0] || '').trim();
+      if (!q) continue;
+      rows.push({ question: q, ground_truth: (parts[1] || '').trim() });
+    }
+    return rows;
+  };
+
+  // 直接新建评估集（不走发起评估）：题集可以先把问题攒起来，之后再跑
+  const handleCreateDataset = async () => {
+    const name = newDsName.trim();
+    if (!name) {
+      message.error('请填写评估集名称');
+      return;
+    }
+    if (newDsKbIds.length === 0) {
+      message.error('请选择知识库');
+      return;
+    }
+    const rows = parseDatasetText(newDsText);
+    if (rows.length === 0) {
+      message.error('请至少填一条样本，每行格式：问题 | 参考答案（答案可留空）');
+      return;
+    }
+    setNewDsSubmitting(true);
+    try {
+      const res = await createRagasDataset({
+        kb_id: newDsKbIds[0], name, samples: rows, source: 'manual',
+      });
+      setEvalDatasets(prev => [res.data, ...prev]);
+      setNewDsOpen(false);
+      setNewDsName('');
+      setNewDsText('');
+      setNewDsKbIds([]);
+      message.success(`评估集「${name}」已创建（${rows.length} 条样本）`);
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail || '新建评估集失败');
+    } finally {
+      setNewDsSubmitting(false);
+    }
+  };
+
+  // 删除评估集（已跑过的任务记录不受影响，仍可在任务列表回看）
+  const handleDeleteDataset = async (d: RagasDataset) => {
+    try {
+      await deleteRagasDataset(d.id);
+      message.success('评估集已删除');
+      if (evalDatasetId === d.id) setEvalDatasetId(undefined);
+      setEvalDatasets(prev => prev.filter(x => x.id !== d.id));
+    } catch {
+      message.error('删除评估集失败');
+    }
+  };
+
+  // 把当前填写/导入的测试集另存为评估集，之后可反复重跑同一份题集做分数对比
+  const handleSaveAsDataset = async () => {
+    const name = saveDsName.trim();
+    if (!name) {
+      message.error('请填写评估集名称');
+      return;
+    }
+    if (evalKbIds.length === 0) {
+      message.error('请先选择知识库');
+      return;
+    }
+    let values: { samples?: EvalSampleRow[] };
+    try {
+      values = await evalForm.validateFields();
+    } catch {
+      return;
+    }
+    const rows = (values.samples || [])
+      .filter(r => r.question?.trim() && r.ground_truth?.trim())
+      .map(r => ({ question: r.question!.trim(), ground_truth: r.ground_truth!.trim() }));
+    if (rows.length === 0) {
+      message.error('请先填写至少一条有效测试样本（问题 + 正确答案）');
+      return;
+    }
+    try {
+      const res = await createRagasDataset({
+        // 评估集绑定单个知识库：多库时取第一个作为归属库
+        kb_id: evalKbIds[0], name, samples: rows, source: 'manual',
+      });
+      setEvalDatasets(prev => [res.data, ...prev]);
+      setSaveDsOpen(false);
+      setSaveDsName('');
+      message.success(`评估集「${name}」已保存（${rows.length} 条样本），以后可一键重跑对比`);
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail || '保存评估集失败');
     }
   };
 
@@ -557,6 +713,33 @@ const AnalyticsRagasDetailPage: React.FC = () => {
     })),
   ];
 
+  // 同一评估集 + **同一评委模型** + **同一回答来源**的"上一次"平均分：按这三者分组，
+  // 组内按创建时间升序，每个任务取它前一个的分数。
+  // 为什么三项都要进分组键：换评委换的是评分标准、换 answer 来源换的是被测对象
+  // （题集答案→测检索 / 实时生成→测端到端），任一不同分数都不可直接比——
+  // 混在一起算差值会把"测法变了"误读成"质量变了"，那正是评估集要避免的事
+  const prevScoreByTask = useMemo(() => {
+    const byKey = new Map<string, RagasTask[]>();
+    for (const t of ragas?.tasks || []) {
+      const ds = t.local_dataset_id;
+      if (!ds) continue;
+      const key = `${ds}|${t.eval_model || ''}|${t.answer_source || 'dataset'}`;
+      const arr = byKey.get(key);
+      if (arr) arr.push(t);
+      else byKey.set(key, [t]);
+    }
+    const out = new Map<string, number>();
+    for (const arr of byKey.values()) {
+      const sorted = [...arr].sort(
+        (a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = avgScore(sorted[i - 1].scores);
+        if (prev !== null) out.set(sorted[i].id, prev);
+      }
+    }
+    return out;
+  }, [ragas]);
+
   const ragasColumns = [
     {
       title: '任务名称', dataIndex: 'name', key: 'name', ellipsis: true,
@@ -578,6 +761,7 @@ const AnalyticsRagasDetailPage: React.FC = () => {
         ? <Tag color="blue">会话问答</Tag>
         : v === 'logs' ? <Tag color="green">检索日志</Tag>
         : v === 'manual' ? <Tag color="purple">手动填写</Tag>
+        : v === 'dataset' ? <Tag color="orange">评估集重跑</Tag>
         : <Text type="secondary">—</Text>),
     },
     {
@@ -615,6 +799,31 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       width: colWidths.completed_at ?? 170,
       onHeaderCell: () => ({ width: colWidths.completed_at ?? 170, onResize: handleResize('completed_at'), title: '完成时间' }),
       render: (v?: string) => v || '—',
+    },
+    {
+      // 平均分 + 与"同一评估集上一次"的对比标签。
+      // 这一列才是评估集的价值兑现处：改了检索/切块/提示词后，有无进步一眼可见
+      title: '分数', key: 'score', width: 160,
+      render: (_: unknown, t: RagasTask) => {
+        const cur = avgScore(t.scores);
+        // 悬停显示本次评委模型：换过评委的任务，分数不与其它任务直接比
+        const tip = t.eval_model ? `评委模型：${t.eval_model}` : undefined;
+        if (cur === null) {
+          return <Text type="secondary" title={tip}>—</Text>;
+        }
+        const prev = prevScoreByTask.get(t.id);
+        const diff = prev === undefined ? null : cur - prev;
+        return (
+          <Space size={4} title={tip}>
+            <span style={{ color: scoreColor(cur), fontWeight: 600 }}>{cur.toFixed(4)}</span>
+            {diff !== null && (
+              <Tag color={diff >= 0 ? 'green' : 'red'} style={{ marginInlineEnd: 0 }}>
+                {diff >= 0 ? '↑' : '↓'}{Math.abs(diff).toFixed(3)}
+              </Tag>
+            )}
+          </Space>
+        );
+      },
     },
     {
       // 行尾操作："查看报告"常显；"取消"仅运行中/排队中且有权限时显示
@@ -760,7 +969,7 @@ const AnalyticsRagasDetailPage: React.FC = () => {
         onOk={handleStartEvaluation}
         okText="发起评估"
         confirmLoading={evalSubmitting}
-        okButtonProps={{ disabled: evalValidCount === 0 || evalAnim }} // 无测试数据/注入动画中不可发起
+        okButtonProps={{ disabled: (evalDatasetId ? false : evalValidCount === 0) || evalAnim }} // 评估集模式样本来自题集，不再要求测试集有内容
         width={760}
       >
         <Space direction="vertical" style={{ width: '100%' }} size={16}>
@@ -768,12 +977,78 @@ const AnalyticsRagasDetailPage: React.FC = () => {
             <Text strong>知识库</Text>
             <Select
               style={{ width: '100%', marginTop: 4 }}
-              placeholder="选择要评估的知识库"
-              value={evalKbId}
-              onChange={setEvalKbId}
+              mode="multiple"
+              maxTagCount="responsive"
+              placeholder="选择要评估的知识库（可多选）"
+              value={evalKbIds}
+              onChange={(v: string[]) => setEvalKbIds(v)}
               options={kbs.map(k => ({ value: k.id, label: `${k.name}（${k.chunk_count} 个切块）` }))}
               notFoundContent={<Empty description="暂无可用知识库" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
             />
+          </div>
+          <div>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Text strong>评估集（可选）</Text>
+              <Button size="small" type="link" onClick={() => setDatasetMgrOpen(true)}>
+                管理评估集
+              </Button>
+            </Space>
+            <Select
+              style={{ width: '100%', marginTop: 4 }}
+              placeholder="不使用评估集（改用下方测试集）"
+              allowClear
+              value={evalDatasetId}
+              onChange={(v: string | undefined) => setEvalDatasetId(v)}
+              options={evalDatasets.map(d => ({
+                value: d.id,
+                label: `${d.name}（${d.samples?.length ?? 0} 条 · ${d.kb_name}）`,
+              }))}
+              notFoundContent={<Empty description="暂无评估集（发起评估后可把测试集另存）"
+                                         image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {evalDatasetId
+                ? '将用该题集重跑（知识库以其绑定的为准），分数可与历史任务对比'
+                : '固定的一份题集反复重跑，分数才可比——这是判断「改动到底变好没有」的前提'}
+            </Text>
+          </div>
+          <div>
+            <Text strong>评估模型（评委）</Text>
+            <Select
+              style={{ width: '100%', marginTop: 4 }}
+              placeholder="跟随当前使用的模型"
+              allowClear
+              value={evalModel}
+              onChange={(v: string | undefined) => setEvalModel(v)}
+              options={llmModelList.map((m, i) => ({
+                value: m.name,
+                label: `${m.name}${i === llmActiveIdx ? '（当前使用）' : ''}`,
+              }))}
+              notFoundContent={<Empty description="当前档案没有配 LLM 模型"
+                                         image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              它是给回答打分的<strong>评委</strong>，不是被评估的对象。换评委等于换评分标准，
+              分数不能和别的模型跑出来的比——任务列表里只在同一评委之间显示 ↑↓ 对比
+            </Text>
+          </div>
+          <div>
+            <Text strong>回答来源</Text>
+            <div style={{ marginTop: 4 }}>
+              <Radio.Group
+                value={answerSource}
+                onChange={e => setAnswerSource(e.target.value)}
+              >
+                <Radio value="dataset">题集里的参考答案</Radio>
+                <Radio value="generate">系统实时生成</Radio>
+              </Radio.Group>
+            </div>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {answerSource === 'generate'
+                ? '对每道题走一遍真实问答链路（检索→组装提示词→生成），评的是端到端质量。'
+                  + '更慢——每条样本一次完整问答——但分数就等于用户实际体验到的水平'
+                : '直接用题集里填的参考答案当回答，快；实际评的是"检索出的上下文够不够答这道题"'}
+            </Text>
           </div>
           <div>
             <Text strong>评估指标</Text>
@@ -791,12 +1066,25 @@ const AnalyticsRagasDetailPage: React.FC = () => {
               已填写正确答案，默认全选全部 6 个指标均可评分（可取消不需要的指标）
             </Text>
           </div>
-          <div className={`eval-inject-wrap${evalAnim ? ' eval-inject-anim' : ''}`}>
+          {/* 选了评估集就隐藏测试集表单（样本来自题集，避免两处来源混淆）；
+              用 display 隐藏而非条件渲染——Form.List 需保持挂载才能正常 resetFields */}
+          <div
+            className={`eval-inject-wrap${evalAnim ? ' eval-inject-anim' : ''}`}
+            style={evalDatasetId ? { display: 'none' } : undefined}
+          >
             {/* 魔法注入光晕（纯 CSS 径向渐变扩散，aria-hidden 不干扰读屏） */}
             {evalAnim ? <div className="eval-glow" aria-hidden="true" /> : null}
             <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}>
               <Text strong>测试集（问题 + 正确答案）</Text>
               <Space>
+                <Button
+                  size="small"
+                  icon={<SaveOutlined />}
+                  onClick={() => setSaveDsOpen(true)}
+                  title="把当前测试集存成评估集，以后可反复重跑对比分数"
+                >
+                  另存为评估集
+                </Button>
                 <Button
                   size="small"
                   icon={<ImportOutlined />}
@@ -1069,6 +1357,151 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       </AppModal>
 
       {/* 任务报告 Modal */}
+      {/* 评估集管理：已保存的题集列表，可一键用它评估、也可删除 */}
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 720, h: 460 }}
+        rememberKey="ana-dataset-mgr"
+        title="评估集管理"
+        open={datasetMgrOpen}
+        onCancel={() => setDatasetMgrOpen(false)}
+        footer={[
+          <Button
+            key="new"
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setNewDsOpen(true)}
+          >
+            新建评估集
+          </Button>,
+          <Button key="close" onClick={() => setDatasetMgrOpen(false)}>关闭</Button>,
+        ]}
+        width={720}
+      >
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          评估集是一份固定的题集（问题 + 正确答案）。反复用同一份题集重跑，分数才有可比性
+          ——改了切块 / 检索 / 提示词之后跑一次，就知道是变好还是变差。
+        </Text>
+        <List
+          rowKey="id"
+          style={{ marginTop: 12 }}
+          dataSource={evalDatasets}
+          locale={{ emptyText: <Empty description="暂无评估集（在发起评估弹窗里可把测试集另存为评估集）"
+                                           image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          renderItem={d => (
+            <List.Item
+              actions={[
+                <Button
+                  key="run"
+                  type="link"
+                  size="small"
+                  icon={<PlayCircleOutlined />}
+                  onClick={() => {
+                    setEvalDatasetId(d.id);
+                    setEvalKbIds([d.kb_id]);
+                    setDatasetMgrOpen(false);
+                    setEvalOpen(true);  // 直接打开发起弹窗，评估集已选好
+                  }}
+                >
+                  用它评估
+                </Button>,
+                <Popconfirm key="del" title="删除该评估集？" onConfirm={() => handleDeleteDataset(d)}>
+                  <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+                </Popconfirm>,
+              ]}
+            >
+              <List.Item.Meta
+                title={d.name}
+                description={`${d.kb_name} · ${d.samples?.length ?? 0} 条样本 · 更新于 ${dayjs(d.updated_at).format('YYYY-MM-DD HH:mm')}`}
+              />
+            </List.Item>
+          )}
+        />
+      </AppModal>
+
+      {/* 新建评估集：不经过发起评估，先把题集攒起来（之后可随时"用它评估"） */}
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 560, h: 540 }}
+        rememberKey="ana-dataset-new"
+        title="新建评估集"
+        open={newDsOpen}
+        onCancel={() => setNewDsOpen(false)}
+        onOk={handleCreateDataset}
+        okText="创建"
+        cancelText="取消"
+        confirmLoading={newDsSubmitting}
+        width={560}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <div>
+            <Text strong>知识库</Text>
+            <Select
+              style={{ width: '100%', marginTop: 4 }}
+              placeholder="选择题集归属的知识库"
+              value={newDsKbIds[0]}
+              onChange={(v: string) => setNewDsKbIds([v])}
+              options={kbs.map(k => ({ value: k.id, label: k.name }))}
+              notFoundContent={<Empty description="暂无可用知识库" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+            />
+          </div>
+          <div>
+            <Text strong>名称</Text>
+            <Input
+              style={{ marginTop: 4 }}
+              placeholder="评估集名称（1~50 字）"
+              maxLength={50}
+              value={newDsName}
+              onChange={e => setNewDsName(e.target.value)}
+            />
+          </div>
+          <div>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Text strong>样本</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>每行一条：问题 | 参考答案</Text>
+            </Space>
+            <Input.TextArea
+              style={{ marginTop: 4 }}
+              rows={9}
+              placeholder={'这份文档主要讲什么？ | 讲的是……\n第二个问题？ |'}
+              value={newDsText}
+              onChange={e => setNewDsText(e.target.value)}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              共 {parseDatasetText(newDsText).length} 条。答案可以留空——配合「系统实时生成」
+              跑评估时不需要标准答案（那种模式测的是端到端质量）
+            </Text>
+          </div>
+        </Space>
+      </AppModal>
+
+      {/* 另存为评估集：把当前测试集沉淀成可复用题集 */}
+      <AppModal
+        dimension="auto"
+        defaultSize={{ w: 440, h: 280 }}
+        rememberKey="ana-dataset-save"
+        title="另存为评估集"
+        open={saveDsOpen}
+        onCancel={() => setSaveDsOpen(false)}
+        onOk={handleSaveAsDataset}
+        okText="保存"
+        cancelText="取消"
+        width={440}
+      >
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          保存后可在「评估集」下拉里选中它重跑；同一份题集的历次分数可以直接对比。
+        </Text>
+        <Input
+          style={{ marginTop: 12 }}
+          placeholder="评估集名称（1~50 字）"
+          maxLength={50}
+          value={saveDsName}
+          onChange={e => setSaveDsName(e.target.value)}
+          onPressEnter={handleSaveAsDataset}
+          autoFocus
+        />
+      </AppModal>
+
       <AppModal
         dimension="resizable"
         defaultSize={{ w: 960, h: 600 }}

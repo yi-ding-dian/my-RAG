@@ -20,11 +20,13 @@ import type {
   LogRangeResult,
   LogSegmentsResult,
   LogTailResult,
+  RagasDataset,
   RagasEvaluationPreview,
   RagasEvaluationRequest,
   RagasEvaluationResult,
   RagasPrecheck,
   RagasReport,
+  RagasSampleInput,
   RagasStatus,
   RetrievalQuality,
   Stats,
@@ -44,6 +46,28 @@ export const previewRagasSamples = (body: RagasEvaluationRequest) =>
 
 export const ragasPrecheck = () =>
   api.get<RagasPrecheck>('/stats/ragas/precheck');
+
+// ========== 本地评估集（可反复重跑的固定题集） ==========
+
+export const listRagasDatasets = (kbId?: string) =>
+  api.get<{ datasets: RagasDataset[] }>('/stats/ragas/datasets',
+    { params: kbId ? { kb_id: kbId } : undefined });
+
+export const createRagasDataset = (body: {
+  kb_id: string;
+  name: string;
+  samples: RagasSampleInput[];
+  source?: string;
+}) => api.post<RagasDataset>('/stats/ragas/datasets', body);
+
+export const deleteRagasDataset = (datasetId: string) =>
+  api.delete(`/stats/ragas/datasets/${datasetId}`);
+
+/** 往评估集追加样本（反馈页「加入评估集」用）；question 重复的计入 skipped */
+export const addRagasDatasetSamples = (datasetId: string,
+                                       samples: RagasSampleInput[]) =>
+  api.post<{ added: number; skipped: number; total: number }>(
+    `/stats/ragas/datasets/${datasetId}/samples`, { samples });
 
 // ========== 检索质量统计（近 30 天） ==========
 
