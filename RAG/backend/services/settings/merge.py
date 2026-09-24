@@ -47,6 +47,10 @@ def chat_payload(profile: dict) -> dict:
             # 思考模式（聊天问答）：默认 disabled 关闭思考（缺省/旧档案兜底，
             # 简单延迟敏感任务更快更省 token）
             "thinking_mode": chat.get("thinking_mode", "disabled"),
+            # 引用摘要窗口大小（字）：回答里 [n] 悬浮浮层的摘录长度。
+            # **曾经漏了这一行**：字段在 schema 里可读可写、落盘也正确，但接口
+            # 响应里没有它 → 前端读不到、永远用兜底的 600，改配置毫无效果
+            "citation_snippet_chars": chat.get("citation_snippet_chars", 600),
         },
         "agentic": {
             "enabled": agentic.get("enabled", False),

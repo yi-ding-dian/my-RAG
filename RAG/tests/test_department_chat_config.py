@@ -29,7 +29,10 @@ GLOBAL = {
              "thinking_mode": "disabled",
              # 引用的提示词库条目名（空 = 不引用）；chat_payload 是硬编码
              # 字段表，新增字段必须两处同步，否则全局值拿不到
-             "system_prompt_ref": ""},
+             "system_prompt_ref": "",
+             # 引用摘要窗口大小：同一个坑（曾经漏在 chat_payload 外，
+             # 导致前端读不到该配置、永远用兜底 600）
+             "citation_snippet_chars": 600},
     "retrieval": {"top_k": 5, "similarity_threshold": 0.0},
 }
 

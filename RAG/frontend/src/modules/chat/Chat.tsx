@@ -63,6 +63,163 @@ interface SessionListProps {
  * 一卡"。而会话列表在流式期间根本不变，没有任何理由跟着重建。
  * 生效前提：回调 prop 全部稳定（见 ChatPage 里的 useCallback）。
  */
+/** 会话列表刷新时判断条目内容是否等价（用于复用旧对象引用，见 loadSessions） */
+const sameSession = (a: ChatSession, b: ChatSession): boolean =>
+  a.id === b.id
+  && a.title === b.title
+  && a.message_count === b.message_count
+  && a.updated_at === b.updated_at
+  && a.created_at === b.created_at
+  && (a.kb_ids ?? []).join(',') === (b.kb_ids ?? []).join(',');
+
+interface SessionItemProps {
+  item: ChatSession;
+  /** 是否当前打开的会话（高亮选中态） */
+  isActive: boolean;
+  /** token.colorTextTertiary（条数/「等待提问…」灰字） */
+  textTertiary: string;
+  onOpen: (id: string) => void;
+  onRename: (item: ChatSession) => void;
+  onExport: (id: string) => void;
+  onDelete: (id: string) => void;
+}
+
+/**
+ * 单个会话条目（草稿占位项 / 普通会话项两种形态）。**必须 memo**。
+ *
+ * SessionList 有三条重渲染路径——切会话（activeSessionId 变）、提问开始与生成
+ * 结束（streaming 变）、生成结束后刷新列表（sessions 变），每条都会把所有条目
+ * 重建一遍。实测 159 条时这一遍就是单个 368ms 的长任务，表现是"切会话明显卡一下"、
+ * "一问完又卡一下"。memo 之后只有**选中态真正变化的那两条**会重渲染
+ * （失去高亮的旧项 + 获得高亮的新项），其余直接跳过。
+ */
+const SessionItem = memo(function SessionItem({
+  item,
+  isActive,
+  textTertiary,
+  onOpen,
+  onRename,
+  onExport,
+  onDelete,
+}: SessionItemProps) {
+  // 草稿会话：顶上那条占位项，尚未落库故不给重命名/导出/删除
+  if (item.id === DRAFT_SESSION_ID) {
+    return (
+      <List.Item
+        className="session-item session-item--active"
+        style={{ cursor: 'default' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+          <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}>新会话</span>
+            <span style={{ fontSize: 12, color: textTertiary }}>等待提问…</span>
+          </div>
+        </div>
+      </List.Item>
+    );
+  }
+  // 会话名默认最多显示 8 个字符，超出用 ... 省略（悬停 Tooltip 看完整名）
+  const name = item.title || '未命名会话';
+  const shortName = name.length > 8 ? `${name.slice(0, 8)}...` : name;
+  return (
+    <List.Item
+      onClick={e => {
+        // 操作按钮区/浮层点击不触发展开会话：
+        // Popconfirm「确定」按钮渲染在 portal 浮层（React 事件沿组件
+        // 树冒泡到本项），不拦截会在删除同时 getSession → 竞态：
+        // 删除当前会话时 GET 404「加载会话失败」，删除非当前会话时
+        // GET 200 把已删会话误加载进消息区。
+        const t = e.target as HTMLElement;
+        if (t.closest('.ant-popover, .ant-tooltip, .session-item-actions')) return;
+        onOpen(item.id);
+      }}
+      className={`session-item${isActive ? ' session-item--active' : ''}`}
+      style={{ cursor: 'pointer' }}
+    >
+      {/* 两列布局：左气泡图标，右（第一行会话名 / 第二行条数+操作按钮） */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+        <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Tooltip title={name} placement="topLeft">
+            <span style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}>
+              {shortName}
+            </span>
+          </Tooltip>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              marginTop: 2,
+            }}
+          >
+            <span style={{ fontSize: 12, color: textTertiary, flexShrink: 0 }}>
+              {item.message_count} 条消息
+            </span>
+            {/* 操作按钮组：重命名 → 导出 → 删除（顺序按用户要求）；与条数标签留 3 个汉字间距 */}
+            <span
+              className="session-item-actions"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 2,
+                marginLeft: '3em',
+              }}
+            >
+              <Tooltip title="重命名">
+                <Button
+                  type="text"
+                  size="small"
+                  className="session-rename-btn"
+                  icon={<EditOutlined />}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onRename(item);
+                  }}
+                />
+              </Tooltip>
+              <Tooltip title="导出会话">
+                <Button
+                  type="text"
+                  size="small"
+                  className="session-export-btn"
+                  icon={<DownloadOutlined />}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onExport(item.id);
+                  }}
+                />
+              </Tooltip>
+              <Tooltip title="删除会话">
+                <Popconfirm
+                  title="删除该会话？"
+                  onConfirm={() => onDelete(item.id)}
+                >
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={e => e.stopPropagation()}
+                  />
+                </Popconfirm>
+              </Tooltip>
+            </span>
+          </div>
+        </div>
+      </div>
+    </List.Item>
+  );
+}, (prev, next) =>
+  // 只比"影响显示"的三个 prop，**回调 prop 一律忽略**：它们只在点击那一刻用，
+  // 而 AntApp.useApp() 的 message 一旦换新对象，依赖它的 useCallback 会全部跟着换，
+  // 默认浅比较就判定 "props 变了" → 上百个条目整列重建（实测一次删除渲染数百次、
+  // 主线程堵 800ms）。点击时闭包里的旧回调功能等价——需要状态的地方（当前会话 id /
+  // 已选知识库）已经改用 ref 读取，不存在过期问题
+  prev.item === next.item
+  && prev.isActive === next.isActive
+  && prev.textTertiary === next.textTertiary);
+
 const SessionList = memo(function SessionList({
   sessions,
   activeSessionId,
@@ -88,118 +245,28 @@ const SessionList = memo(function SessionList({
     >
       <div style={{ flex: 1, overflowY: 'auto' }}>
         <List
+          // rowKey 必须显式指定：antd 的 List 在无 rowKey 且 item 无 key 字段时，
+          // 回退用**数组下标**给每个条目包 Fragment（antd/es/list/index.js: renderInternalItem）。
+          // 下标做 key 的后果——只要数组长度变化，其后所有条目下标整体偏移、key 全变，
+          // React 就卸载整列再挂载整列（实测：新建会话 150/150 重建卡 998ms、
+          // 删除会话 148/149 重建卡 973ms）。此时 SessionItem 上的 memo **完全不参与**
+          // （重挂载不走比较函数），上一轮"切会话已修好、删除新建仍卡"正是这个原因。
+          // 用会话 id 做 key 后：切会话/新建/删除都只重渲染真正变化的那一两条。
+          rowKey="id"
           dataSource={activeSessionId === DRAFT_SESSION_ID ? [DRAFT_SESSION, ...sessions] : sessions}
           locale={{ emptyText: <Empty description="暂无会话" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-          renderItem={item => {
-            // 草稿会话：顶上那条占位项，尚未落库故不给重命名/导出/删除
-            if (item.id === DRAFT_SESSION_ID) {
-              return (
-                <List.Item
-                  className="session-item session-item--active"
-                  style={{ cursor: 'default' }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
-                    <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}>新会话</span>
-                      <span style={{ fontSize: 12, color: textTertiary }}>等待提问…</span>
-                    </div>
-                  </div>
-                </List.Item>
-              );
-            }
-            // 会话名默认最多显示 8 个字符，超出用 ... 省略（悬停 Tooltip 看完整名）
-            const name = item.title || '未命名会话';
-            const shortName = name.length > 8 ? `${name.slice(0, 8)}...` : name;
-            return (
-              <List.Item
-                onClick={e => {
-                  // 操作按钮区/浮层点击不触发展开会话：
-                  // Popconfirm「确定」按钮渲染在 portal 浮层（React 事件沿组件
-                  // 树冒泡到本项），不拦截会在删除同时 getSession → 竞态：
-                  // 删除当前会话时 GET 404「加载会话失败」，删除非当前会话时
-                  // GET 200 把已删会话误加载进消息区。
-                  const t = e.target as HTMLElement;
-                  if (t.closest('.ant-popover, .ant-tooltip, .session-item-actions')) return;
-                  onOpen(item.id);
-                }}
-                className={`session-item${item.id === activeSessionId ? ' session-item--active' : ''}`}
-                style={{ cursor: 'pointer' }}
-              >
-                {/* 两列布局：左气泡图标，右（第一行会话名 / 第二行条数+操作按钮） */}
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
-                  <MessageOutlined style={{ color: 'var(--brand-primary, #2563eb)', marginTop: 3 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <Tooltip title={name} placement="topLeft">
-                      <span style={{ fontSize: 13, display: 'block', lineHeight: '18px' }}>
-                        {shortName}
-                      </span>
-                    </Tooltip>
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        marginTop: 2,
-                      }}
-                    >
-                      <span style={{ fontSize: 12, color: textTertiary, flexShrink: 0 }}>
-                        {item.message_count} 条消息
-                      </span>
-                      {/* 操作按钮组：重命名 → 导出 → 删除（顺序按用户要求）；与条数标签留 3 个汉字间距 */}
-                      <span
-                        className="session-item-actions"
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 2,
-                          marginLeft: '3em',
-                        }}
-                      >
-                        <Tooltip title="重命名">
-                          <Button
-                            type="text"
-                            size="small"
-                            className="session-rename-btn"
-                            icon={<EditOutlined />}
-                            onClick={e => {
-                              e.stopPropagation();
-                              onRename(item);
-                            }}
-                          />
-                        </Tooltip>
-                        <Tooltip title="导出会话">
-                          <Button
-                            type="text"
-                            size="small"
-                            className="session-export-btn"
-                            icon={<DownloadOutlined />}
-                            onClick={e => {
-                              e.stopPropagation();
-                              onExport(item.id);
-                            }}
-                          />
-                        </Tooltip>
-                        <Tooltip title="删除会话">
-                          <Popconfirm
-                            title="删除该会话？"
-                            onConfirm={() => onDelete(item.id)}
-                          >
-                            <Button
-                              type="text"
-                              size="small"
-                              danger
-                              icon={<DeleteOutlined />}
-                              onClick={e => e.stopPropagation()}
-                            />
-                          </Popconfirm>
-                        </Tooltip>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </List.Item>
-            );
-          }}
+          renderItem={item => (
+            <SessionItem
+              key={item.id}
+              item={item}
+              isActive={item.id === activeSessionId}
+              textTertiary={textTertiary}
+              onOpen={onOpen}
+              onRename={onRename}
+              onExport={onExport}
+              onDelete={onDelete}
+            />
+          )}
         />
       </div>
     </Card>
@@ -240,6 +307,14 @@ const ChatPage: React.FC = () => {
   // 会把 MessageList / MessageItem 的 memo 全部打穿
   const messagesRef = useRef<ChatMessage[]>([]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // 同理：会话删除回调只需要"读一眼当前值"（删的是不是当前打开的会话、有没有选库），
+  // 不是"跟随它们变化"。放进 useCallback 依赖的代价是——切会话 / 换知识库时回调换新，
+  // 透传到 memo 化的 SessionItem 后 159 个条目的 memo 全部失效、全量重渲染
+  const activeSessionIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  const kbIdsRef = useRef<string[]>([]);
+  useEffect(() => { kbIdsRef.current = kbIds; }, [kbIds]);
 
   const [topK, setTopK] = useState(5);
   const [streaming, setStreaming] = useState(false);
@@ -342,7 +417,16 @@ const ChatPage: React.FC = () => {
       try {
         // 全局一份列表（不按当前选中的库过滤）：会话自己记着它用的库
         const res = await listSessions();
-        setSessions(res.data);
+        // 内容没变的条目**复用旧对象引用**：接口每次返回全新对象，直接 setSessions(res.data)
+        // 会让 159 个条目的 item prop 全是新引用 → SessionItem 的 memo 全部失效 → 整列重建
+        // （实测每轮问答结束时一次 878ms 的长任务）。复用引用后只有真正变化的条目重渲染
+        setSessions(prev => {
+          const byId = new Map(prev.map(s => [s.id, s]));
+          return res.data.map(s => {
+            const old = byId.get(s.id);
+            return old && sameSession(old, s) ? old : s;
+          });
+        });
         if (autoOpenFirst && res.data.length > 0) {
           await openSessionById(res.data[0].id);
         }
@@ -377,11 +461,11 @@ const ChatPage: React.FC = () => {
   }, [message, openSessionById]);
 
   const handleDeleteSession = useCallback(async (id: string) => {
-    if (!kbIds.length) return;
+    if (!kbIdsRef.current.length) return;
     try {
       await deleteSession(id);
       // 删的是当前打开的会话 → 清空消息区（其余情况只刷新列表）
-      if (id === activeSessionId) {
+      if (id === activeSessionIdRef.current) {
         setActiveSessionId(undefined);
         setMessages([]);
       }
@@ -390,8 +474,11 @@ const ChatPage: React.FC = () => {
     } catch {
       message.error('删除会话失败');
     }
+    // 依赖里**不能**再出现 activeSessionId/kbIds：它们一变就换新函数，而本回调要
+    // 透传到 memo 化的 SessionItem——prop 一变，159 个条目全量重渲染（实测 368ms）。
+    // 两个都是"读取当前值"而非"跟随变化"，用 ref 取最新即可
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kbIdsKey, activeSessionId, loadSessions, message]);
+  }, [loadSessions, message]);
 
   // 导出会话为 Markdown：fetch 拿 blob 走浏览器下载（与 PDF 预览同模式，不裸传 token）
   const handleExportSession = useCallback(async (id: string) => {

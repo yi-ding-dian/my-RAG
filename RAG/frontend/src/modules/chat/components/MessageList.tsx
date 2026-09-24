@@ -229,7 +229,10 @@ const CitationMark: React.FC<{
  * 把文本按 [n] 引用拆分为 ReactNode 数组：
  * - n 有效（sources[n-1] 存在）→ 渲染为行内引用标（CitationMark：上标 + Tooltip + 点击），
  *   点击回调对应来源（Chat 页 → CitationTraceModal 引用详情弹窗）
- * - 编号不存在/越界（LLM 乱写）→ 原样渲染为普通文本，不报错
+ * - **多编号合并标注 [1,4]**（prompt 明确要求的形式：连续多句引用同一组编号时合并）→
+ *   拆成各自独立的引用标（[1][4]），每个都能单独悬浮看摘要、单独点击；越界的那个编号
+ *   原样输出，不吞掉模型输出
+ * - 编号全部不存在/越界（LLM 乱写）→ 整段原样渲染为普通文本，不报错
  * - 无 sources 或未注册回调 → 整段原样返回
  *
  * 边界规则（防正文误判，句尾标注语义）：
@@ -251,29 +254,39 @@ const renderCitationContent = (
   const parts: React.ReactNode[] = [];
   if (!content) return parts;
   if (!sources || sources.length === 0 || !onCitationClick) return [content];
-  const re = /\[(\d+)\](?=$|[\s,.;:!?，。；：！？、%．％~～）)\]】」"'’])/g;
+  // 捕获组含逗号分隔的多个编号：[1] / [1,4] / [1, 4] 都收
+  const re = /\[(\d+(?:\s*,\s*\d+)*)\](?=$|[\s,.;:!?，。；：！？、%．％~～）)\]】」"'’])/g;
   let last = 0;
   let key = 0;
   for (;;) {
     const m = re.exec(content);
     if (!m) break;
     if (m.index > last) parts.push(content.slice(last, m.index));
-    const n = parseInt(m[1], 10);
-    const source = sources[n - 1];
-    if (source) {
-      parts.push(
-        <CitationMark
-          key={key++}
-          n={n}
-          source={source}
-          answerText={content}
-          onClick={onCitationClick}
-          snippetChars={snippetChars}
-          streaming={streaming}
-        />,
-      );
-    } else {
+    const nums = m[1].split(',').map(s => parseInt(s.trim(), 10));
+    if (nums.every(n => !sources[n - 1])) {
+      // 编号全部越界：整段原样输出（既有降级行为）
       parts.push(m[0]);
+    } else {
+      // 逐个编号渲染：有效的是可点引用标，越界的原样保留
+      nums.forEach((n) => {
+        const source = sources[n - 1];
+        if (source) {
+          parts.push(
+            <CitationMark
+              key={key++}
+              n={n}
+              source={source}
+              answerText={content}
+              onClick={onCitationClick}
+              snippetChars={snippetChars}
+              streaming={streaming}
+            />,
+          );
+        } else {
+          // 越界编号（模型自造）：原样输出，不吞掉模型写的内容
+          parts.push(`[${n}]`);
+        }
+      });
     }
     last = m.index + m[0].length;
   }

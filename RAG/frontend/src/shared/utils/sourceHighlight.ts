@@ -206,8 +206,12 @@ export interface HighlightSeg {
   isNumber?: boolean;
 }
 
-/** 摘要开窗时命中前保留的上下文字数 */
-const CONTEXT_BEFORE = 120;
+/**
+ * 摘要开窗时命中前保留的上下文字数**上限**。
+ * 同时受"不超过窗口 1/3"约束：窗口调小后（如 300 字）若还固定留 120 字前文，
+ * 命中之后只剩 180 字，反而把要看的内容挤掉了。
+ */
+const CONTEXT_BEFORE_MAX = 120;
 
 /**
  * 摘要开窗：截出"围绕命中"的窗口，并把高亮/数字区间平移到窗口坐标。
@@ -238,9 +242,13 @@ export function buildSnippet(
     highlights.length ? highlights[0][0] : Number.POSITIVE_INFINITY,
     numbers.length ? numbers[0][0] : Number.POSITIVE_INFINITY,
   );
-  const start = Number.isFinite(firstHit) && firstHit > maxChars - CONTEXT_BEFORE
-    ? Math.max(0, firstHit - CONTEXT_BEFORE)  // 命中靠后 → 围绕它开窗
-    : 0;                                       // 命中在前部/无命中 → 从头截
+  // 命中的上下文配比：命中前最多留 CONTEXT_BEFORE_MAX 字、且不超过窗口 1/3，
+  // 其余都留给命中之后。旧实现固定"前 120 + 后 480"（窗口 600 时），
+  // 命中后面那一大截多半与本次回答无关，浮层看着就是"一堆没用的字"
+  const before = Math.min(CONTEXT_BEFORE_MAX, Math.floor(maxChars / 3));
+  const start = Number.isFinite(firstHit) && firstHit > maxChars - before
+    ? Math.max(0, firstHit - before)  // 命中靠后 → 围绕它开窗
+    : 0;                              // 命中在前部/无命中 → 从头截
   const end = Math.min(text.length, start + maxChars);
   const head = start > 0 ? '…' : '';
   const body = text.slice(start, end);

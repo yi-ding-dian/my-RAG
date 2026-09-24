@@ -313,6 +313,10 @@ const LiveLogTab: React.FC<{
           </div>
           <List
             size="small"
+            // rowKey 必须显式给：否则 antd 用数组下标做 key。本列表是倒序（最新段在最上），
+            // 新分段从头部插入会让全体下标 +1、key 全变 → 整列卸载重挂载。
+            // start_ts（段起点）刷新后不变，正是下方判定选中用的那个稳定字段
+            rowKey="start_ts"
             dataSource={orderedSegments}
             locale={{
               emptyText: <Text type="secondary" style={{ fontSize: 12 }}>暂无时间段</Text>,

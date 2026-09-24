@@ -267,6 +267,9 @@ const OverviewTab: React.FC<{
       >
         <List
           size="small"
+          // rowKey 必须显式给：无 rowKey 时 antd 回退用数组下标做 key，列表中间插入/删除
+          // 会让其后所有条目下标偏移、key 全变，React 就卸载整列重挂载（还会复用错位 DOM）
+          rowKey="id"
           dataSource={data.recent_faults}
           locale={{
             emptyText: (

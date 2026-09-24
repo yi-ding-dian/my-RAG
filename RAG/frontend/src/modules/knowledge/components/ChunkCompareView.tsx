@@ -1044,6 +1044,10 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
             style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingRight: 4 }}
           >
             <List
+              // rowKey 必须显式给：否则 antd 用数组下标做 key，同一页数据刷新时
+              // 条目 key 随下标漂移，React 会卸载重挂载整页（并可能复用错位 DOM）。
+              // 切块 index 在文档内唯一且稳定，翻页/刷新都能正确复用
+              rowKey="index"
               dataSource={pageChunks}
               locale={{ emptyText: <Empty description="暂无切块数据" /> }}
               renderItem={c => {
