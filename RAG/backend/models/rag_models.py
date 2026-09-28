@@ -219,6 +219,12 @@ class ChatMessage(BaseModel):
     kg_ms: Optional[int] = Field(None, description="知识图谱增强耗时（ms，请求详情用）")
     rewrite_ms: Optional[int] = Field(None, description="查询改写耗时（ms，请求详情用；未触发改写=0）")
     rewritten_query: Optional[str] = Field(None, description="改写后的检索查询（请求详情用；未改写=空）")
+    split_ms: Optional[int] = Field(None, description="子问题拆分检索耗时（ms，请求详情用；未触发拆分=0）")
+    sub_queries: List[str] = Field(
+        default_factory=list,
+        description="复合问题拆出的子问题列表（请求详情用；未拆分=空。"
+                    "每个子问题各自并行检索后与主检索结果轮流合并，"
+                    "展示它才能解释召回耗时为何高于单路）")
     total_ms: Optional[int] = Field(None, description="问答总耗时（ms，提问→AI 生成首字；后端首个 token 埋点，随消息落盘）")
     # 本次生成参数快照（模型/温度/思考模式/检索参数等影响输出的配置）：
     # 事后追溯"这条回答当时是怎么跑出来的"——温度过高、思考被关这类问题

@@ -286,6 +286,20 @@ async def split_query(query: str) -> List[str]:
             content = ""
         subs = _parse_sub_queries(content)
         if len(subs) <= 1:
+            # 拆解"未生效"也要留痕：原先这条路径直接静默返回，日志里看不出
+            # 任何异常（成功才有 info），导致"明明没拆、日志却全绿"无法诊断。
+            # 三个判据一次性记全，下次复现即可定论：
+            # - finish_reason=length → 输出被 max_tokens 截断，即 256 token
+            #   预算全花在思考上（网关未关思考的直接证据）
+            # - finish_reason=stop 且 content 是完整答案 → 模型真认为只问了
+            #   一件事（启发式误触发，属预期降级）
+            # - finish_reason=stop 但 content 有编号/多行 → _parse_sub_queries
+            #   不认的输出格式（解析器待改）
+            choice = resp.choices[0] if resp.choices else None
+            logger.info(
+                "问题拆分未生效（解析出 %d 条）: finish_reason=%s content=%r",
+                len(subs), getattr(choice, "finish_reason", None),
+                (content or "")[:150])
             return [q]  # 模型认为只问了一件事（或没拆出东西）→ 单路
         logger.info("问题拆分: %r → %s", q[:40], [s[:40] for s in subs])
         return subs

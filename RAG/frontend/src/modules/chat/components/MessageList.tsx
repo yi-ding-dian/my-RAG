@@ -11,7 +11,9 @@ import {
 } from 'antd';
 import {
   ArrowDownOutlined,
+  BulbOutlined,
   DislikeOutlined,
+  DownOutlined,
   LikeOutlined,
   PaperClipOutlined,
 } from '@ant-design/icons';
@@ -473,6 +475,12 @@ const MessageItem: React.FC<MessageItemProps> = ({
   onOpenDetail,
 }) => {
   const isUser = m.role === 'user';
+  // 思考区展开状态：null = 用户未手动干预 → 跟随流式（思考阶段自动展开，
+  // 让用户看到字在动而不是干等；正文开始/生成结束后自动收起为一行）；
+  // 用户点开/收起过就固定为用户的选择，不再被流式状态覆盖
+  const [thinkOpenManual, setThinkOpenManual] = useState<boolean | null>(null);
+  const thinkingNow = !!(pending && !m.content && m.reasoning);
+  const thinkOpen = thinkOpenManual ?? thinkingNow;
   return (
     <div
       style={{
@@ -485,6 +493,41 @@ const MessageItem: React.FC<MessageItemProps> = ({
       {/* 头像列：AI 消息左侧显示 AI 头像；用户消息右侧显示自己头像（DOM 顺序保证 flex 下最右） */}
       {!isUser && <AiAvatar />}
       <div style={{ maxWidth: '85%', minWidth: 0 }}>
+        {/* 思考过程（推理模型 reasoning_content）：**仅流式期间存在于前端内存**
+            ——后端不落盘，刷新/切会话即消失，故历史消息不会出现本块。
+            限高滚动（见 chat.css .bubble-thinking-body）：长思考不撑爆列表 */}
+        {!isUser && !!m.reasoning && (
+          <div
+            className="bubble-thinking"
+            style={{ padding: '8px 12px', marginBottom: m.content ? 6 : 0 }}
+          >
+            <div
+              className="bubble-thinking-head"
+              onClick={() => setThinkOpenManual(!thinkOpen)}
+            >
+              {thinkingNow ? (
+                <span className="bubble-thinking-dot" />
+              ) : (
+                <BulbOutlined style={{ fontSize: 12 }} />
+              )}
+              <span>
+                {thinkingNow
+                  ? '正在深度思考…'
+                  : `已思考 ${m.reasoning.length} 字`}
+              </span>
+              <DownOutlined
+                style={{
+                  fontSize: 10,
+                  transition: 'transform 0.2s',
+                  transform: thinkOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                }}
+              />
+            </div>
+            {thinkOpen && (
+              <div className="bubble-thinking-body">{m.reasoning}</div>
+            )}
+          </div>
+        )}
         {m.content && (
           <div
             className={`${isUser ? 'bubble-user' : 'bubble-assistant'} ${streaming ? 'typing-cursor' : ''}`}
@@ -639,8 +682,9 @@ const MessageList: React.FC<MessageListProps> = ({
   // 流式生成中（waiting）且最后一条助手消息已有内容 → 追加闪烁光标
   const last = messages[messages.length - 1];
   const streamingLive = !!(waiting && last && last.role === 'assistant' && last.content);
-  // 尚未输出任何内容（等待首字）时展示思考动画
-  const showThinking = !!(waiting && !streamingLive);
+  // 正文与思考都还没出（真正的首字等待期）才显示"正在思考…"占位：已有思考
+  // 内容时由思考区承载等待反馈，否则同一时刻会出现两块等待 UI
+  const showThinking = !!(waiting && !streamingLive && !last?.reasoning);
 
   if (messages.length === 0 && !waiting) {
     return (

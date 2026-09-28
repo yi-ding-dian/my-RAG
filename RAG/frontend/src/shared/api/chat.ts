@@ -40,6 +40,14 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
         callbacks.onMeta?.(sources);
         break;
       }
+      case 'reasoning': {
+        // 推理模型思考增量（思考未关闭时才收到）：仅流式展示，后端不落盘。
+        // total_ms 可能挂在本事件上——思考先于正文输出时，用户看到的第一段
+        // 输出是思考，故「提问→首字」以思考首字为准
+        const info = (data ?? {}) as { text?: string; total_ms?: number };
+        if (info.text) callbacks.onReasoning?.(info.text, info.total_ms);
+        break;
+      }
       case 'delta':
         // 兼容两种形态：裸字符串（mock）与 {"text":"..."}（真实后端）
         // total_ms 只有首条 delta 带（后端首字埋点），后续增量没有
@@ -57,6 +65,8 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
           kg_ms?: number;
           rewrite_ms?: number;
           rewritten_query?: string | null;
+          split_ms?: number;
+          sub_queries?: string[];
         };
         callbacks.onPrompt?.({
           prompt: info.prompt ?? [],
@@ -64,6 +74,8 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
           kg_ms: info.kg_ms,
           rewrite_ms: info.rewrite_ms,
           rewritten_query: info.rewritten_query,
+          split_ms: info.split_ms,
+          sub_queries: info.sub_queries,
         });
         break;
       }

@@ -329,6 +329,30 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
             {message.rewritten_query}
           </div>
         )}
+        {/* 复合问题拆分：拆出多问才展示（未拆分时后端下发空数组，整块不渲染）。
+            放在检索问题下方——召回耗时偏高时，这里能看出是不是多路检索导致 */}
+        {!!message.sub_queries?.length && (
+          <div
+            style={{
+              fontSize: 12,
+              lineHeight: '18px',
+              marginTop: 6,
+              color: token.colorTextSecondary,
+            }}
+          >
+            <span style={{ color: token.colorTextTertiary }}>
+              拆分为 {message.sub_queries.length} 个子问题（各自独立检索后与主检索轮流合并）：
+            </span>
+            {message.sub_queries.map((sq, i) => (
+              <div
+                key={i}
+                style={{ marginTop: 2, paddingLeft: 10, wordBreak: 'break-word' }}
+              >
+                {i + 1}. {sq}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       {/* 用户反馈（仅超管回溯传入；聊天页是自己点的，无展示意义） */}
       {feedback && (
@@ -379,6 +403,8 @@ const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           {typeof message.kg_ms === 'number' && ` ｜ 图谱构建：${message.kg_ms} ms`}
           {typeof message.rewrite_ms === 'number' && message.rewrite_ms > 0
             && ` ｜ 查询改写：${message.rewrite_ms} ms`}
+          {typeof message.split_ms === 'number' && message.split_ms > 0
+            && ` ｜ 子问题检索：${message.split_ms} ms`}
         </div>
         <div style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
           总耗时（提问→首字）：{typeof message.total_ms === 'number' ? formatMs(message.total_ms) : '—'}

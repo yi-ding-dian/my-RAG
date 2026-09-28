@@ -358,8 +358,13 @@ class ChatService:
                           user_id: Optional[str] = None,
                           top_k: Optional[int] = None,
                           dept_config: Optional[dict] = None) -> AsyncIterator[str]:
-        """SSE 流：meta(sources) -> prompt(完整提示词+耗时) -> delta(文本)
-        -> done(session_id, message_count) / error
+        """SSE 流：meta(sources) -> prompt(完整提示词+耗时) -> reasoning(思考文本)
+        -> delta(正文文本) -> done(session_id, message_count) / error
+
+        reasoning：推理模型（思考未被关闭时）思考期间的增量文本，与 delta
+          交错下发、**仅流式**——不落盘、不随 done 下发，刷新即消失。
+          「提问→首字」total_ms 挂在首个下发的事件上（思考先出则挂 reasoning），
+          故详情里的耗时口径 = 用户看到第一段输出的时刻。
 
         kb_ids: 本次对话的知识库列表（1~5 个；多库时各库并行检索后按 score
           合并取**全局** top_k，图谱也跨库合并成一条引用）
@@ -717,6 +722,10 @@ class ChatService:
                 "kg_ms": kg_ms,
                 # 子问题检索耗时（0 = 未拆分）；含拆解自身的 LLM 等待
                 "split_ms": split_ms,
+                # 拆出的子问题（仅真正拆分时非空）：未拆分时 sub_queries
+                # 就是 [原问题]，传下去只会让详情弹窗多出一块无意义的
+                # "拆分结果"；有了它，"召回耗时为何这么高"才有解释
+                "sub_queries": sub_queries if len(sub_queries) > 1 else [],
                 # 查询改写（第 0.5 步）：耗时单独统计（不污染 retrieval_ms），
                 # 改写后的检索词供"请求详情"对照原问题
                 "rewrite_ms": rewrite_ms,
@@ -772,19 +781,33 @@ class ChatService:
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
-                    content = delta.content if delta else None
+                    if delta is None:
+                        continue
+                    # 思考内容（reasoning_content，推理模型思考期间输出）：
+                    # 经 reasoning 事件**仅流式下发**，不进 answer_parts、
+                    # 不随 done 下发、不落盘——刷新或切会话后思考即消失
+                    # （用户明确要求不存：会话文件会被思考撑大数倍）。
+                    # 用 getattr 取值：非推理模型没有该字段，天然兼容、
+                    # 不产生额外事件（思考关了就是一条都不发，行为同改造前）
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    content = delta.content
+                    # 首个 token 落地即为"AI 首字"：算一次总耗时。思考先于
+                    # 正文输出时以**思考首字**为准——那才是用户看到第一段
+                    # 输出的时刻（展示思考后干等期已被思考内容填满）。
+                    # 随首个下发的事件带一次，后续增量不带（省带宽）。
+                    # 随事件而非 done 下发——用户点「停止」时 done 不会发，
+                    # 随 done 则中断的那次问答在详情里看不到耗时
+                    first: dict = {}
+                    if ((reasoning or content)
+                            and prompt_detail.get("total_ms") is None):
+                        prompt_detail["total_ms"] = int(round(
+                            (time.perf_counter() - t_start) * 1000))
+                        first["total_ms"] = prompt_detail["total_ms"]
+                    if reasoning:
+                        yield sse_event("reasoning", {"text": reasoning, **first})
                     if content:
                         answer_parts.append(content)
-                        payload: dict = {"text": content}
-                        # 首个 token 落地即为"AI 首字"：算一次总耗时，随这条
-                        # delta 一起下发（只在首条带，后续增量不带，省带宽）。
-                        # 随 delta 而非 done 下发——用户点「停止」时 done 不会
-                        # 发，随 done 则中断的那次问答在详情里看不到耗时
-                        if prompt_detail.get("total_ms") is None:
-                            prompt_detail["total_ms"] = int(round(
-                                (time.perf_counter() - t_start) * 1000))
-                            payload["total_ms"] = prompt_detail["total_ms"]
-                        yield sse_event("delta", payload)
+                        yield sse_event("delta", {"text": content, **first})
             except asyncio.CancelledError:
                 logger.info("客户端中断流式问答: %s", session.id)
                 if answer_parts:
@@ -1073,7 +1096,9 @@ class ChatService:
         其中 gen_params（本次实际生效的生成参数）随消息保存，供事后追溯
         "这条回答当时是怎么跑出来的"；rewrite_ms/rewritten_query/total_ms
         同理落盘——不落盘则刷新/切会话、超管会话回溯都看不到"改写了没有、
-        改成了什么、首字等了多久"。
+        改成了什么、首字等了多久"。split_ms/sub_queries（子问题拆分耗时与
+        拆出的子问题）一并落盘：召回耗时偏高时，详情里能看出是不是拆分
+        导致的多路检索。
         """
         chat_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session.messages.append(ChatMessage(role="user", content=message,
@@ -1090,6 +1115,8 @@ class ChatService:
             kg_ms=detail.get("kg_ms") if detail else None,
             rewrite_ms=detail.get("rewrite_ms") if detail else None,
             rewritten_query=detail.get("rewritten_query") if detail else None,
+            split_ms=detail.get("split_ms") if detail else None,
+            sub_queries=detail.get("sub_queries", []) if detail else [],
             # 「提问→首字」总耗时由后端在首个 token 处埋点（见 stream_chat），
             # 随消息落盘方能切会话/刷新后回看——早先只在前端内存里算，
             # 切走再切回就丢了

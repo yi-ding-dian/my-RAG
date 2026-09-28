@@ -581,9 +581,12 @@ const ChatPage: React.FC = () => {
 
   const abortRef = useRef<(() => void) | null>(null);
   const streamingRef = useRef(false);
-  // 流式增量节流（50ms 合并一次 DOM 更新）
+  // 流式增量节流（50ms 合并一次 DOM 更新）。思考与正文各一套 buffer + 定时器：
+  // 归属不同的消息字段（reasoning / content），共用一套会互相清空对方的缓冲
   const deltaBufRef = useRef('');
   const flushTimerRef = useRef<number | null>(null);
+  const reasoningBufRef = useRef('');
+  const reasoningTimerRef = useRef<number | null>(null);
 
   // ---------- 知识库 ----------
   const loadKbs = useCallback(async () => {
@@ -798,26 +801,61 @@ const ChatPage: React.FC = () => {
     });
   }, []);
 
+  // 首字耗时（后端埋点）：挂在**首个下发的事件**上——思考先于正文输出时
+  // 挂在 reasoning 事件（那才是用户看到第一段输出的时刻）。写进最后一条
+  // assistant 消息，"刚问完立刻点详情"即可看到。早先是前端 performance.now()
+  // 自己算，只活在内存里——切会话/刷新就丢
+  const applyTotalMs = useCallback((total_ms: number) => {
+    setMessages(prev => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (last && last.role === 'assistant') {
+        next[next.length - 1] = { ...last, total_ms };
+      }
+      return next;
+    });
+  }, []);
+
+  /** 思考增量落盘到消息（仅内存，后端不落盘；刷新即消失） */
+  const flushReasoning = useCallback(() => {
+    const text = reasoningBufRef.current;
+    reasoningBufRef.current = '';
+    if (reasoningTimerRef.current) {
+      window.clearTimeout(reasoningTimerRef.current);
+      reasoningTimerRef.current = null;
+    }
+    if (!text) return;
+    setMessages(prev => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (last && last.role === 'assistant') {
+        next[next.length - 1] = {
+          ...last,
+          reasoning: (last.reasoning ?? '') + text,
+        };
+      }
+      return next;
+    });
+  }, []);
+
   const handleDelta = useCallback(
     (text: string, total_ms?: number) => {
-      // 只有首条 delta 带 total_ms（后端首个 token 埋点的「提问→首字」总耗时）：
-      // 写进最后一条 assistant 消息，"刚问完立刻点详情"即可看到。
-      // 早先是前端 performance.now() 自己算，只活在内存里——切会话/刷新就丢
-      if (total_ms !== undefined) {
-        setMessages(prev => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last && last.role === 'assistant') {
-            next[next.length - 1] = { ...last, total_ms };
-          }
-          return next;
-        });
-      }
+      if (total_ms !== undefined) applyTotalMs(total_ms);
       deltaBufRef.current += text;
       if (flushTimerRef.current) return;
       flushTimerRef.current = window.setTimeout(flushDelta, 50);
     },
-    [flushDelta],
+    [flushDelta, applyTotalMs],
+  );
+
+  const handleReasoning = useCallback(
+    (text: string, total_ms?: number) => {
+      if (total_ms !== undefined) applyTotalMs(total_ms);
+      reasoningBufRef.current += text;
+      if (reasoningTimerRef.current) return;
+      reasoningTimerRef.current = window.setTimeout(flushReasoning, 50);
+    },
+    [flushReasoning, applyTotalMs],
   );
 
   const handleMeta = useCallback((sources: Source[]) => {
@@ -837,7 +875,8 @@ const ChatPage: React.FC = () => {
   // 「改写后检索词」「查询改写耗时」两处渲染恒不执行——明明改写了却看着像没改写
   const handlePrompt = useCallback(
     (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number;
-             rewrite_ms?: number; rewritten_query?: string | null }) => {
+             rewrite_ms?: number; rewritten_query?: string | null;
+             split_ms?: number; sub_queries?: string[] }) => {
       setMessages(prev => {
         const next = [...prev];
         const last = next[next.length - 1];
@@ -849,6 +888,8 @@ const ChatPage: React.FC = () => {
             kg_ms: info.kg_ms,
             rewrite_ms: info.rewrite_ms,
             rewritten_query: info.rewritten_query,
+            split_ms: info.split_ms,
+            sub_queries: info.sub_queries,
           };
         }
         return next;
@@ -883,11 +924,12 @@ const ChatPage: React.FC = () => {
 
   const finishStreaming = useCallback(() => {
     flushDelta();
+    flushReasoning();
     streamingRef.current = false;
     setStreaming(false);
     abortRef.current = null;
     loadSessions(); // 刷新会话列表（含新建会话）
-  }, [flushDelta, loadSessions]);
+  }, [flushDelta, flushReasoning, loadSessions]);
 
   const handleDone = useCallback(
     (info: { session_id: string; message_count: number; gen_params?: GenParams }) => {
@@ -914,6 +956,7 @@ const ChatPage: React.FC = () => {
   const handleStreamError = useCallback(
     (errMsg: string) => {
       flushDelta();
+      flushReasoning();
       if (errMsg !== '已停止') {
         // 未产生任何内容时把错误写进气泡，否则仅提示
         setMessages(prev => {
@@ -939,7 +982,7 @@ const ChatPage: React.FC = () => {
       }
       finishStreaming();
     },
-    [flushDelta, finishStreaming, message],
+    [flushDelta, flushReasoning, finishStreaming, message],
   );
 
   const handleStop = useCallback(() => {
@@ -978,13 +1021,14 @@ const ChatPage: React.FC = () => {
           onAgentic: handleAgentic,
           onAgenticStatus: handleAgenticStatus,
           onPrompt: handlePrompt,
+          onReasoning: handleReasoning,
           onDelta: handleDelta,
           onDone: handleDone,
           onError: handleStreamError,
         },
       );
     },
-    [kbIdsKey, activeSessionId, topK, handleMeta, handlePrompt, handleDelta, handleDone, handleStreamError, message],
+    [kbIdsKey, activeSessionId, topK, handleMeta, handlePrompt, handleReasoning, handleDelta, handleDone, handleStreamError, message],
   );
 
   // 组件卸载时中止未完成的流

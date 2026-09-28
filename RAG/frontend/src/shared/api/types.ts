@@ -402,6 +402,12 @@ export interface GenParams {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * 模型思考内容（event:reasoning 累积）：**仅存在于前端流式期间的内存**，
+   * 后端不落盘——刷新或切会话后即消失（历史消息无此字段）。
+   * 展示规则见 MessageList：仅思考阶段（正文未开始）自动展开，可手动收起/展开
+   */
+  reasoning?: string;
   sources?: Source[];
   /** 请求详情：后端 prompt 事件下发的完整 messages 数组（发给 LLM 的提示词） */
   prompt?: unknown;
@@ -413,6 +419,10 @@ export interface ChatMessage {
   rewrite_ms?: number;
   /** 请求详情：改写后的检索查询（原问题未改写时为 null） */
   rewritten_query?: string | null;
+  /** 请求详情：子问题拆分检索耗时（ms；未触发拆分=0） */
+  split_ms?: number;
+  /** 请求详情：复合问题拆出的子问题（未拆分=空；旧数据无此字段） */
+  sub_queries?: string[];
   /** 请求详情：提问 → AI 生成首字总耗时（前端计算，毫秒） */
   total_ms?: number;
   /** 请求详情：Agentic 检索决策轨迹（改写查询/分档分数/尝试次数；未开启时无） */
@@ -837,15 +847,32 @@ export interface StreamCallbacks {
   /** 收到 event:meta，携带检索来源 */
   onMeta?: (sources: Source[]) => void;
   /** 收到 event:prompt，携带完整提示词与检索/图谱/改写耗时（请求详情用） */
-  onPrompt?: (info: { prompt: unknown[]; retrieval_ms?: number; kg_ms?: number; rewrite_ms?: number; rewritten_query?: string | null }) => void;
+  onPrompt?: (info: {
+    prompt: unknown[];
+    retrieval_ms?: number;
+    kg_ms?: number;
+    rewrite_ms?: number;
+    rewritten_query?: string | null;
+    /** 子问题拆分检索耗时（ms；未触发拆分=0） */
+    split_ms?: number;
+    /** 复合问题拆出的子问题（未拆分=空数组） */
+    sub_queries?: string[];
+  }) => void;
   /** 收到 event:agentic，携带 Agentic 检索决策轨迹（默认关闭时不收到） */
   onAgentic?: (info: AgenticTrace) => void;
   /** 收到 event:agentic_status，携带检索/改写/重检进度（默认关闭时不收到） */
   onAgenticStatus?: (info: AgenticStatus) => void;
   /**
-   * 收到 event:delta，增量文本。
-   * total_ms：仅**首条** delta 携带——后端口径的「提问→AI 生成首字」总耗时（ms），
-   * 写进 assistant 消息供请求详情展示（与落盘的 total_ms 同源同值）
+   * 收到 event:reasoning，推理模型思考期间的增量文本（思考未关闭时才收到）。
+   * 仅流式展示用：**不落盘**，刷新/切会话即消失。
+   * total_ms：仅**首个**下发的事件携带（思考先出则挂在本事件上，见 onDelta 说明）
+   */
+  onReasoning?: (text: string, total_ms?: number) => void;
+  /**
+   * 收到 event:delta，增量正文文本。
+   * total_ms：仅**首条**事件携带——后端口径的「提问→AI 生成首字」总耗时（ms），
+   * 思考先于正文输出时该字段挂在 reasoning 事件上（那才是用户看到第一段输出的
+   * 时刻），此处不再重复携带。写进 assistant 消息供请求详情展示
    */
   onDelta?: (text: string, total_ms?: number) => void;
   /** 收到 event:done（gen_params = 本次实际生效的生成参数，供「详情」追溯） */
