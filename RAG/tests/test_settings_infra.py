@@ -55,17 +55,24 @@ class TestInfraSections:
         assert profile["minio"]["endpoint"] != ""
 
     def test_masked_roundtrip_keeps_original(self, client, admin_headers):
-        """PUT 回传脱敏 password → 不覆盖原值（激活后可见原值）"""
+        """档案里的 mysql 改动不写入运行时配置（activate 后全局值不变）
+
+        注：mysql 段已改为 apply_to_config=False —— 连接参数属启动依赖，
+        配错会导致服务起不来且没有 UI 入口改回（自锁），统一以部署侧
+        .env / .env.docker 为准（见 docs/配置归属清单.md）。
+        "脱敏回传不覆盖原值"这一机制本身仍由 test_settings_schema 的
+        test_secret_masked_not_overwrite 覆盖（llm.api_key 载体）。
+        """
         profile = _make_profile(client, admin_headers)
+        before = get_active_config().mysql.model_dump()
         resp = client.put(f"/api/settings/profiles/{profile['id']}", json={
             "mysql": {"password": "infi****flow", "host": "127.0.0.1"},
         }, headers=admin_headers)
         assert resp.status_code == 200
         client.post(f"/api/settings/profiles/{profile['id']}/activate",
                     headers=admin_headers)
-        cfg = get_active_config()
-        assert cfg.mysql.password == "mysql-test-pass", "脱敏回传不应覆盖原值"
-        assert cfg.mysql.host == "127.0.0.1", "非密钥字段正常更新"
+        assert get_active_config().mysql.model_dump() == before, \
+            "mysql 段不参与运行时配置（连接参数以 .env 为准）"
 
 
 # ==================== 连接测试（离线 mock 网络） ====================

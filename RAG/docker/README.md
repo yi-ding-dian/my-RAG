@@ -43,11 +43,12 @@ docker compose -f docker/docker-compose.infra.yml logs -f
 docker compose -f docker/docker-compose.infra.yml down
 ```
 
-- 启动前将 `docker/.env.docker` 中 `MYSQL_HOST` / `MINIO_ENDPOINT` 改为
-  `127.0.0.1`（宿主机同机运行 compose 时即此值，无需改动），口令与
-  infra.yml 中保持一致
+- 启动前在 `docker/.env.docker` 里填好 `MYSQL_*`（口令与 infra.yml 保持一致）
 - 无需 MinIO 时，可将 `.env.docker` 中 `STORAGE_BACKEND` 改为 `local`
   （对象存本地 `data/storage`），仅需保留 MySQL
+- **MinIO 连接参数不在 `.env.docker`**：它可在网页「系统配置」里配（配错只
+  影响功能、不影响启动）。注意容器内的 `127.0.0.1` 指向**容器自身**，访问
+  宿主机服务须写宿主机 IP 或 `host.docker.internal`
 - 外部依赖（LLM / Embedding / MinerU / Rerank / RAGAS）的获取方式与可降级性
   见 `../docs/外部依赖部署指南.md`
 
@@ -59,9 +60,14 @@ docker compose -f docker/docker-compose.infra.yml down
 `.env.docker` 已被 gitignore 忽略，**不会**随仓库分发（.env.docker.example
 才是入库模板）。
 
-容器环境变量只作出厂默认值，字段名与 `backend/config.py` 的 Settings 完全一致，
-覆盖范围：LLM / Embedding / MinerU / 检索 top_k / 切块 / 会话轮数 / MySQL /
-MinIO / STORAGE_BACKEND / DATA_DIR / JWT_SECRET / CORS_ORIGINS。
+容器环境变量**只保留「配错会导致服务起不来」的启动依赖与密钥**，字段名与
+`backend/config.py` 的 Settings 完全一致：`JWT_SECRET`（不配拒绝启动）、
+`MYSQL_*`（init_db 建表+种子，连不上即启动失败）、`DATA_DIR`、`CORS_ORIGINS`、
+`STORAGE_BACKEND`、`RAGAS_BASE_URL`（后两项无 UI 入口，只能在此配）。
+
+其余配置（LLM / Embedding / MinerU / DeepDoc / MinIO / 检索 / 切块 / 向量存储…）
+**一律在网页「系统配置」里维护**——它们配错只影响功能、不影响服务启动，
+随时可从 UI 改回。分工依据见 `../docs/配置归属清单.md`。
 
 **运行时配置请优先在网页「系统配置」页修改配置档案**（持久化到
 `data/settings.json`，切换即时生效，无需重启）。以下字段仅容器级注入，
@@ -71,7 +77,10 @@ MinIO / STORAGE_BACKEND / DATA_DIR / JWT_SECRET / CORS_ORIGINS。
 |---|---|
 | `JWT_SECRET` | JWT 签名密钥（安全材料，**生产必须改为强随机值**：`openssl rand -hex 32`） |
 | `DATA_DIR` | 数据目录（默认 `/app/data`，与 compose 挂载一致） |
+| `CORS_ORIGINS` | 前端来源白名单（逗号分隔）；留空=拒绝跨域（nginx 反代同源不受影响）。**勿用 `*`**，它仅限本地开发 |
+| `MYSQL_*` | 数据库连接（启动依赖；UI 已无此入口） |
 | `STORAGE_BACKEND` | `minio` / `local`（local 存本地，离线环境用） |
+| `RAGAS_BASE_URL` | RAGAS 评估服务地址（留空=不启用对接） |
 
 ### Rerank 重排序（通过配置档案设置，无需 env）
 

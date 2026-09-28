@@ -326,14 +326,16 @@ class TestToServiceConfigEdges:
         assert cfg.chat.temperature == 0.0
 
     def test_empty_string_overrides(self):
-        """not_none 条件字段空串也覆盖（system_prompt 恢复默认 / url 清空）"""
+        """not_none 条件字段空串也覆盖（system_prompt 恢复默认 / region 清空）
+
+        注：mysql.url 原在此验证，因 mysql 段改为 apply_to_config=False
+        （连接参数以 .env 为准、档案不写入运行时配置）后移出本用例。
+        """
         cfg = self._cfg({
             "chat": {"system_prompt": ""},
-            "mysql": {"url": ""},
             "minio": {"region": ""},
         })
         assert cfg.chat.system_prompt == ""
-        assert cfg.mysql.url == ""
         assert cfg.minio.region == ""
 
     def test_secret_masked_not_overwrite(self):

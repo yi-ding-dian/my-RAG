@@ -75,18 +75,18 @@ export const DOMAIN_CARDS: Array<{
       `并发 ${p.ingestion?.concurrency ?? 3}｜单库上限 ${p.ingestion?.kb_doc_limit ?? 0}｜上传 ${p.ingestion?.max_upload_mb ?? 100}MB`,
   },
   {
-    key: 'mysql',
+    key: 'storage',
     title: '数据存储',
-    sections: ['mysql', 'minio', 'vector_store'],
+    // 数据库（mysql 段）已从 UI 移除：连接参数属**启动依赖**，配错会导致服务
+    // 起不来、且没有 UI 入口改回（自锁），统一在部署侧 .env / .env.docker 配置
+    // （见 docs/配置归属清单.md）。后端 schema 段仍保留，仅前端不再展示。
+    sections: ['minio', 'vector_store'],
     summary: p => {
-      const db = p.mysql?.url
-        ? String(p.mysql.url).slice(0, 40)
-        : `${p.mysql?.host ?? ''}:${p.mysql?.port ?? ''}/${p.mysql?.database ?? ''}`;
       const vs =
         p.vector_store?.backend === 'milvus'
           ? `Milvus ${p.vector_store.milvus_uri || ''}`
           : 'Chroma（本地）';
-      return `${db}｜${p.minio?.endpoint ?? '-'}/${p.minio?.bucket ?? '-'}｜${vs}`;
+      return `${p.minio?.endpoint ?? '-'}/${p.minio?.bucket ?? '-'}｜${vs}`;
     },
   },
 ];
@@ -134,7 +134,6 @@ export const PANEL_TEST_SECTIONS: Record<string, SectionKey[]> = {
   // 面板头的 ⚡ 一次测这三项
   parse: ['mineru', 'deepdoc', 'gotenberg'],
   retrieval: ['rerank'],
-  mysql: ['mysql'],
   minio: ['minio'],
   vector_store: ['vector_store'],
   vision: ['vision'],

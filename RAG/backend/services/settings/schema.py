@@ -431,12 +431,19 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
         fill_section=True),
     "mysql": _reflect_section("mysql", MySQLConfig,
         overrides={
-            "host": {"strip": True},
-            "port": {"condition": "not_none"},
-            "user": {"strip": True},
-            "password": {"strip": True, "condition": "secret_truthy"},
-            "database": {"strip": True},
-            "url": {"strip": True, "condition": "not_none"},
+            # 数据库连接参数**不写入运行时配置**（apply_to_config=False）：
+            # 连接属启动依赖，配错会导致服务起不来、且没有 UI 入口改回（自锁），
+            # 故统一以部署侧 .env / .env.docker 为准（见 docs/配置归属清单.md）。
+            # 段本身保留：仍被 /test-connections 的探测与脱敏回传复用，
+            # 且 SECTION_SCHEMA 多处按段名直接索引，删段会波及（前端已不展示）
+            "host": {"strip": True, "apply_to_config": False},
+            "port": {"condition": "not_none", "apply_to_config": False},
+            "user": {"strip": True, "apply_to_config": False},
+            "password": {"strip": True, "condition": "secret_truthy",
+                         "apply_to_config": False},
+            "database": {"strip": True, "apply_to_config": False},
+            "url": {"strip": True, "condition": "not_none",
+                    "apply_to_config": False},
         },
         fill_section=True),
     "minio": _reflect_section("minio", MinIOConfig,

@@ -198,18 +198,6 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
           </div>
         </Col>
         <Col xs={24} md={12}>
-          <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.mysql}</Text>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <Text style={{ fontSize: 12 }}>
-              {p.mysql
-                ? p.mysql.url
-                  ? String(p.mysql.url).slice(0, 60)
-                  : `${p.mysql.host}:${p.mysql.port}/${p.mysql.database || ''}`
-                : '-'}
-            </Text>
-          </div>
-        </Col>
-        <Col xs={24} md={12}>
           <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.minio}</Text>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Text style={{ fontSize: 12 }}>
@@ -234,7 +222,6 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
           <TestLine item={tests.embedding} label={sectionLabel.embedding} />
           <TestLine item={tests.mineru} label={sectionLabel.mineru} />
           <TestLine item={tests.deepdoc} label={sectionLabel.deepdoc} />
-          <TestLine item={tests.mysql} label={sectionLabel.mysql} />
           <TestLine item={tests.minio} label={sectionLabel.minio} />
           <TestLine item={tests.vector_store} label={sectionLabel.vector_store} />
         </Col>

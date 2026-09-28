@@ -27,7 +27,6 @@ import IngestPanel from './IngestPanel';
 import LlmPanel from './LlmPanel';
 import EmbeddingPanel from './EmbeddingPanel';
 import ParseServicesPanel from './ParseServicesPanel';
-import MysqlPanel from './MysqlPanel';
 import MinioPanel from './MinioPanel';
 import VectorStorePanel from './VectorStorePanel';
 import VisionPanel from './VisionPanel';
@@ -710,11 +709,6 @@ const ProfileEditorModal: React.FC<{
                     activateModel={activateVisionModel}
                   />
                 ),
-              },
-              {
-                key: 'mysql',
-                label: panelLabel('mysql', '数据库（SQLite/MySQL/其他）'),
-                children: <MysqlPanel />,
               },
               {
                 key: 'minio',
