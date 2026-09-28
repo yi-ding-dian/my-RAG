@@ -23,9 +23,15 @@ docker compose -f docker/docker-compose.yml build rag-backend  # 单独重建后
 
 ## 一键启动外部依赖（可选）
 
+> **先判断要不要用这一节**：
+> - MySQL / MinIO 已部署在**别处**（如集中部署在某台基础设施机上，你在
+>   系统配置页填的是它的 IP）→ **跳过本节**，直接去「启动」章节把连接参数
+>   填进 `.env.docker`
+> - 想在**本机**把 MySQL + MinIO 起齐（单机 / 离线 / 无外部基础设施）→ 用本节
+
 MySQL 与 MinIO 可用 `docker-compose.infra.yml` 一条命令起齐
-（端口与系统配置页默认一致：MySQL 5455、MinIO 9000 + 控制台 9001，口令用
-占位符，需自行修改后使用）：
+（端口取自 `backend/config.py` 的默认值：MySQL 5455、MinIO 9000 + 控制台 9001，
+口令用占位符，需自行修改后使用）：
 
 ```bash
 cp docker/.env.docker.example docker/.env.docker   # 未生成过则先复制
