@@ -13,9 +13,10 @@ import {
   Segmented, List, Popconfirm, Radio, Skeleton,
 } from 'antd';
 import {
-  DeleteOutlined, EyeOutlined, FileExcelOutlined, FileTextOutlined,
-  ImportOutlined, PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined,
-  StopOutlined, SyncOutlined, PlayCircleOutlined, UploadOutlined,
+  DatabaseOutlined, DeleteOutlined, EyeOutlined, FileExcelOutlined,
+  FileTextOutlined, ImportOutlined, PlusOutlined, ReloadOutlined,
+  RobotOutlined, SaveOutlined, StopOutlined, SyncOutlined,
+  PlayCircleOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
@@ -1039,6 +1040,16 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       }
       extra={
         <Space>
+          {/* 评估集管理提到顶部：原先只藏在「发起评估」弹窗里，不进弹窗够不着，
+              而"管题集"和"跑评估"是两件事，不该绑在一起 */}
+          {isAdmin ? (
+            <Button
+              icon={<DatabaseOutlined />}
+              onClick={() => setDatasetMgrOpen(true)}
+            >
+              评估集管理
+            </Button>
+          ) : null}
           {isAdmin ? (
             <Button
               type="primary"

@@ -5,12 +5,52 @@
  *
  * 由 Analytics 单页改造"概览卡片 + 点击下钻详情页"时拆分，逻辑纯搬移不改行为。
  */
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Skeleton, Space, Typography, theme } from 'antd';
 import type { ChatFeedbackStats } from '../../shared/api/other';
 import { getChatFeedbackStats } from '../../shared/api/client';
 
 const { Text } = Typography;
+
+/**
+ * 按容器可用高度算"能完整显示几条"——让摘要卡的列表**填满卡片、且不出现滚动条**，
+ * 放不下的部分由列表末尾的「共 N 条，其余见详情」兜底。
+ *
+ * 行高由调用方给（各卡行高不同）；容器高度变化（窗口缩放、侧栏伸缩）时重算。
+ *
+ * **用回调 ref 而不是 useEffect + useRef**：列表多半在 `loading ? Skeleton : <列表>`
+ * 这类条件渲染里，首帧元素根本不存在，而 effect 依赖只有 rowHeight、不会重跑，
+ * 结果永远停在初值上（实测：RAGAS 卡一直只显示 5 条）。回调 ref 在元素挂载那一刻
+ * 就测量，天然不受渲染时序影响。
+ *
+ * ref 要绑在**列表自己的容器**上——卡片里列表上方还有指标行等内容，绑到卡片上会算多。
+ */
+export function useVisibleCount<T extends HTMLElement>(rowHeight: number, fallback = 5) {
+  const [count, setCount] = useState(fallback);
+  const roRef = useRef<ResizeObserver | null>(null);
+
+  const ref = useCallback((el: T | null) => {
+    roRef.current?.disconnect();
+    roRef.current = null;
+    if (!el) return;
+    const calc = () => {
+      const h = el.clientHeight;
+      if (h > 0) setCount(Math.max(1, Math.floor(h / rowHeight)));
+    };
+    calc();
+    const ro = new ResizeObserver(calc);
+    ro.observe(el);
+    roRef.current = ro;
+  }, [rowHeight]);
+
+  // 卸载时断开，避免观察器泄漏
+  useEffect(() => () => {
+    roRef.current?.disconnect();
+    roRef.current = null;
+  }, []);
+
+  return { ref, count };
+}
 
 /** RAGAS 指标英文 → 中文映射（未知指标保持原名；Tooltip 显示英文原名） */
 export const metricLabelMap: Record<string, string> = {
@@ -61,7 +101,7 @@ export interface EvalSampleRow {
 
 /** 用户反馈汇总小卡：总数/好评/差评 + 最近反馈（原因）列表。
  *  maxRecent 可选：限制"最近反馈"展示条数（概览摘要卡传小值保一屏，缺省=全部，与原行为一致） */
-export const FeedbackSummary: React.FC<{ maxRecent?: number }> = ({ maxRecent }) => {
+export const FeedbackSummary: React.FC = () => {
   const { token } = theme.useToken();
   const [stats, setStats] = useState<ChatFeedbackStats | null>(null);
   const [loading, setLoading] = useState(false);
@@ -86,6 +126,10 @@ export const FeedbackSummary: React.FC<{ maxRecent?: number }> = ({ maxRecent })
     };
   }, []);
 
+  // 列表条数按卡片剩余高度算：填满且不滚动（见 useVisibleCount）。
+  // 必须在下面的早退 return **之前**调用，否则违反 hooks 规则
+  const list = useVisibleCount<HTMLDivElement>(28);
+
   if (loading) return <Skeleton active paragraph={{ rows: 3 }} />;
   if (error || !stats) {
     return (
@@ -95,9 +139,9 @@ export const FeedbackSummary: React.FC<{ maxRecent?: number }> = ({ maxRecent })
     );
   }
   const rate = stats.total > 0 ? Math.round((stats.up / stats.total) * 100) : 0;
-  const recent = maxRecent ? stats.recent.slice(0, maxRecent) : stats.recent;
+  const recent = stats.recent.slice(0, list.count);
   return (
-    <div>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <Space size={24} wrap>
         <div>
           <Text type="secondary" style={{ fontSize: 12 }}>总反馈</Text>
@@ -118,12 +162,16 @@ export const FeedbackSummary: React.FC<{ maxRecent?: number }> = ({ maxRecent })
           </div>
         </div>
       </Space>
-      {recent.length > 0 && (
-        <div style={{ marginTop: 12 }}>
+      {stats.recent.length > 0 && (
+        <div style={{
+          marginTop: 12, flex: 1, minHeight: 0,
+          display: 'flex', flexDirection: 'column',
+        }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            最近反馈{maxRecent ? `（最新 ${maxRecent} 条）` : ''}
+            最近反馈（最新 {recent.length} 条）
           </Text>
-          {recent.map(r => (
+          <div ref={list.ref} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            {recent.map(r => (
             <div
               key={r.id}
               style={{
@@ -144,8 +192,14 @@ export const FeedbackSummary: React.FC<{ maxRecent?: number }> = ({ maxRecent })
               <Text type="secondary" style={{ marginLeft: 8, fontSize: 11 }}>
                 {r.created_at}
               </Text>
-            </div>
-          ))}
+              </div>
+            ))}
+          </div>
+          {stats.recent.length > recent.length ? (
+            <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
+              共 {stats.recent.length} 条反馈，其余见详情页
+            </Text>
+          ) : null}
         </div>
       )}
       {stats.total === 0 && (

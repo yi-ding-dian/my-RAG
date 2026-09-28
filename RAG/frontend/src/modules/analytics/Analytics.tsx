@@ -18,7 +18,7 @@ import {
   KnowledgeBase, RetrievalQuality, Stats, RagasStatus,
 } from '../../shared/api/client';
 import PageLayout from '../../shared/components/layout/PageLayout';
-import { FeedbackSummary, statusOf } from './analytics-shared';
+import { FeedbackSummary, statusOf, useVisibleCount } from './analytics-shared';
 
 const { Text } = Typography;
 
@@ -37,6 +37,12 @@ const AnalyticsPage: React.FC = () => {
   const [kbId, setKbId] = useState<string | undefined>(undefined);
   const [quality, setQuality] = useState<RetrievalQuality | null>(null);
   const [qLoading, setQLoading] = useState(false);
+
+  // 三张摘要卡的列表条数：按各自列表容器的剩余高度算，**填满卡片且不产生滚动条**，
+  // 放不下的由末尾「共 N 条，其余见详情」兜底。行高为实测估算值，可微调。
+  // （用户反馈卡的那份在 FeedbackSummary 组件内部，它自己算）
+  const qualityList = useVisibleCount<HTMLDivElement>(30);
+  const ragasList = useVisibleCount<HTMLDivElement>(52);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -130,7 +136,12 @@ const AnalyticsPage: React.FC = () => {
         </Space>
       }
     >
-      <div style={{ flex: 1, minHeight: 0 }}>{children}</div>
+      {/* 内容区必须是 flex 容器：children 里的列表要 flex:1 撑满"剩余高度"。
+          否则列表高度取决于自身内容，而内容条数又取决于列表高度——互相依赖，
+          条数永远卡在初值上（实测过：一直显示 5 条不增长） */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {children}
+      </div>
       <div
         style={{
           paddingTop: 10, marginTop: 12, flexShrink: 0,
@@ -159,7 +170,7 @@ const AnalyticsPage: React.FC = () => {
       { label: '文档命中', value: quality ? quality.hit_docs.length : null },
       { label: '零命中文档', value: quality ? quality.zero_hit_docs.length : null },
     ];
-    const top5 = quality?.hit_docs.slice(0, 5) || [];
+    const topDocs = (quality?.hit_docs || []).slice(0, qualityList.count);
     return summaryCard('检索质量（近 30 天）', '/analytics/quality', (
       <>
         {/* 知识库选择（点击不冒泡触发整卡跳转） */}
@@ -192,29 +203,31 @@ const AnalyticsPage: React.FC = () => {
                 </div>
               ))}
             </div>
-            {/* 命中 Top5（近 30 天） */}
-            <Text type="secondary" style={{ fontSize: 12 }}>命中 Top 5</Text>
-            {top5.map((d, i) => (
-              <div
-                key={d.doc_id}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '3px 0', fontSize: 13,
-                }}
-              >
-                <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>{i + 1}</Text>
-                <Tooltip title={d.doc_name}>
-                  <span style={{
-                    flex: 1, minWidth: 0, overflow: 'hidden',
-                    textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>
-                    {d.doc_name}
-                  </span>
-                </Tooltip>
-                <Tag color="blue" style={{ marginRight: 0 }}>{d.hits} 次</Tag>
-              </div>
-            ))}
-            {quality.hit_docs.length > 5 ? (
+            {/* 命中 Top N（近 30 天）：N 由卡片剩余高度决定——填满卡片且不加滚动条 */}
+            <Text type="secondary" style={{ fontSize: 12 }}>命中 Top {topDocs.length}</Text>
+            <div ref={qualityList.ref} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              {topDocs.map((d, i) => (
+                <div
+                  key={d.doc_id}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '3px 0', fontSize: 13,
+                  }}
+                >
+                  <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>{i + 1}</Text>
+                  <Tooltip title={d.doc_name}>
+                    <span style={{
+                      flex: 1, minWidth: 0, overflow: 'hidden',
+                      textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {d.doc_name}
+                    </span>
+                  </Tooltip>
+                  <Tag color="blue" style={{ marginRight: 0 }}>{d.hits} 次</Tag>
+                </div>
+              ))}
+            </div>
+            {quality.hit_docs.length > topDocs.length ? (
               <Text type="secondary" style={{ fontSize: 11 }}>
                 共 {quality.hit_docs.length} 篇文档被命中，其余见详情页
               </Text>
@@ -235,7 +248,8 @@ const AnalyticsPage: React.FC = () => {
 
   // ---------- RAGAS 摘要卡：最近 5 条评测任务 ----------
   const renderRagasCard = () => {
-    const recent = (ragas?.tasks || []).slice(0, 5);
+    // 条数按卡片剩余高度算：填满且不滚动（见 useVisibleCount）
+    const recent = (ragas?.tasks || []).slice(0, ragasList.count);
     const total = ragas?.tasks?.length || 0;
     const running = (ragas?.tasks || []).some(t =>
       t.status === 'queued' || t.status === 'pending' || t.status === 'running');
@@ -254,7 +268,8 @@ const AnalyticsPage: React.FC = () => {
           <Text type="secondary" style={{ fontSize: 12 }}>暂无评估任务，可进入详情页发起评测</Text>
         ) : (
           <>
-            {recent.map(t => (
+            <div ref={ragasList.ref} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              {recent.map(t => (
               <div
                 key={t.id}
                 style={{
@@ -283,7 +298,8 @@ const AnalyticsPage: React.FC = () => {
                 </Text>
               </div>
             ))}
-            {total > 5 ? (
+            </div>
+            {total > recent.length ? (
               <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 6 }}>
                 共 {total} 个评测任务，其余见详情页
               </Text>
@@ -297,7 +313,7 @@ const AnalyticsPage: React.FC = () => {
   // ---------- 用户反馈摘要卡 ----------
   const renderFeedbackCard = () => (
     summaryCard('用户反馈', '/analytics/feedback', (
-      <FeedbackSummary maxRecent={5} />
+      <FeedbackSummary />
     ))
   );
 
