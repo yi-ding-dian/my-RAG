@@ -77,7 +77,8 @@ class ParentChildChunker:
                  parent_chunk_size: int = 1024, parent_chunk_overlap: int = 100,
                  parent_split_level: int = 2,
                  heading_systems: List[str] | None = None,
-                 heading_end_punct_whitelist: List[str] | None = None):
+                 heading_end_punct_whitelist: List[str] | None = None,
+                 trusted: bool = False):
         self._child_splitter = RecursiveChunker(chunk_size=chunk_size,
                                                 overlap=overlap)
         # 兜底切分器：仅超长单节（>50_000 字符）按 parent_chunk_size 二次切分时用
@@ -90,6 +91,8 @@ class ParentChildChunker:
         self.heading_systems = heading_systems or []
         # 标题末尾标点白名单（本文档覆盖全局；None = 用全局配置，见 common）
         self.heading_end_punct_whitelist = heading_end_punct_whitelist
+        # 标题信任模式（docx_struct 产物只认 `#`；见 chunking.trusted_headings）
+        self.trusted = trusted
         # 子块边界层级：
         # - 有编号体系（级别已归一化为文档内相对层级 1=章/2=节/3=小节…）：
         #   子块比父块深一级（父 2 级聚合章 → 子切到 3 级节段粒度）
@@ -118,7 +121,8 @@ class ParentChildChunker:
         # heading_systems 提供时按编号推断级别（MinerU 全 ## 扁平输出恢复层级）
         headings = [(off, lvl) for off, lvl, _ in
                     _iter_headings(text, protected, self.heading_systems,
-                                   self.heading_end_punct_whitelist)]
+                                   self.heading_end_punct_whitelist,
+                                   trusted=self.trusted)]
         self._protected_ranges = protected
         self._child_splitter.protected_ranges = protected
         self._fallback_splitter.protected_ranges = protected

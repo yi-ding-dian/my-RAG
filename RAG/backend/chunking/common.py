@@ -227,8 +227,19 @@ def _iter_headings(text: str,
                    protected: List[Tuple[int, int]] | None = None,
                    heading_systems: List[str] | None = None,
                    end_punct_whitelist: List[str] | None = None,
+                   trusted: bool = False,
                    ) -> List[Tuple[int, int, str]]:
     """统一标题识别（title 切块）：ATX # 标题 + 纯文本常见标题样式
+
+    **trusted=True（信任模式）**：只认 ATX `#` 标题，**跳过下面全部启发式
+    规则**。用于 `parser_engine=docx_struct` 的产物——它直读 OOXML，真标题
+    由 Word 的 outlineLvl 确定为 `#` 输出，**这是确定信息，不该再猜**。
+    不关掉启发式的后果（实测事故）：一份 495 个真标题的 docx，正文里有 50 处
+    排版时加了粗的普通段落（Word 里 style=Normal、outlineLvl=None），被
+    「整行加粗式」猜成标题——切块详情/文档预览的「目录」里因此塞满
+    "注：其他内容默认即可"这类正文行，545 个标题里 50 个是假的。
+    MinerU/DeepDOC/plain 的产物仍走 trusted=False（它们输出质量不稳，标题
+    可能退化成加粗/裸编号，需要启发式兜底）。
 
     返回 [(标题行起始偏移, 级别, 标题文本)]，按位置升序。级别映射
     （供 split_level 过滤，'识别 <=N 级标题' 语义与 # 标题统一）：
@@ -244,6 +255,7 @@ def _iter_headings(text: str,
       句末标点/逗号）→ 级别 2。常见于 MinerU 未经 PDF 转换直接解析 Office
       文档的产物、以及 Word 里手动加粗排版的标题；提供编号体系时级别按
       编号推断（见 _unwrap_bold_heading）
+    - 纯文本编号标题（提供 heading_systems 时）：MinerU 漏标 `#` 的裸编号行
 
     heading_systems（可选，编号体系名列表如 ["chapter_body","numeric_multi"]）：
     提供时，ATX 标题的级别**优先按标题文本的编号推断**（并列拼接长表位置 + 1，
@@ -289,6 +301,11 @@ def _iter_headings(text: str,
             level = len(m.group(1))
             if heading_systems:
                 sys_pos = _match_system_position(title, heading_systems)
+        elif trusted:
+            # 信任模式：非 `#` 开头的行一律不是标题（见 docstring）。
+            # 这里必须 continue 而不是走下面的启发式——docx_struct 产物里
+            # 加粗的普通段落、独立短行都是**正文排版**，猜出来的全是假标题
+            continue
         else:
             inner = _unwrap_wrapped_heading(line)
             if inner is not None:
@@ -551,7 +568,8 @@ def _filter_continuous_headings(text: str, bounds: List[int],
 
 def add_heading_paths(chunks: List["Chunk"], text: str,
                       heading_systems: List[str] | None = None,
-                      end_punct_whitelist: List[str] | None = None
+                      end_punct_whitelist: List[str] | None = None,
+                      trusted: bool = False
                       ) -> List["Chunk"]:
     """切块后处理：为块拼接其标题链（enable_heading_in_content）
 
@@ -572,7 +590,7 @@ def add_heading_paths(chunks: List["Chunk"], text: str,
     #    表格/代码块保护区间内的 # 行是内容不是标题，不参与标题链
     protected = find_protected_ranges(text)
     headings = _iter_headings(text, protected, heading_systems,
-                              end_punct_whitelist)
+                              end_punct_whitelist, trusted=trusted)
     chains: List[Tuple[int, List[str]]] = []  # (标题行偏移, 链标题列表)
     stack: List[Tuple[int, str]] = []         # (level, 标题文本)
     for off, level, title in headings:

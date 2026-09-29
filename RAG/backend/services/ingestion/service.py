@@ -79,7 +79,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from backend.chunking import (Chunk, QaStats, add_heading_paths,
                               analyze_qa_format, detect_heading_systems,
                               get_chunker, is_qa_format_valid, order_systems,
-                              ParentChildChunkResult)
+                              trusted_headings, ParentChildChunkResult)
 from backend.chunking.common import _iter_headings
 from backend.config import get_active_config
 from backend.services.agentic_chunker import (AgenticChunkError,
@@ -760,6 +760,7 @@ class IngestionService(_TraceMixin, _ImageMixin):
             chapter_level=parser_config.get("chapter_level") or 1,
             heading_levels=heading_levels,
             heading_systems=parser_config.get("heading_systems"),
+            trusted=trusted_headings(parser_config),
         )
 
     async def _resolve_heading_levels(self, doc, doc_id: str, parser_id: str,
@@ -962,9 +963,14 @@ class IngestionService(_TraceMixin, _ImageMixin):
         # 出现重复的祖先链前缀
         if (parser_config.get("enable_heading_in_content")
                 and parser_id != "hierarchical"):
-            chunk_objects = add_heading_paths(chunk_objects, text, systems)
+            # trusted 与切块同源（docx_struct 产物只认 `#` 标题）——口径不一致时
+            # 块的"所属章节"会和目录树对不上
+            trusted = trusted_headings(parser_config)
+            chunk_objects = add_heading_paths(chunk_objects, text, systems,
+                                              trusted=trusted)
             if parent_chunks:
-                parent_chunks = add_heading_paths(parent_chunks, text, systems)
+                parent_chunks = add_heading_paths(parent_chunks, text, systems,
+                                                  trusted=trusted)
 
         return _IngestChunkStage(
             chunk_objects=chunk_objects, parent_chunks=parent_chunks,

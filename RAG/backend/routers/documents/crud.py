@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.chunking import Chunk
+from backend.chunking import Chunk, trusted_headings
 from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
@@ -846,13 +846,19 @@ async def get_docx_outline(kb_id: str, doc_id: str,
 
 
 def _build_parsed_headings(full_text: str,
-                           heading_systems: Optional[List[str]]) -> List[ParsedHeading]:
+                           heading_systems: Optional[List[str]],
+                           trusted: bool = False) -> List[ParsedHeading]:
     """解析产物标题列表（前端目录树用）
 
     识别口径与切块**同源**（backend.chunking.common._iter_headings）：ATX `#`
     标题 + 纯文本样式 + 编号体系推断，含 MinerU 漏标 `#` 的裸编号标题。
     前端不再自己抽一份——历史上后端与前端各有一套，导致"后端已识别的章标题
     在目录树里缺失"（MinerU 没输出 `##` 的裸编号章标题）。
+
+    trusted=True（docx_struct 产物）时只认 `#` 标题、关闭全部启发式：结构解析
+    的真标题由 Word outlineLvl 确定为 `#`，在其上再猜只会把加粗正文
+    （"注：其他内容默认即可"）算进目录。**必须与切块传同一个值**，否则同一份
+    文档会出现两套标题口径（目录项数与块数对不上）。
     """
     if not full_text:
         return []
@@ -860,7 +866,8 @@ def _build_parsed_headings(full_text: str,
     protected = find_protected_ranges(full_text)
     out: List[ParsedHeading] = []
     for start, level, title in _iter_headings(full_text, protected,
-                                              heading_systems):
+                                              heading_systems,
+                                              trusted=trusted):
         line_end = full_text.find("\n", start)
         if line_end < 0:
             line_end = len(full_text)
@@ -905,11 +912,13 @@ async def get_document(kb_id: str, doc_id: str,
         logger.warning("读取解析文本失败 %s: %s", doc_id, str(e)[:150])
     # 编号体系（入库时检测并写回 parser_config）：标题识别按它推断层级，
     # 与切块时的口径保持一致
-    heading_systems = (doc.parser_config or {}).get("heading_systems") or []
+    parser_config = doc.parser_config or {}
+    heading_systems = parser_config.get("heading_systems") or []
     return DocumentDetail(**doc.model_dump(mode="json"), chunks=chunks,
                           full_text=full_text,
-                          headings=_build_parsed_headings(full_text,
-                                                          heading_systems))
+                          headings=_build_parsed_headings(
+                              full_text, heading_systems,
+                              trusted=trusted_headings(parser_config)))
 
 
 @router.delete("/{doc_id}")

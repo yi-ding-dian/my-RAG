@@ -34,7 +34,8 @@ class MarkdownSplitter:
 
     def __init__(self, chunk_size: int | None = None, overlap: int | None = None,
                  split_level: int | None = None,
-                 heading_end_punct_whitelist: List[str] | None = None):
+                 heading_end_punct_whitelist: List[str] | None = None,
+                 trusted: bool = False):
         self._recursive = RecursiveChunker(chunk_size=chunk_size, overlap=overlap)
         level = split_level if split_level is not None else 3
         if not 1 <= level <= 6:
@@ -42,18 +43,21 @@ class MarkdownSplitter:
         self.split_level = level
         # 标题末尾标点白名单（本文档覆盖全局；None = 用全局配置，见 common）
         self.heading_end_punct_whitelist = heading_end_punct_whitelist
+        # 标题信任模式（docx_struct 产物只认 `#`；见 chunking.trusted_headings）
+        self.trusted = trusted
 
     @staticmethod
     def _heading_bounds(text: str, level: int,
                         protected: List[Tuple[int, int]],
                         heading_end_punct_whitelist: List[str] | None = None,
+                        trusted: bool = False,
                         ) -> List[int]:
         """level 级内标题切分边界（升序）：ATX # 与纯文本标题样式统一识别
         （setext 下划线式/单行包裹式/前导符号式，级别映射见 _iter_headings），
         过滤保护区内标题 + 连续标题不切"""
         bounds = [start for start, lvl, _ in
                   _iter_headings(text, protected, None,
-                                 heading_end_punct_whitelist)
+                                 heading_end_punct_whitelist, trusted=trusted)
                   if lvl <= level]
         bounds = _bounds_outside_protected(bounds, protected)
         return _filter_continuous_headings(text, bounds)
@@ -98,7 +102,8 @@ class MarkdownSplitter:
             protected_ranges=protected)
         level = self.split_level
         bounds = self._heading_bounds(text, level, protected,
-                                      self.heading_end_punct_whitelist)
+                                      self.heading_end_punct_whitelist,
+                                      trusted=self.trusted)
         parts = self._sections(text, bounds)
         # 标题智能回退：非空段仅 1 个且超长 → 放宽一级标题重切（直至多段
         # /6 级/无更低级标题——避免无标题长文的无谓循环）
@@ -107,7 +112,8 @@ class MarkdownSplitter:
                and len(nonempty[0][0]) > self._recursive.chunk_size):
             level += 1
             retry = self._heading_bounds(text, level, protected,
-                                         self.heading_end_punct_whitelist)
+                                         self.heading_end_punct_whitelist,
+                                         trusted=self.trusted)
             if len(retry) == len(bounds):
                 break  # 无更低级标题可切（或新增标题全部被连续标题过滤）
             bounds = retry

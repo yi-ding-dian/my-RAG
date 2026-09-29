@@ -30,6 +30,22 @@ from backend.chunking.recursive import RecursiveChunker
 from backend.chunking.regex_chunker import RegexChunker
 
 
+def trusted_headings(config: dict) -> bool:
+    """是否启用标题「信任模式」：结构解析产物只认 `#` 标题
+
+    docx_struct 直读 OOXML，真标题由 Word 的 outlineLvl 确定为 `#` 输出——
+    这是**确定信息**，在其上再跑启发式只会把加粗正文猜成标题（实测某文档
+    495 个真标题之外多出 50 个 `**注：其他内容默认即可**` 这类假标题，
+    切块详情/文档预览的「目录」因此不可读）。
+    其余引擎（MinerU/DeepDOC/plain）产物质量不稳（标题可能退化成加粗、
+    裸编号），仍需启发式兜底，行为逐字节不变。
+
+    口径与 `_iter_headings(trusted=...)` 一致；切块 / 标题链 / 目录树三处
+    必须同源，否则块的"所属章节"会和目录对不上。
+    """
+    return (config.get("parser_engine") or "").strip().lower() == "docx_struct"
+
+
 def get_chunker(method: str, config: dict) -> Chunker:
     """切块器工厂：按 method 构造，config 为入库参数
 
@@ -52,6 +68,7 @@ def get_chunker(method: str, config: dict) -> Chunker:
             overlap=config.get("overlap"),
             split_level=config.get("split_level"),
             heading_end_punct_whitelist=config.get("heading_end_punct_whitelist"),
+            trusted=trusted_headings(config),
         )
     if method == "regex":
         return RegexChunker(
@@ -68,6 +85,7 @@ def get_chunker(method: str, config: dict) -> Chunker:
             parent_split_level=config.get("parent_split_level"),
             heading_systems=config.get("heading_systems"),
             heading_end_punct_whitelist=config.get("heading_end_punct_whitelist"),
+            trusted=trusted_headings(config),
         )
     if method == "qa":
         return QaChunker(
@@ -84,6 +102,7 @@ def get_chunker(method: str, config: dict) -> Chunker:
             chapter_level=config.get("chapter_level") or 1,
             heading_systems=config.get("heading_systems"),
             heading_end_punct_whitelist=config.get("heading_end_punct_whitelist"),
+            trusted=trusted_headings(config),
         )
     raise ValueError(f"未知切块方式: {method}（支持: {'/'.join(VALID_METHODS)}）")
 
