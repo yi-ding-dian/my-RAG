@@ -3,6 +3,8 @@
 - GET /api/files/images/{doc_id}/{name}  解析图片鉴权代理
 - GET /api/files/avatars/{user_id}      用户头像鉴权代理（登录即可；
                                         无头像/用户不存在/文件缺失 → 404 伪装）
+- GET /api/files/chat-images/{user_id}/{name}  聊天图片鉴权代理（仅本人或超管；
+                                        个人会话内容，口径对齐会话详情可见性）
 
 背景：MinerU 解析出的图片存对象存储（MinIO/local），不直接暴露预签名 URL
 （7 天过期 + 公开桶违背部门隔离）。前端统一经此端点加载：校验登录 +
@@ -125,4 +127,41 @@ async def get_avatar(user_id: str,
         logger.warning("头像读取失败 %s: %s", key, str(e)[:150])
         raise HTTPException(status_code=404, detail="头像不存在")
     content_type = mimetypes.guess_type(Path(key).name)[0] or "image/*"
+    return Response(content=data, media_type=content_type)
+
+
+# 聊天图片路径段白名单（防路径穿越）：chat_images/{user_id}/{image_id}.{ext}
+_CHAT_IMAGE_SEG_RE = re.compile(r"^[\w-]{1,64}$")
+
+
+@router.get("/chat-images/{user_id}/{name}")
+async def get_chat_image(user_id: str, name: str,
+                         db: AsyncSession = Depends(get_db),
+                         user: UserPublic = Depends(
+                             get_current_user_query_or_header)):
+    """聊天图片代理：**仅本人或超管**可读（其余 404 伪装）
+
+    与文档图片（按知识库权限）不同，聊天图片属**个人会话内容**，可见性口径
+    与"能否看到那个会话"对齐：会话详情只对 owner 与 super_admin 开放
+    （见 routers/chat._check_session_owner），这里用同一口径，避免出现
+    "看不到别人的会话、却能看到会话里的图"。
+
+    - user_id / name 白名单校验（防路径穿越，同文档图片）
+    - 越权 → 404 伪装（不区分"没权限"与"不存在"，防存在性探测）
+    - 对象不存在 / 存储不可用 → 404
+    """
+    if (not _CHAT_IMAGE_SEG_RE.fullmatch(user_id or "")
+            or ".." in (name or "")
+            or not _IMAGE_NAME_RE.fullmatch(name or "")):
+        raise HTTPException(status_code=404, detail="图片不存在")
+    if user.role != "super_admin" and user.id != user_id:
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    key = f"chat_images/{user_id}/{name}"
+    try:
+        data = await get_storage_service().read_bytes(key)
+    except Exception as e:
+        logger.warning("聊天图片读取失败 %s: %s", key, str(e)[:150])
+        raise HTTPException(status_code=404, detail="图片不存在")
+    content_type = mimetypes.guess_type(name)[0] or "image/*"
     return Response(content=data, media_type=content_type)

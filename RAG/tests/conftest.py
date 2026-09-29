@@ -487,6 +487,93 @@ def mock_llm(monkeypatch):
     return factory
 
 
+# ==================== 离线 mock：聊天识图的视觉模型 ====================
+
+class FakeVisionClient:
+    """伪视觉客户端（非流式）：返回固定描述；mode=error 时抛异常
+
+    `chat_service.describe_images` 走 `llm_completion`（stream=False），
+    形态与 FakeLLMClient 的非流式分支一致。
+    """
+
+    def __init__(self, mode: str = "ok", desc: str = ""):
+        self.mode = mode
+        self.desc = desc or "图中显示设备型号 X200，屏幕提示 E-1042 通信超时。"
+        self.calls: list = []
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._create))
+
+    async def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.mode == "error":
+            raise RuntimeError("mock 视觉模型调用失败（测试构造）")
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=self.desc))])
+
+
+class _VisionMockState:
+    """fake_vision 的状态容器（工厂返回值，测试中可改）"""
+
+    def __init__(self):
+        self.unconfigured = False   # True → resolve_config 返回 None（未配置模型）
+        self.available = True       # False → 探活失败
+        self.desc_error = False     # True → 探活通过但读图失败（发送时兜底路径）
+        self.desc = ""
+        self.clients: list = []     # 注入过的伪客户端（断言调用次数/参数）
+
+
+@pytest.fixture()
+def fake_vision(monkeypatch):
+    """离线伪视觉链路：配置解析 + 探活 + 读图全部替换，**不碰 192.168.0.11**
+
+    用法（工厂调用即设参，返回值可在测试中继续改）：
+        st = fake_vision()                # 可用，返回固定描述
+        fake_vision(unconfigured=True)    # 未配置视觉模型（resolve_config→None）
+        fake_vision(available=False)      # 探活失败（/vision-status 报不可用）
+        fake_vision(desc_error=True)      # 探活通过但读图失败（走发送时兜底）
+        st.desc = "自定义描述文本"         # 改描述内容
+        st.clients[0].calls[0]            # 断言实际发给 VLM 的 messages
+    """
+    from backend.config import VisionModelConfig
+    from backend.services import chat_service, image_summary
+
+    state = _VisionMockState()
+
+    def _factory(unconfigured=False, available=True, desc_error=False,
+                 desc=""):
+        state.unconfigured = unconfigured
+        state.available = available
+        state.desc_error = desc_error
+        state.desc = desc
+        return state
+
+    async def _resolve_config(db, dept_id):
+        if state.unconfigured:
+            return None
+        return {
+            "model": VisionModelConfig(
+                name="fake-vl", base_url="http://fake-vl/v1",
+                api_key="k", model="fake-vl", timeout=30.0),
+            "summary": None,
+        }
+
+    async def _probe_model(model_cfg):
+        return "" if state.available else "连接失败"
+
+    def _get_llm_client(llm_cfg=None, timeout=None):
+        inst = FakeVisionClient(
+            mode="error" if state.desc_error else "ok", desc=state.desc)
+        state.clients.append(inst)
+        return inst
+
+    monkeypatch.setattr(image_summary, "resolve_config", _resolve_config)
+    monkeypatch.setattr(image_summary, "probe_model", _probe_model)
+    # describe_images 用的是本模块级导入的 get_llm_client（引用复制），
+    # 只 patch backend.services.llm_client 不会生效，必须打在 chat_service 上
+    monkeypatch.setattr(chat_service, "get_llm_client", _get_llm_client)
+    return _factory
+
+
 # ==================== 业务辅助函数 ====================
 
 def create_kb(client, name="测试知识库", description="单测知识库",

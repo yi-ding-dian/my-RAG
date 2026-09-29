@@ -199,7 +199,7 @@ class TestCoerceBehavior:
         }
         # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + system_prompt_ref=""
         # + kg_enhance=True + thinking_mode="disabled" + query_rewrite=True
-        # + query_rewrite_rounds=3（历史契约：不补全段）
+        # + query_rewrite_rounds=3 + 聊天识图四项（历史契约：不补全段）
         assert out["chat"] == {"system_prompt": "",
                                "system_prompt_ref": "",
                                "kg_enhance": build_default_config().chat.kg_enhance,
@@ -210,7 +210,12 @@ class TestCoerceBehavior:
                                    build_default_config().chat.citation_snippet_chars,
                                "prompt_total_max_tokens":
                                    build_default_config().chat.prompt_total_max_tokens,
-                               "max_query_len": 2000}
+                               "max_query_len": 2000,
+                               # 聊天识图（默认开：发图识图 + 参与检索）
+                               "image_enabled": True,
+                               "image_max_count": 3,
+                               "image_max_mb": 5.0,
+                               "image_desc_max_chars": 800}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()
         assert out["mysql"] == {

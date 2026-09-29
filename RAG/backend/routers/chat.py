@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from pathlib import Path
 from typing import List, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import (APIRouter, Depends, File, HTTPException, Query, Request,
+                     UploadFile)
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,12 +30,13 @@ from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
 from backend.models.rag_models import (BatchDeleteSessionRequest,
                                        ChatHistoryItem, ChatRequest,
-                                       FeedbackRequest,
+                                       ChatSession, FeedbackRequest,
                                        RenameSessionRequest, RetrieveRequest,
                                        RetrieveResponse)
 from backend.models.user_models import UserPublic
-from backend.services import audit_service, department_service
-from backend.services.chat_service import get_chat_service, sse_event
+from backend.services import audit_service, department_service, image_summary
+from backend.services.chat_service import (delete_session_images,
+                                           get_chat_service, sse_event)
 from backend.services.feedback_service import (create_feedback,
                                                get_feedback_msg_idxs,
                                                get_feedback_msg_idxs_bulk)
@@ -40,6 +44,7 @@ from backend.services.knowledge_graph_service import (build_kg_source,
                                                       extract_query_entities,
                                                       has_any_graph)
 from backend.services.retrieval_service import get_retrieval_service
+from backend.services.storage_service import get_storage_service
 from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
@@ -72,7 +77,9 @@ async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
     for kid in kb_ids:
         await kb_or_404(db, kid, user)
     question = (body.query or body.message or "").strip()
-    if not question:
+    # 只发图不写文字是合法用法（"这张图怎么了"）——由 service 层补一句
+    # 中性提问词，这里只要求"图和文字至少有一个"
+    if not question and not body.images:
         raise HTTPException(status_code=422, detail="query 与 message 均缺失")
     max_len = get_active_config().chat.max_query_len
     if len(question) > max_len:
@@ -96,12 +103,31 @@ async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
         dept_config = await department_service.get_department_config(
             db, user.department_id) or None
 
+    # 聊天识图：张数与开关校验（**格式/大小已在 upload-image 拦过**，这里
+    # 只管本轮张数——前端也拦，但前端可绕过）
+    images = list(body.images or [])
+    vision_model = None
+    if images:
+        cfg_chat = get_active_config().chat
+        if not cfg_chat.image_enabled:
+            raise HTTPException(status_code=403, detail="聊天识图功能已关闭")
+        if len(images) > int(cfg_chat.image_max_count):
+            raise HTTPException(
+                status_code=400,
+                detail=f"单次最多发送 {cfg_chat.image_max_count} 张图片")
+        # 视觉模型在**路由层**解析后传下去：部门配置解析需要 db 会话，这里
+        # 正好有。解析不到 → 传 None，由 stream_chat 下发 vision_error 明确
+        # 告知"无法识图"（而不是静默忽略图片，让用户以为模型看过了）
+        resolved = await image_summary.resolve_config(db, user.department_id)
+        vision_model = resolved["model"] if resolved else None
+
     async def event_generator():
         try:
             async for ev in chat_svc.stream_chat(
                     kb_ids, question, body.session_id,
                     user_id=user.id, top_k=body.top_k,
-                    dept_config=dept_config):
+                    dept_config=dept_config,
+                    images=images, vision_model=vision_model):
                 yield ev
         except Exception as e:
             # 兜底异常：细节仅进日志（logger.exception 已有），
@@ -186,6 +212,104 @@ async def retrieve(body: RetrieveRequest, db: AsyncSession = Depends(get_db),
         raise HTTPException(status_code=500, detail=f"检索失败: {e}")
 
 
+# ========== 聊天识图（发图 → 视觉模型读图 → 描述参与检索与回答） ==========
+# 链路的完整设计见 services/chat_service._describe_images 的模块注释。
+
+# 允许的图片扩展名（与 image_summary._guess_mime 支持的集合一致）
+_CHAT_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+# Content-Type → 扩展名（粘贴的图常没有文件名，用它反查）
+_EXT_BY_MIME = {"image/png": ".png", "image/jpeg": ".jpg",
+                "image/webp": ".webp", "image/gif": ".gif",
+                "image/bmp": ".bmp"}
+
+
+def _chat_image_ext(file: UploadFile) -> str:
+    """推断扩展名：文件名优先（须在白名单内），否则按 Content-Type 反查
+
+    返回空串 = 两者都不认（调用方按"不支持的图片格式"拒绝）。**必须留
+    content_type 这条路**：Ctrl+V 粘贴和拖拽过来的图常常没有文件名
+    （file.filename 为空），只认文件名会把最常见的两种操作误判成非法格式。
+    """
+    ext = Path((file.filename or "").strip()).suffix.lower()
+    if ext in _CHAT_IMAGE_EXTS:
+        return ext
+    return _EXT_BY_MIME.get((file.content_type or "").lower(), "")
+
+
+@router.post("/upload-image")
+async def upload_image(file: UploadFile = File(...),
+                       user: UserPublic = Depends(get_current_user)):
+    """上传聊天图片 → 对象存储，返回 {key, name}（消息里只存 key）
+
+    **为什么不让前端把 base64 直接塞进 /stream 请求体**：会话落盘在
+    data/chat/*.json，一张 2MB 的图 base64 后约 2.7MB，聊十轮这个会话文件
+    就 27MB——历史列表与会话详情加载会卡死，磁盘也会被撑爆。存 key 则每条
+    消息只多几十字节，前端渲染时再经 /api/files/chat-images 取图。
+
+    校验（与前端同款，但后端必须再挡一次——前端可绕过）：
+    - 功能开关 chat.image_enabled 关闭 → 403
+    - 扩展名不在白名单 → 400
+    - 大小 > chat.image_max_mb → 400
+    """
+    cfg = get_active_config().chat
+    if not cfg.image_enabled:
+        raise HTTPException(status_code=403, detail="聊天识图功能已关闭")
+
+    ext = _chat_image_ext(file)
+    if not ext:
+        raise HTTPException(
+            status_code=400,
+            detail="不支持的图片格式（支持 png/jpg/webp/gif/bmp）")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+    max_bytes = int(float(cfg.image_max_mb) * 1024 * 1024)
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=400,
+                            detail=f"图片过大（超过 {cfg.image_max_mb:g}MB）")
+
+    image_id = uuid.uuid4().hex
+    key = f"chat_images/{user.id}/{image_id}{ext}"
+    try:
+        await get_storage_service().upload_bytes(key, data)
+    except Exception as e:
+        log.system_error("聊天图片上传失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="图片上传失败，请稍后重试")
+    return {"key": key, "name": (file.filename or f"{image_id}{ext}")[:200]}
+
+
+@router.get("/vision-status")
+async def vision_status(db: AsyncSession = Depends(get_db),
+                        user: UserPublic = Depends(get_current_user)):
+    """视觉模型可用性探活（前端选图后立刻调，提前告知"识图用不了"）
+
+    返回 {enabled, available, reason, max_count, max_mb}：
+    - enabled=False（总开关关）→ 前端不显示图片入口
+    - available=False → 图片上盖红条 + 禁用发送，reason 直接作提示文案
+    - max_count / max_mb：随探活一并下发，前端好做同款拦截（否则前端得再
+      拉一次配置接口，或把限制硬编码在页面里——两处都要跟着改）
+
+    **探活只证明服务活着，不证明模型真能读图**（模型被卸载但 vLLM 进程还在
+    时 /models 仍返回 200）。真正确认靠发送时的实际调用——失败会下发
+    vision_error 事件，前端提示同一句话，两层口径一致。
+    """
+    from backend.services import image_summary
+
+    cfg = get_active_config().chat
+    limits = {"max_count": int(cfg.image_max_count),
+              "max_mb": float(cfg.image_max_mb)}
+    if not cfg.image_enabled:
+        return {"enabled": False, "available": False, "reason": "", **limits}
+    resolved = await image_summary.resolve_config(db, user.department_id)
+    if resolved is None:
+        return {"enabled": True, "available": False,
+                "reason": "图片解析模型未配置，请联系系统管理员", **limits}
+    reason = await image_summary.probe_model(resolved["model"])
+    return {"enabled": True, "available": not reason, "reason": reason,
+            **limits}
+
+
 @router.get("/history", response_model=List[ChatHistoryItem])
 async def list_history(kb_id: Optional[str] = None,
                        db: AsyncSession = Depends(get_db),
@@ -244,6 +368,8 @@ async def delete_history(request: Request, session_id: str,
     ok = get_chat_service().delete_session(session_id, keep_msg_idxs=keep_idxs)
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
+    # 清理会话图片（对象存储）：归档只留文本，而截图里可能带敏感信息
+    await delete_session_images(session)
     await audit_service.record_action(
         user, action="chat.delete", target_type="chat",
         target_id=session_id,
@@ -274,8 +400,11 @@ async def batch_delete_history(body: BatchDeleteSessionRequest, request: Request
     chat_svc = get_chat_service()
 
     # ① 读会话 + 校验归属（线程池）：筛出真正有权限删的
+    # 顺带把会话对象带回来——删除后要按其中的 images 清理对象存储里的图，
+    # 而删完再 get_session 已取不到（文件没了）
     def _pick_deletable():
         picked: List[str] = []
+        sessions: List[ChatSession] = []
         for sid in body.session_ids:
             session = chat_svc.get_session(sid)
             if not session:
@@ -284,9 +413,10 @@ async def batch_delete_history(body: BatchDeleteSessionRequest, request: Request
             if user.role != "super_admin" and session.user_id != user.id:
                 continue
             picked.append(sid)
-        return picked
+            sessions.append(session)
+        return picked, sessions
 
-    picked = await asyncio.to_thread(_pick_deletable)
+    picked, picked_sessions = await asyncio.to_thread(_pick_deletable)
     if not picked:
         return {"deleted": 0, "skipped": len(body.session_ids)}
 
@@ -295,19 +425,27 @@ async def batch_delete_history(body: BatchDeleteSessionRequest, request: Request
 
     # ③ 执行删除（线程池）
     def _do_delete():
-        done = 0
+        done_ids: List[str] = []
         for sid in picked:
             # 不在 keep_map 里 = 确认无反馈 → 空集（物理删除）；
             # 值为 None = 查询失败 → 归档完整会话（与单条删除同语义，宁可多留）
             keep = keep_map.get(sid, set())
             try:
                 if chat_svc.delete_session(sid, keep_msg_idxs=keep):
-                    done += 1
+                    done_ids.append(sid)
             except OSError as e:
                 logger.warning("批量删除会话 %s 失败: %s", sid, e)
-        return done
+        return done_ids
 
-    deleted = await asyncio.to_thread(_do_delete)
+    deleted_ids = await asyncio.to_thread(_do_delete)
+    deleted = len(deleted_ids)
+    # ④ 清理会话图片（对象存储）：**只清真正删掉的**——被跳过的（越权/
+    #    不存在/删失败）绝不能动，否则会连别人的图一起删了
+    if deleted_ids:
+        done_set = set(deleted_ids)
+        for session in picked_sessions:
+            if session.id in done_set:
+                await delete_session_images(session)
     if deleted:
         await audit_service.record_action(
             user, action="chat.delete", target_type="chat",

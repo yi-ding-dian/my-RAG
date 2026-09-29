@@ -18,9 +18,10 @@ import {
   PaperClipOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { avatarUrl, submitFeedback, type ChatMessage, type Source } from '../../../shared/api/client';
+import { avatarUrl, chatImageUrl, submitFeedback, type ChatMessage, type Source } from '../../../shared/api/client';
 import { useAuth } from '../../../shared/auth/AuthContext';
-import MdImages from '../../../shared/components/common/MdImages';
+import MdImages, { withImageToken } from '../../../shared/components/common/MdImages';
+import Lightbox from '../../../shared/components/common/Lightbox';
 import RequestDetailModal from '../../../shared/components/common/RequestDetailModal';
 import SourcePanel from './SourcePanel';
 import { buildSnippet, computeHighlightRanges, computeNumberRanges, splitByHighlights } from '../../../shared/utils/sourceHighlight';
@@ -296,8 +297,17 @@ const renderCitationContent = (
   return parts;
 };
 
-/** 回答正文图片最大宽度：气泡内自适应（窄屏 100%），大图不超过 480px */
-const ANSWER_IMAGE_MAX_WIDTH = 'min(480px, 100%)';
+/**
+ * 回答正文图片最大宽度：气泡内自适应（窄屏 100%），大图不超过 720px。
+ *
+ * 原为 480px，用户反馈「聊天里的图很模糊，引用溯源里就清晰」——原因是知识库
+ * 文档里的截图**通篇是文字**，压到 480px 后文字必然发虚；而引用溯源那边
+ * （ChunkCompareView 的 md 图片）不限宽、按原尺寸显示，所以清楚。
+ * 720px 与文档预览（DocumentPreviewModal）对齐：够看清正文，也不会撑破气泡
+ * （气泡自身还有 85% 宽上限，窄屏由 min(..., 100%) 兜底）。
+ * 要看得更细仍可**点击图片放大**（MdImages 内置 Lightbox）。
+ */
+const ANSWER_IMAGE_MAX_WIDTH = 'min(720px, 100%)';
 
 /**
  * 组合渲染管道：先按 [n] 引用标拆分文本（renderCitationContent），每个
@@ -479,6 +489,9 @@ const MessageItem: React.FC<MessageItemProps> = ({
   // 让用户看到字在动而不是干等；正文开始/生成结束后自动收起为一行）；
   // 用户点开/收起过就固定为用户的选择，不再被流式状态覆盖
   const [thinkOpenManual, setThinkOpenManual] = useState<boolean | null>(null);
+  // 聊天图片点击放大（null=关闭）：与 MdImages 同款方案（组件内 state，
+  // 无全局 Provider），仅用于用户自己发出去的图
+  const [zoom, setZoom] = useState<{ src: string; alt: string } | null>(null);
   const thinkingNow = !!(pending && !m.content && m.reasoning);
   const thinkOpen = thinkOpenManual ?? thinkingNow;
   return (
@@ -528,7 +541,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
             )}
           </div>
         )}
-        {m.content && (
+        {(m.content || (m.images?.length ?? 0) > 0) && (
           <div
             className={`${isUser ? 'bubble-user' : 'bubble-assistant'} ${streaming ? 'typing-cursor' : ''}`}
             style={{
@@ -537,7 +550,36 @@ const MessageItem: React.FC<MessageItemProps> = ({
               wordBreak: 'break-word',
             }}
           >
-            {renderContent(m.content, m.sources, onCitationClick, snippetChars, streaming)}
+            {/* 聊天图片：只发图不写字时气泡里只有图（此时 content 为空串，
+                所以上面渲染条件从 `m.content` 放宽为"有字或有图"） */}
+            {(m.images?.length ?? 0) > 0 && (
+              <div
+                style={{
+                  display: 'flex', gap: 6, flexWrap: 'wrap',
+                  marginBottom: m.content ? 8 : 0,
+                }}
+              >
+                {m.images!.map((key, i) => {
+                  const url = chatImageUrl(key);
+                  // key 不合法（旧数据/脏数据）→ 跳过，不渲染破图
+                  if (!url) return null;
+                  const src = withImageToken(url);
+                  return (
+                    <img
+                      key={`${key}-${i}`}
+                      src={src}
+                      alt="上传的图片"
+                      onClick={() => setZoom({ src, alt: '上传的图片' })}
+                      style={{
+                        maxWidth: 160, maxHeight: 160, borderRadius: 8,
+                        cursor: 'zoom-in', display: 'block',
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+            {m.content && renderContent(m.content, m.sources, onCitationClick, snippetChars, streaming)}
             {/* 用户点击停止后：尾部灰色小字标注（仅前端会话状态，不污染落盘内容） */}
             {!isUser && m.stopped && !streaming && (
               <div style={{ marginTop: 6, fontSize: 12, color: textTertiary }}>
@@ -602,6 +644,11 @@ const MessageItem: React.FC<MessageItemProps> = ({
       </div>
       {/* 用户头像在气泡右侧（与气泡同级 flex 项，顶部对齐） */}
       {isUser && <UserAvatar userId={userId} avatarKey={userAvatar} />}
+      {/* 点图放大：复用 MdImages 同一套 Lightbox。它是 fixed 全屏遮罩、
+          脱离文档流，放在这个 flex 容器里不影响头像/气泡的排布 */}
+      {zoom && (
+        <Lightbox src={zoom.src} alt={zoom.alt} onClose={() => setZoom(null)} />
+      )}
     </div>
   );
 };

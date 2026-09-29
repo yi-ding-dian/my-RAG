@@ -206,6 +206,15 @@ class ChatMessage(BaseModel):
     """聊天消息（用户/助手）"""
     role: str = Field(..., description="user/assistant")
     content: str = Field("", description="消息内容")
+    # ---- 聊天识图（仅 user 消息会带） ----
+    images: List[str] = Field(
+        default_factory=list,
+        description="该消息带的图片 key 列表（前端经 /api/files/chat-images "
+                    "加载渲染）。**只存 key 不存 base64**——会话落盘在 "
+                    "data/chat/*.json，存 base64 会让文件迅速膨胀到几十 MB")
+    image_desc: str = Field(
+        "", description="视觉模型对该消息图片生成的描述（已并入当轮检索词，"
+                        "落盘供历史回看与详情追溯；空=没发图或读图失败）")
     sources: List[Source] = Field(default_factory=list, description="该消息引用的来源快照")
     # Agentic 决策轨迹（改写查询/分档分数/尝试次数；默认关闭=空 dict）
     agentic: dict = Field(default_factory=dict,
@@ -286,6 +295,10 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="会话 ID（续聊时传）")
     top_k: Optional[int] = Field(
         None, description="检索条数（1~50；None=取配置 retrieval.top_k，页面选择器透传）")
+    images: List[str] = Field(
+        default_factory=list,
+        description="聊天图片的对象存储 key 列表（先经 /api/chat/upload-image "
+                    "上传拿 key；张数上限取 chat.image_max_count，超限 400）")
 
 
 class RenameSessionRequest(BaseModel):

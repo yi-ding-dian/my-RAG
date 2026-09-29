@@ -396,6 +396,19 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                                         "fill_missing": True,
                                         "range": (500, 200000)},
             "max_query_len": {"fill_missing": True, "range": (100, 20000)},
+            # 聊天识图（默认开）：总开关 + 图片数量/大小/描述长度上限。
+            # **不给部门覆盖**（无 whitelist）——图片大小与张数属资源约束，
+            # 统一由超管定；旧档案缺字段 coerce 时补默认（fill_missing）。
+            # condition 用 not_none 而非默认的 truthy：image_enabled=False 是
+            # 合法配置（用户主动关闭识图），truthy 会把它当"未设置"丢掉
+            "image_enabled": {"condition": "not_none", "fill_missing": True},
+            "image_max_count": {"condition": "not_none", "fill_missing": True,
+                                "range": (1, 20)},
+            "image_max_mb": {"condition": "not_none", "fill_missing": True,
+                             "range": (0.1, 50)},
+            "image_desc_max_chars": {"condition": "not_none",
+                                     "fill_missing": True,
+                                     "range": (100, 4000)},
             # 思考模式（聊天问答）：disabled=关闭思考（默认）| enabled_low/
             # enabled_high/enabled_max=开启并指定强度。部门可覆盖（whitelist），
             # 旧档案缺字段 coerce 时补默认（fill_missing）

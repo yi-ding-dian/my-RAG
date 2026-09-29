@@ -18,6 +18,7 @@ import {
   exportSession,
   getSession,
   getChatSettings,
+  getVisionStatus,
   listKbs,
   listSessions,
   renameSession,
@@ -989,8 +990,43 @@ const ChatPage: React.FC = () => {
     abortRef.current?.(); // 触发 AbortError → onError('已停止') → finishStreaming
   }, []);
 
+  /** 视觉模型可用性（null=还没探完）：进页面探一次，选图时据此禁用发送并提示 */
+  const [vision, setVision] = useState<{
+    enabled: boolean; available: boolean; reason: string;
+    max_count: number; max_mb: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getVisionStatus()
+      .then(v => { if (alive) setVision(v); })
+      .catch(() => {
+        // 探活请求本身失败（网络/后端异常）：按"识图不可用"处理——此时发图
+        // 也读不出结果，明确告知比让用户白等一次发送好
+        if (alive) {
+          setVision({ enabled: true, available: false, reason: '', max_count: 3, max_mb: 5 });
+        }
+      });
+    return () => { alive = false; };
+  }, []);
+
+  /**
+   * 视觉模型不可用（后端 vision_error）：撤掉刚推上去的两条占位消息并提示。
+   *
+   * 收尾动作与 handleStreamError 一致（都是"本轮没生成出东西"），但**出口
+   * 分开**：这不是"服务异常稍后重试"，而是"图看不了"——用户该做的是重新
+   * 选图、或删图改发纯文本。
+   */
+  const handleVisionError = useCallback((msg: string) => {
+    streamingRef.current = false;
+    setStreaming(false);
+    setStatusHint('');
+    setMessages(prev => prev.slice(0, -2));
+    message.error(msg);
+  }, [message]);
+
   const handleSend = useCallback(
-    (text: string) => {
+    (text: string, images: string[] = []) => {
       if (!kbIds.length) {
         message.warning('请先创建并选择一个知识库');
         return;
@@ -1000,7 +1036,7 @@ const ChatPage: React.FC = () => {
       setMessages(prev => [
         ...prev,
         // created_at 供消息列表渲染 HH:mm 时间戳（当前会话内即时可用）
-        { role: 'user', content: text, created_at: dayjs().format('YYYY-MM-DD HH:mm:ss') },
+        { role: 'user', content: text, images, created_at: dayjs().format('YYYY-MM-DD HH:mm:ss') },
         { role: 'assistant', content: '', created_at: dayjs().format('YYYY-MM-DD HH:mm:ss') },
       ]);
 
@@ -1015,6 +1051,8 @@ const ChatPage: React.FC = () => {
           // 草稿会话不传 session_id：后端据此新建会话，done 事件回来的真实 id 再写回
           session_id: activeSessionId === DRAFT_SESSION_ID ? undefined : activeSessionId,
           top_k: topK,
+          // 图片只传 key（选中时已上传完成），不传 base64——理由见 ChatInput 注释
+          images: images.length ? images : undefined,
         },
         {
           onMeta: handleMeta,
@@ -1024,11 +1062,12 @@ const ChatPage: React.FC = () => {
           onReasoning: handleReasoning,
           onDelta: handleDelta,
           onDone: handleDone,
+          onVisionError: handleVisionError,
           onError: handleStreamError,
         },
       );
     },
-    [kbIdsKey, activeSessionId, topK, handleMeta, handlePrompt, handleReasoning, handleDelta, handleDone, handleStreamError, message],
+    [kbIdsKey, activeSessionId, topK, handleMeta, handlePrompt, handleReasoning, handleDelta, handleDone, handleVisionError, handleStreamError, message],
   );
 
   // 组件卸载时中止未完成的流
@@ -1149,7 +1188,18 @@ const ChatPage: React.FC = () => {
             </div>
           )}
           <div style={{ paddingTop: 12, borderTop: `1px solid ${token.colorBorderSecondary}`, marginTop: 12 }}>
-            <ChatInput onSend={handleSend} onStop={handleStop} streaming={streaming} disabled={!kbIds.length} />
+            <ChatInput
+              onSend={handleSend}
+              onStop={handleStop}
+              streaming={streaming}
+              disabled={!kbIds.length}
+              imageEnabled={!!vision?.enabled}
+              maxImages={vision?.max_count ?? 3}
+              maxImageMb={vision?.max_mb ?? 5}
+              visionOk={vision ? vision.available : null}
+              visionReason={vision?.reason}
+              onError={msg => message.error(msg)}
+            />
           </div>
         </Card>
       </div>

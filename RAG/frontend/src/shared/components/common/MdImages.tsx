@@ -3,8 +3,13 @@ import { getToken } from '../../auth/token';
 import Lightbox from './Lightbox';
 import { splitByHighlights, type HighlightRange } from '../../utils/sourceHighlight';
 
-/** 图片代理前缀（与后端 /api/files/images/{doc_id}/{name} 一致） */
-const IMAGE_PROXY_PREFIX = '/api/files/images/';
+/**
+ * 文件代理前缀：文档图片（/api/files/images/{doc_id}/{name}）与聊天图片
+ * （/api/files/chat-images/{user_id}/{name}）共用同一套 ?token= 鉴权。
+ * 用更宽的 /api/files/ 而非逐端点列举——新增文件代理端点不必再回来改这里
+ * （ext-query 的图片走 /api/ext/{id}/images/，不以此前缀开头，不受影响）
+ */
+const IMAGE_PROXY_PREFIX = '/api/files/';
 
 /**
  * 图片代理 URL 追加鉴权 token：<img> 标签无法携带 Authorization header，

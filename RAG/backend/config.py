@@ -371,6 +371,18 @@ class ChatConfig(BaseModel):
     # extra_body 控制；本地 Qwen 思考模型 disabled 时注入空 <think> prefill
     # 跳过思考（LM Studio 忽略 extra_body）
     thinking_mode: str = "disabled"
+    # ---- 聊天识图（发送图片 → 视觉模型读图 → 描述参与检索与回答） ----
+    # 总开关：关闭后聊天界面不出现图片入口，后端也拒绝带图请求
+    image_enabled: bool = True
+    # 单次最多几张图：前端超限直接拦（不发请求），后端路由再校验一次
+    image_max_count: int = 3
+    # 单张图片大小上限（MB）：同上，前后端各校验一次
+    image_max_mb: float = 5.0
+    # 图片描述长度上限（字）：**一次生成、两处用**——同一段描述既并入检索
+    # 查询（B）又注入 messages（A）。限长是防长描述把检索词淹没（检索模型
+    # 对超长 query 效果会下降）；若实测发现"检索用的描述该短、回答用的该全"，
+    # 再拆成两份描述（多一次 VLM 调用，见 chat_service._describe_images）
+    image_desc_max_chars: int = 800
 
 
 class PromptItem(BaseModel):

@@ -403,6 +403,14 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   /**
+   * 该消息携带的聊天图片 key（仅 user 消息有；前端经 /api/files/chat-images
+   * 加载渲染）。后端**只存 key 不存 base64**——会话落盘在 data/chat/*.json，
+   * 塞 base64 会让单个会话文件迅速膨胀到几十 MB，历史列表加载直接卡死
+   */
+  images?: string[];
+  /** 视觉模型对该消息图片生成的描述（已并入当轮检索词；请求详情可回看） */
+  image_desc?: string;
+  /**
    * 模型思考内容（event:reasoning 累积）：**仅存在于前端流式期间的内存**，
    * 后端不落盘——刷新或切会话后即消失（历史消息无此字段）。
    * 展示规则见 MessageList：仅思考阶段（正文未开始）自动展开，可手动收起/展开
@@ -829,6 +837,12 @@ export interface StreamChatParams {
   query: string;
   session_id?: string;
   top_k?: number;
+  /**
+   * 聊天图片 key 列表（先经 uploadChatImage 上传拿到 key）。
+   * **传 key 不传 base64**：后端按 key 从对象存储取图，会话里也只落 key。
+   * 张数上限由后端 chat.image_max_count 决定（前端另有一道拦截）
+   */
+  images?: string[];
 }
 
 /** Agentic 决策进度阶段（SSE event:agentic_status，前端按阶段换提示文案） */
@@ -881,6 +895,13 @@ export interface StreamCallbacks {
     message_count: number;
     gen_params?: GenParams;
   }) => void;
+  /**
+   * 收到 event:vision_error：视觉模型不可用，本轮无法识图。
+   * 与 onError 分开——这不是"服务异常请稍后重试"，而是"图看不了"：用户该
+   * 做的是删掉图改发纯文本、或找管理员修配置。前端据此提示并**保留他的
+   * 输入**（不能像 onError 那样把消息清掉）
+   */
+  onVisionError?: (message: string) => void;
   /** 收到 event:error 或网络错误（用户主动停止时 message 为 '已停止'） */
   onError?: (message: string) => void;
 }

@@ -118,6 +118,17 @@ export function streamChat(params: StreamChatParams, callbacks: StreamCallbacks)
         });
         break;
       }
+      case 'vision_error': {
+        // 视觉模型不可用（未配置 / 服务不通 / 读图失败）：**与 error 分开**——
+        // 用户该做的是删掉图改发纯文本、或找管理员，不是"稍后重试"。
+        // 前端提示后要保留他已选好的图和输入的文字
+        const msg =
+          typeof data === 'string'
+            ? data
+            : ((data as { message?: string })?.message ?? '视觉模型当前无法使用，无法识图');
+        callbacks.onVisionError?.(msg);
+        break;
+      }
       case 'error': {
         const msg =
           typeof data === 'string' ? data : ((data as { message?: string })?.message ?? '生成出错');
@@ -216,6 +227,66 @@ export const retrieveChat = async (data: RetrieveChatParams, signal?: AbortSigna
     message: data.query,
   }, { signal });
   return { sources: Array.isArray(res.data) ? res.data : res.data.sources };
+};
+
+// ========== 聊天识图 API ==========
+
+/**
+ * 上传聊天图片 → 返回对象存储 key（把它塞进 StreamChatParams.images）。
+ *
+ * **为什么先上传再发 key，而不是 base64 直接进 /stream 请求体**：会话落盘在
+ * data/chat/*.json，一张 2MB 的图 base64 后约 2.7MB，聊十轮该会话文件就 27MB
+ * ——历史列表加载会卡死。存 key 则每条消息只多几十字节。
+ *
+ * 校验失败（格式不支持 / 超过 image_max_mb）后端返回 400，detail 是面向
+ * 用户的中文提示，调用方直接展示即可。
+ */
+export const uploadChatImage = async (
+  file: File,
+): Promise<{ key: string; name: string }> => {
+  const form = new FormData();
+  form.append('file', file);
+  // Content-Type 交给浏览器自己带（要含 multipart boundary，手写必然错）
+  const res = await api.post<{ key: string; name: string }>(
+    '/chat/upload-image', form, { headers: { 'Content-Type': undefined } },
+  );
+  return res.data;
+};
+
+/**
+ * 视觉模型可用性探活（选图后立刻调，提前告知"识图用不了"）。
+ *
+ * 探活只证明服务活着，**不证明模型真能读图**（模型被卸载但 vLLM 进程还在时
+ * /models 仍返回 200）——真正确认由发送时的 vision_error 事件兜底，两处
+ * 文案一致。enabled=false 表示管理员关闭了聊天识图，前端不显示图片入口。
+ */
+export const getVisionStatus = async (): Promise<{
+  enabled: boolean;
+  available: boolean;
+  reason: string;
+  /** 单次最多几张图（后端 chat.image_max_count，前端做同款拦截） */
+  max_count: number;
+  /** 单张大小上限 MB（后端 chat.image_max_mb） */
+  max_mb: number;
+}> => {
+  const res = await api.get<{
+    enabled: boolean; available: boolean; reason: string;
+    max_count: number; max_mb: number;
+  }>('/chat/vision-status');
+  return res.data;
+};
+
+/**
+ * 图片 key → 浏览器可加载的代理 URL（形如
+ * `chat_images/{user_id}/{name}` → `/api/files/chat-images/{user_id}/{name}`）。
+ *
+ * 渲染时还需经 withImageToken 追加 JWT（<img> 带不了 header）。key 不合法
+ * 时返回空串——调用方据此跳过渲染，不至于把脏数据直接拼进 src。
+ */
+export const chatImageUrl = (key: string): string => {
+  const parts = (key || '').split('/');
+  if (parts.length !== 3 || parts[0] !== 'chat_images') return '';
+  return `/api/files/chat-images/${parts[1]}/${parts[2]}`;
 };
 
 // ========== 会话历史 API ==========

@@ -17,8 +17,8 @@ import { renderTableBlocks } from './MarkdownTable';
 import { cleanAnswerText } from '../../utils/cleanMarkdown';
 import { isKgSource, scoreBadge } from '../../utils/sourceScore';
 
-/** 回答内图片最大宽度（与聊天页气泡一致） */
-const ANSWER_IMAGE_MAX_WIDTH = 'min(480px, 100%)';
+/** 回答内图片最大宽度（与聊天页气泡一致；720px 的理由见 MessageList 同名常量） */
+const ANSWER_IMAGE_MAX_WIDTH = 'min(720px, 100%)';
 
 /** 毫秒可读化：<1s 显示毫秒，≥1s 同时显示秒（"总耗时"展示用） */
 const formatMs = (ms: number): string =>

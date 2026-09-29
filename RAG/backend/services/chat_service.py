@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import threading
@@ -27,7 +28,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional, Tuple
 
 from openai import (APIConnectionError, APIStatusError, APITimeoutError,
                     AsyncOpenAI, RateLimitError)
@@ -36,7 +37,8 @@ from backend.config import (CHAT_DELETED_DIR, CHAT_DIR, LLMConfig,
                             get_active_config)
 from backend.models.rag_models import (ChatHistoryItem, ChatMessage,
                                        ChatSession, Source)
-from backend.services.llm_client import get_llm_client, llm_to_dict
+from backend.services.llm_client import (get_llm_client, llm_completion,
+                                         llm_to_dict)
 from backend.services.agentic_service import get_agentic_service
 from backend.services.query_rewriter import rewrite_query
 from backend.services.retrieval_service import (RetrievalUnavailableError,
@@ -45,6 +47,7 @@ from backend.services.retrieval_service import (RetrievalUnavailableError,
 from backend.services.token_counter import count_tokens, truncate_to_tokens
 from backend.services.settings.service import (merge_chat_config,
                                                merge_department_llm)
+from backend.services.storage_service import get_storage_service
 from backend.services.thinking_strategy import get_thinking_strategy
 from backend.logger import AppLog
 
@@ -106,6 +109,137 @@ def _wrap_data_boundary(content: str) -> str:
 def sse_event(event: str, data: dict) -> str:
     """格式化 SSE 事件"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ==================== 聊天识图（发图 → 视觉模型读图 → 描述两处用） ====================
+
+# 视觉模型不可用时的**统一文案**：探活（/api/chat/vision-status）与发送时
+# 兜底（vision_error 事件）共用同一句，避免两个入口说法不一致让用户困惑
+VISION_UNAVAILABLE_MSG = "视觉模型当前无法使用，无法识图"
+
+# 读图提示词：**不复用 image_summary 那份**——它是给"入库摘要"设计的三段式
+# 结构化输出（类型/文字/画面），回填进 chunk 文本参与检索；聊天识图的这段
+# 描述要同时喂给检索与对话回答，需要自然语言叙述 + 高密度关键信息
+_CHAT_IMAGE_PROMPT = (
+    "请描述这张图片，供知识库检索与问答使用。要求：\n"
+    "1. **逐字抄录图中所有文字**：标题、编号、型号、参数、报错信息、日期、"
+    "人名、地名、单位。这些是检索命中的关键，不得概括或改写；\n"
+    "2. 描述画面主体、版式布局、图表走势、界面元素等可见信息；\n"
+    "3. 若是界面或报错截图，说明是什么系统、什么操作、什么提示；\n"
+    "4. **只描述真实看到的内容**：不推测、不补充常识、不回答图片之外的问题；\n"
+    "5. 简洁中文，不超过 {max_chars} 字。"
+)
+
+# 读图超时（秒）：比 LLM 对话超时（默认 120s）短——用户发完图正在干等，
+# 读图不该独占整个超时窗口；到点即判失败，前端提示"无法识图"让用户重试
+_IMAGE_DESC_TIMEOUT = 60.0
+
+
+def _image_mime(name: str) -> str:
+    """按扩展名猜 MIME（未知回退 image/jpeg，与 image_summary 同口径）"""
+    ext = (name.rsplit(".", 1)[-1] or "").lower()
+    return {"png": "image/png", "gif": "image/gif",
+            "webp": "image/webp", "bmp": "image/bmp"}.get(ext, "image/jpeg")
+
+
+async def _describe_chat_image(client, model_cfg, key: str, max_chars: int,
+                               storage) -> str:
+    """读一张聊天图片 → 描述文本（异常原样抛出，由 describe_images 归一）
+
+    图从对象存储按 key 取，**不信任前端传的 base64**——那等于把大小/格式
+    校验权全交给客户端。key 是 upload-image 阶段校验后落下的。
+    """
+    data = await storage.read_bytes(key)
+    payload = base64.b64encode(data).decode()
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text",
+             "text": _CHAT_IMAGE_PROMPT.replace("{max_chars}", str(max_chars))},
+            {"type": "image_url",
+             "image_url": {"url": f"data:{_image_mime(key)};base64,{payload}"}},
+        ],
+    }]
+    timeout = min(float(model_cfg.timeout or 60), _IMAGE_DESC_TIMEOUT)
+    resp = await llm_completion(
+        client, model=model_cfg.model, messages=messages,
+        # 中文按 1 字 ≈ 1.6 token 留余量；超长由提示词的 max_chars 约束
+        max_tokens=max(512, int(max_chars * 1.6)),
+        temperature=0.1,  # 读图要稳定可复现，不吃创造性
+        timeout=timeout)
+    try:
+        return (resp.choices[0].message.content or "").strip()
+    except (AttributeError, IndexError, TypeError):
+        return ""
+
+
+async def describe_images(images: List[str], model_cfg, max_chars: int,
+                          storage) -> Tuple[str, str]:
+    """并发读多张图 → 合并描述。返回 (描述文本, 失败原因)
+
+    **一次生成、两处用**：同一段描述既并入当轮检索词（让"这张报错截图"
+    能命中对应文档），又注入 messages（让主模型知道图里有什么）。拆成两份
+    描述要多一次 VLM 调用，而读图是整条链路上最慢的一环，用户发完图干等
+    的正是它——先按一份做，实测检索不准再拆（见 config.image_desc_max_chars）。
+
+    失败语义（与"图片摘要是增强功能、不该有否决权"不同——这里图是用户
+    **主动发的**，必须给明确交代）：
+    - 全部失败 → 返回非空失败原因，调用方下发 vision_error 且**不发消息**
+    - 部分失败 → 描述里标注哪几张没读出来，其余照常走（不为一张图废掉整轮）
+    """
+    client = get_llm_client(
+        model_cfg.model_dump(),
+        timeout=min(float(model_cfg.timeout or 60), _IMAGE_DESC_TIMEOUT))
+    results = await asyncio.gather(
+        *[_describe_chat_image(client, model_cfg, k, max_chars, storage)
+          for k in images],
+        return_exceptions=True)
+
+    parts: List[str] = []
+    ok = 0
+    last_err = ""
+    for i, r in enumerate(results, 1):
+        if isinstance(r, BaseException) or not r:
+            if isinstance(r, BaseException):
+                last_err = str(r)[:200]
+            parts.append(f"（第 {i} 张图片未能识别）")
+        else:
+            ok += 1
+            # **硬截断**到 max_chars：提示词里那句"不超过 N 字"只是软约束，
+            # 实测模型会超（配置 800 字，真机输出 1498 字）——而这段描述是要
+            # 并进检索词的，超长会把原问题淹没（检索模型对超长 query 效果下降）
+            text = r if len(r) <= max_chars else r[:max_chars] + "…"
+            parts.append(f"【图片{i}】{text}" if len(images) > 1 else text)
+    if ok == 0:
+        return "", (last_err or "视觉模型未返回内容")
+    return "\n".join(parts), ""
+
+
+async def delete_session_images(session: ChatSession) -> int:
+    """删除会话携带的全部聊天图片（对象存储），返回成功删除数
+
+    **图片不随会话归档**：归档只服务超管回溯反馈现场（见 delete_session），
+    而截图里常带敏感信息（工号、客户名、内部编号），把图留在归档里等于
+    绕过用户"删掉这段对话"的意图。
+
+    单张删失败只记 warning 并继续——会话本身必须删掉：文件残留是可容忍的
+    垃圾，会话没删掉才是用户可见的故障。
+    """
+    keys = [k for m in session.messages for k in (m.images or [])]
+    if not keys:
+        return 0
+    storage = get_storage_service()
+    ok = 0
+    for key in keys:
+        try:
+            await storage.delete(key)
+            ok += 1
+        except Exception as e:
+            logger.warning("聊天图片删除失败 %s: %s", key, str(e)[:150])
+    if ok:
+        logger.info("会话 %s 已清理 %d/%d 张聊天图片",
+                    session.id, ok, len(keys))
+    return ok
 
 
 # 归档裁剪保留的上下文轮数：被反馈那一轮之外，再往前保留的问答轮数
@@ -357,7 +491,9 @@ class ChatService:
                           session_id: Optional[str] = None,
                           user_id: Optional[str] = None,
                           top_k: Optional[int] = None,
-                          dept_config: Optional[dict] = None) -> AsyncIterator[str]:
+                          dept_config: Optional[dict] = None,
+                          images: Optional[List[str]] = None,
+                          vision_model=None) -> AsyncIterator[str]:
         """SSE 流：meta(sources) -> prompt(完整提示词+耗时) -> reasoning(思考文本)
         -> delta(正文文本) -> done(session_id, message_count) / error
 
@@ -381,11 +517,24 @@ class ChatService:
           + reasoning_effort；本地 Qwen 思考模型 disabled 时 messages 末尾
           注入空 <think> prefill 跳过思考（请求层变换，prompt 事件仍为
           组装后原始 messages，不含注入/extra_body）。
+        images: 聊天图片的对象存储 key 列表（先经 /api/chat/upload-image 上传）。
+          非空时先读图生成描述，**一次生成、两处用**——并入检索词（让"这张
+          报错截图"能命中对应文档）+ 注入 messages（让主模型知道图里有什么）。
+          读图失败下发 vision_error 且本轮不产出回答
+        vision_model: 视觉模型配置（VisionModelConfig）；由路由层经
+          image_summary.resolve_config 解析后传入（None=未配置/不可用）。
+          传配置而非让本层自查：部门配置解析要 db 会话，而路由层本来就有
         """
         # 「提问→AI 生成首字」总耗时基准（请求详情展示用）。放这里而不是
         # LLM 调用前：口径是"后端收到提问 → 吐出首个字"，检索/改写/图谱
         # 这些前置环节都要算进去，否则用户看到的总耗时会明显偏小。
         t_start = time.perf_counter()
+        # 只发图不写文字：补一句中性提问词。不补的话检索词、图谱抽实体
+        # （extract_query_entities）、问题拆分（split_query）拿到的都是空串，
+        # 行为未定义；补了则全链路都有确定输入。前端发送时显示同一句话，
+        # 用户知情（不是偷偷替他说话）
+        if images and not message.strip():
+            message = "请描述这张图片"
         session = self._load_or_create(session_id, kb_ids, message, user_id)
         answer_parts: List[str] = []
         # 本次请求的 prompt 详情（与 prompt 事件同源）：随调用透传给 _finalize，
@@ -401,6 +550,32 @@ class ChatService:
         dept_llm = dept.get("llm") if isinstance(dept.get("llm"), dict) else {}
 
         try:
+            # 识图前置：读图 → 描述。**必须在检索之前**——描述要并进检索词，
+            # 晚于检索就只剩展示价值了。读图失败不下发 error 而发 vision_error：
+            # 前端据此提示"无法识图"并保留用户已选好的图，与"服务异常请稍后
+            # 重试"是两回事（后者让用户白等，前者让用户知道该修配置/删图）
+            image_desc = ""
+            if images:
+                if vision_model is None:
+                    yield sse_event("vision_error",
+                                    {"message": VISION_UNAVAILABLE_MSG})
+                    return
+                t_img = time.perf_counter()
+                image_desc, img_err = await describe_images(
+                    images, vision_model,
+                    int(get_active_config().chat.image_desc_max_chars),
+                    get_storage_service())
+                if img_err:
+                    # 单次读图失败多为这张图本身的问题（格式怪/损坏/被拒答），
+                    # 记 warning 不点红灯——视觉模型真挂了由 /vision-status
+                    # 探活和用户重试暴露，不该让一次读图失败污染系统健康度
+                    logger.warning("聊天读图失败: %s", img_err)
+                    yield sse_event("vision_error",
+                                    {"message": VISION_UNAVAILABLE_MSG})
+                    return
+                logger.info("聊天识图: %d 张 → %d 字（%.1fs）", len(images),
+                            len(image_desc), time.perf_counter() - t_img)
+
             # 0) 聊天配置字段级合并（提前计算：知识图谱增强开关/Agentic 配置
             #    在此读取；纯函数无副作用，后续步骤直接复用，避免重复合并）
             cfg = get_active_config()
@@ -483,6 +658,14 @@ class ChatService:
                                 rewritten_query[:50])
                     search_query = rewritten_query
 
+            # 识图描述并入**检索词**（不覆盖 search_query 变量本身）：用户发的
+            # 是"这张图"，光拿文字问题去检索必然命不中——描述里带着图里的
+            # 型号/报错码/参数，那才是能命中的关键词。不覆盖 search_query 是
+            # 因为它还要喂给 split_query（问题拆分），长描述会把拆分带偏
+            retrieval_query = search_query
+            if image_desc:
+                retrieval_query = f"{search_query}\n\n{image_desc}"
+
             # 知识图谱通道与检索**并行**：抽实体用的是原始 message（不是改写后的
             # search_query），除知识库集合外与检索无任何依赖——串行会让每次问答
             # 白等一次 LLM 往返（抽实体超时上限 8s）。先把任务起起来，检索完再汇合。
@@ -509,7 +692,7 @@ class ChatService:
                     # 前端按阶段换提示（检索中/改写中/重新检索中），不干等
                     agentic_result = None
                     async for kind, payload in get_agentic_service().run_iter(
-                            kb_ids, message, llm_cfg=merged_llm_dict,
+                            kb_ids, retrieval_query, llm_cfg=merged_llm_dict,
                             top_k=eff_top_k, min_score=eff_min_score):
                         if kind == "phase":
                             yield sse_event("agentic_status", payload)
@@ -525,7 +708,7 @@ class ChatService:
                         sources = []
                 else:
                     sources = await get_retrieval_service().retrieve_multi(
-                        kb_ids, search_query, top_k=eff_top_k,
+                        kb_ids, retrieval_query, top_k=eff_top_k,
                         min_score=eff_min_score)
                 retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
@@ -628,7 +811,7 @@ class ChatService:
                     (time.perf_counter() - t_start) * 1000))
                 yield sse_event("delta", {"text": tip,
                                           "total_ms": prompt_detail["total_ms"]})
-                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
+                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
                 saved = True
                 yield sse_event("done", {
                     "session_id": session.id,
@@ -688,6 +871,11 @@ class ChatService:
             # 行内引用标注指令追加到 user 消息（system 指令部分模型遵循弱，
             # user 侧紧邻问题遵循度高；完整示例 few-shot 强化；不含占位符，
             # 不受自定义 system_prompt 影响——自定义模板用户自行负责标注规则）
+            # 识图描述注入：主模型据此知道"用户发的图里有什么"。放在问题
+            # **之前**——先看到图内容再看到问题，回答更贴合；无图时该块
+            # 不存在，prompt 与历史版本逐字节一致（不影响既有测试与落盘）
+            image_block = (f"【用户上传的图片内容】\n{image_desc}\n\n"
+                           if image_desc else "")
             cite_note = (
                 "【回答标注要求（最高优先级，覆盖其他输出要求）：\n"
                 "1. 回答中每个事实性陈述，若内容来自上方 [引用]，"
@@ -706,7 +894,7 @@ class ChatService:
                 "标题或列表 Markdown 格式符号；但图片标签"
                 "（![](...) 或 <img>）不属于上述禁止符号，必须原样输出"
                 "（图片是知识库原文内容，保留图片才能完整展示配置说明）。】\n\n"
-                f"问题：{message}"
+                f"{image_block}问题：{message}"
             )
             messages.append({"role": "user", "content": cite_note})
 
@@ -811,7 +999,7 @@ class ChatService:
             except asyncio.CancelledError:
                 logger.info("客户端中断流式问答: %s", session.id)
                 if answer_parts:
-                    self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
+                    self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
                     saved = True
                 raise
             except (APITimeoutError, APIConnectionError, RateLimitError,
@@ -821,7 +1009,7 @@ class ChatService:
                 log.system_error("LLM 流式调用失败（LLM 服务异常）: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
+                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
                 saved = True
                 yield sse_event("error", {"message": err_msg})
                 return
@@ -830,14 +1018,15 @@ class ChatService:
                 log.system_error("LLM 流式调用失败: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail)
+                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
                 saved = True
                 yield sse_event("error", {"message": err_msg})
                 return
 
             # 6) done
             self._finalize(session, message, answer_parts, sources,
-                           detail=prompt_detail)
+                           detail=prompt_detail, images=images,
+                           image_desc=image_desc)
             saved = True
             yield sse_event("done", {
                 "session_id": session.id,
@@ -852,7 +1041,7 @@ class ChatService:
             # 兜底：异常路径下只要已有文本也落盘（优雅收尾）
             if not saved and answer_parts:
                 try:
-                    self._finalize(session, message, answer_parts, [], agentic_meta, detail=prompt_detail)
+                    self._finalize(session, message, answer_parts, [], agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
                 except Exception:
                     log.system_error("兜底落盘失败: %s", session.id, exc_info=True)
 
@@ -1088,7 +1277,9 @@ class ChatService:
     def _finalize(self, session: ChatSession, message: str,
                   answer_parts: List[str], sources: List[Source],
                   agentic: Optional[dict] = None,
-                  detail: Optional[dict] = None):
+                  detail: Optional[dict] = None,
+                  images: Optional[List[str]] = None,
+                  image_desc: str = ""):
         """落盘会话（追加 user 消息 + assistant 消息，含 sources 快照）
 
         detail：本次请求的 prompt 详情（与 prompt 事件同源），由调用方透传，
@@ -1102,6 +1293,8 @@ class ChatService:
         """
         chat_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session.messages.append(ChatMessage(role="user", content=message,
+                                            images=list(images or []),
+                                            image_desc=image_desc,
                                             created_at=chat_time))
         session.messages.append(ChatMessage(
             role="assistant",
