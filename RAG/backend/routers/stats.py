@@ -137,7 +137,8 @@ async def get_retrieval_quality(kb_id: str,
     """
     await kb_or_404(db, kb_id, user)
 
-    entries = get_retrieval_log_service().read(kb_id, window_days=QUALITY_WINDOW_DAYS)
+    entries = await get_retrieval_log_service().read(
+        kb_id, window_days=QUALITY_WINDOW_DAYS)
 
     # 文档名/切块数映射（零命中文档判断用）
     docs = get_document_service().list_by_kb(kb_id)
@@ -362,7 +363,7 @@ async def _sample_questions(kb_id: str, sample_source: str,
     if sample_source == "chat":
         questions = ragas_sampling.sample_from_chat(kb_id, sample_count)
     else:
-        questions = ragas_sampling.sample_from_logs(kb_id, sample_count)
+        questions = await ragas_sampling.sample_from_logs(kb_id, sample_count)
     if not questions:
         raise HTTPException(
             status_code=400,

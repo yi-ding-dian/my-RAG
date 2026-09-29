@@ -16,13 +16,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from backend.routers import logs as logs_mod
 from backend.routers.logs import _log_path
-from backend.logger import SystemFaultFilter
+from backend.logger import HttpNoiseFilter, SystemFaultFilter
 from backend.logger import alert as alert_mod
 from backend.logger.alert import notify_health
 
@@ -72,10 +76,14 @@ def _isolate_log_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_alert_state():
-    """重置上报去重状态，避免用例间互相污染（进程内全局）"""
-    alert_mod._last_red = None
+    """重置上报去重状态，避免用例间互相污染
+
+    去重状态已从进程内 `_last_red` 改为落盘文件（`data/logs/.alert_state.json`，
+    跨 worker 防重复告警），所以重置=删文件而非置 None。
+    """
+    alert_mod._state_path().unlink(missing_ok=True)
     yield
-    alert_mod._last_red = None
+    alert_mod._state_path().unlink(missing_ok=True)
 
 
 # ==================== 权限 ====================
@@ -341,9 +349,49 @@ class TestNotifyHealth:
         assert notify_health(is_red=False, summary="测试") is False
 
     def test_first_green_not_reported(self):
-        """进程内首次就是绿灯：记下但不报（避免每次重启都报一条「平安」）"""
+        """无状态文件且首次就是绿灯：记下但不报（避免每次重启都报一条「平安」）"""
         assert notify_health(is_red=False, summary="测试") is False
         assert notify_health(is_red=True, summary="测试") is True
+
+    def test_first_red_reported(self):
+        """无状态文件且首次就是红灯：必须报（重启期间的故障不能漏）"""
+        assert alert_mod._read_last_red() is None
+        assert notify_health(is_red=True, summary="测试") is True
+
+    def test_state_survives_process_restart(self):
+        """状态落盘：灯色没变时不因"重启"重复上报
+
+        旧实现 `_last_red` 是进程内变量，重启即丢 → 每次重启都会补报一条。
+        """
+        assert notify_health(is_red=True, summary="测试") is True
+        # 模拟重启：进程内状态一无所有，唯一依据是落盘文件
+        assert alert_mod._read_last_red() is True
+        assert notify_health(is_red=True, summary="测试") is False
+
+    def test_cross_process_dedup(self, tmp_path):
+        """★ 跨进程去重：两个独立进程只有一个能上报
+
+        旧实现每个 worker 各持一份 `_last_red`，灯色变化时 N 个 worker
+        报 N 条（报警疲劳比不报警更危险）。落盘 + 文件锁后只有一个进程
+        能通过 compare-and-set。
+        """
+        env = {**os.environ, "DATA_DIR": str(tmp_path)}
+        proj = str(Path(__file__).resolve().parents[1])
+        script = (
+            "from backend.logger.alert import notify_health\n"
+            "print('reported' if notify_health(is_red=True, summary='x')"
+            " else 'skipped')\n"
+        )
+
+        def _run() -> str:
+            r = subprocess.run([sys.executable, "-c", script],
+                               cwd=proj, env=env, capture_output=True,
+                               text=True, timeout=120)
+            assert r.returncode == 0, f"子进程失败:\n{r.stderr}"
+            return r.stdout.strip().splitlines()[-1]
+
+        assert _run() == "reported", "首个进程应上报"
+        assert _run() == "skipped", "第二个进程应被跨进程去重"
 
     def test_alert_line_written(self, caplog):
         """上报落地成一条 [ALERT] 日志（后续接 webhook 前的当前实现）"""
@@ -410,3 +458,64 @@ class TestSystemFaultFilter:
         """已经带前缀的不重复加（多个 handler 各挂一份 filter）"""
         assert self._run("system.backend.services.x", True) == \
             "system.backend.services.x"
+
+
+# ==================== HttpNoiseFilter ====================
+
+class TestHttpNoiseFilter:
+    """第三方 HTTP 噪音 filter：写入侧丢弃 2xx/3xx 回显，保留 4xx/5xx
+
+    实测单日日志 55% 是 httpx 请求回显（图片摘要并发时一次刷几百行）。原先靠
+    `/api/logs/tail` 的 hide_http 在读取时跳过——日志照样落盘、照样占磁盘、
+    概览统计口径照样被污染；现在从写入侧拦掉。
+    """
+
+    def _keep(self, logger_name: str, level: int, msg: str) -> bool:
+        """过一遍 filter，返回是否保留（True = 写入日志）"""
+        record = logging.LogRecord(
+            logger_name, level, __file__, 1, msg, None, None)
+        return HttpNoiseFilter().filter(record)
+
+    def test_httpx_2xx_3xx_dropped(self):
+        for status in ("200 OK", "204 No Content", "301 Moved Permanently"):
+            assert not self._keep(
+                "httpx", logging.INFO,
+                f'HTTP Request: POST http://x "HTTP/1.1 {status}"'), status
+
+    def test_httpx_4xx_5xx_kept(self):
+        """★ 失败请求必须保留
+
+        httpx 对失败请求同样打 INFO（见 httpx/_client.py），按**级别**过滤抓不到
+        HTTP 异常；而"依赖服务返回 4xx/5xx"（LLM/Embedding 不可用）恰是排障重点。
+        """
+        for status in ("404 Not Found", "500 Internal Server Error",
+                       "503 Service Unavailable"):
+            assert self._keep(
+                "httpx", logging.INFO,
+                f'HTTP Request: POST http://x "HTTP/1.1 {status}"'), status
+
+    def test_httpx_child_logger_covered(self):
+        """httpx 实际用 httpx._client 打日志（logger 名带子模块）"""
+        assert not self._keep(
+            "httpx._client", logging.INFO,
+            'HTTP Request: GET http://x "HTTP/1.1 200 OK"')
+        assert self._keep(
+            "httpx._client", logging.INFO,
+            'HTTP Request: GET http://x "HTTP/1.1 404 Not Found"')
+
+    def test_httpx_warning_kept(self):
+        assert self._keep("httpx", logging.WARNING, "http request failed")
+
+    def test_connection_layer_info_dropped(self):
+        for name in ("httpcore", "urllib3.connectionpool"):
+            assert not self._keep(name, logging.INFO, "connected"), name
+
+    def test_connection_layer_warning_kept(self):
+        assert self._keep("httpcore", logging.WARNING, "connection reset")
+
+    def test_business_logs_untouched(self):
+        """业务日志一律保留（INFO 与 ERROR）"""
+        assert self._keep("backend.services.chat_service",
+                          logging.INFO, "检索完成")
+        assert self._keep("backend.services.chat_service",
+                          logging.ERROR, "LLM 调用失败")

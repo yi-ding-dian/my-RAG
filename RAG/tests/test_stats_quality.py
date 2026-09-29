@@ -1,8 +1,8 @@
 """检索质量统计 API 测试：GET /api/stats/quality
 
-覆盖：检索触发日志落盘（含 query 截断、无命中空数组）、汇总正确性
+覆盖：检索触发日志落库（含 query 截断、无命中空数组）、汇总正确性
 （总数/平均命中/文档排行/零命中文档/日粒度 hit_rate）、权限（dept_admin
-仅本部门库，404 伪装）、无数据返回空数组、日志 30 天过期清理。
+仅本部门库，404 伪装）、无数据返回空数组、日志 30 天保留清理。
 全部离线（mock embedding）。
 """
 from __future__ import annotations
@@ -13,24 +13,49 @@ from datetime import datetime, timedelta
 from conftest import create_kb, upload_and_ingest
 
 
-def _log_dir():
-    from backend.config import DATA_DIR
-    return DATA_DIR / "retrieval_logs"
+def _write_log_entry(client, kb_id, hit_doc_ids, query="问题", days_ago=0):
+    """直接落库造一条检索日志（days_ago 天前），用于构造多天汇总数据
 
+    检索日志已从 `data/retrieval_logs/*.jsonl` 迁到 `retrieval_logs` 表；
+    测试需要"N 天前"的历史数据，走不了真实检索路径，故直接写库。
 
-def _write_log_entry(kb_id, hit_doc_ids, query="问题", days_ago=0):
-    """手工写一条日志（days_ago 天前），用于构造多天汇总数据"""
+    用 `client.portal.call` 在 TestClient **自己的事件循环**里执行——全局
+    async engine 绑定该 loop，另起 loop（如 asyncio.run）会报跨 loop 错误。
+    """
+    from backend.db import get_session
+    from backend.models.retrieval_log_models import RetrievalLogORM
     d = datetime.now() - timedelta(days=days_ago)
-    path = _log_dir() / f"{d.strftime('%Y-%m-%d')}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "ts": d.isoformat(timespec="seconds"),
-        "kb_id": kb_id,
-        "query": query,
-        "hit_doc_ids": list(hit_doc_ids),
-    }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    async def _run():
+        async with get_session() as session:
+            session.add(RetrievalLogORM(
+                kb_id=kb_id, query=query,
+                hit_doc_ids=json.dumps(list(hit_doc_ids), ensure_ascii=False),
+                created_at=d.strftime("%Y-%m-%d %H:%M:%S")))
+            await session.commit()
+
+    client.portal.call(_run)
+
+
+def _read_log_entries(client, kb_id=None):
+    """读库里的检索日志（替代原来读 jsonl 文件），按插入序返回"""
+    from sqlalchemy import select
+
+    from backend.db import get_session
+    from backend.models.retrieval_log_models import RetrievalLogORM
+
+    async def _run():
+        async with get_session() as session:
+            stmt = select(RetrievalLogORM)
+            if kb_id:
+                stmt = stmt.where(RetrievalLogORM.kb_id == kb_id)
+            rows = (await session.execute(
+                stmt.order_by(RetrievalLogORM.id))).scalars().all()
+            return [{"kb_id": r.kb_id, "query": r.query,
+                     "hit_doc_ids": json.loads(r.hit_doc_ids),
+                     "ts": r.created_at} for r in rows]
+
+    return client.portal.call(_run)
 
 
 class TestLogWrite:
@@ -44,14 +69,9 @@ class TestLogWrite:
             "kb_id": kb["id"], "query": "Python 是什么语言？",
         }, headers=admin_headers)
         assert resp.status_code == 200 and resp.json()["sources"]
-        files = list(_log_dir().glob("*.jsonl"))
-        assert files, "检索后应生成当日日志文件"
-        entries = [json.loads(line) for f in files
-                   for line in f.read_text(encoding="utf-8").splitlines()
-                   if line.strip()]
-        kb_entries = [e for e in entries if e["kb_id"] == kb["id"]]
-        assert kb_entries, "日志应包含该 kb 条目"
-        e = kb_entries[0]
+        entries = _read_log_entries(client, kb["id"])
+        assert entries, "日志应包含该 kb 条目"
+        e = entries[0]
         assert e["ts"] and e["hit_doc_ids"] == [doc["id"]]
         assert e["query"] == "Python 是什么语言？"
 
@@ -63,24 +83,18 @@ class TestLogWrite:
             "kb_id": kb["id"], "query": "任何问题",
         }, headers=admin_headers)
         assert resp.status_code == 200 and resp.json()["sources"] == []
-        entries = [json.loads(line) for f in _log_dir().glob("*.jsonl")
-                   for line in f.read_text(encoding="utf-8").splitlines()
-                   if line.strip()]
-        kb_entries = [e for e in entries if e["kb_id"] == kb["id"]]
-        assert kb_entries and kb_entries[0]["hit_doc_ids"] == []
+        entries = _read_log_entries(client, kb["id"])
+        assert entries and entries[0]["hit_doc_ids"] == []
 
     def test_query_truncated_to_100(self, client, mock_embedding, admin_headers):
-        """query 落盘截断前 100 字"""
+        """query 落库截断前 100 字"""
         kb = create_kb(client)
         long_q = "很" * 200
         client.post("/api/chat/retrieve", json={
             "kb_id": kb["id"], "query": long_q,
         }, headers=admin_headers)
-        entries = [json.loads(line) for f in _log_dir().glob("*.jsonl")
-                   for line in f.read_text(encoding="utf-8").splitlines()
-                   if line.strip()]
-        assert any(e["kb_id"] == kb["id"] and len(e["query"]) == 100
-                   for e in entries)
+        entries = _read_log_entries(client, kb["id"])
+        assert entries and all(len(e["query"]) == 100 for e in entries)
 
 
 class TestQualitySummary:
@@ -97,10 +111,10 @@ class TestQualitySummary:
     def test_summary_fields(self, client, mock_embedding, admin_headers):
         """总数/平均命中/文档排行/零命中文档/日粒度全部正确"""
         kb_id, (doc_a, doc_b, doc_c) = self._setup_kb(client)
-        _write_log_entry(kb_id, [doc_a["id"], doc_b["id"]], "今天问题1", 0)
-        _write_log_entry(kb_id, [doc_a["id"]], "今天问题2", 0)
-        _write_log_entry(kb_id, [doc_b["id"]], "昨天问题", 1)
-        _write_log_entry(kb_id, [], "前天问题", 2)  # 无命中
+        _write_log_entry(client, kb_id, [doc_a["id"], doc_b["id"]], "今天问题1", 0)
+        _write_log_entry(client, kb_id, [doc_a["id"]], "今天问题2", 0)
+        _write_log_entry(client, kb_id, [doc_b["id"]], "昨天问题", 1)
+        _write_log_entry(client, kb_id, [], "前天问题", 2)  # 无命中
         resp = client.get(f"/api/stats/quality?kb_id={kb_id}",
                           headers=admin_headers)
         assert resp.status_code == 200
@@ -137,7 +151,7 @@ class TestQualitySummary:
         for i in range(12):
             docs.append(upload_and_ingest(client, kb["id"],
                                           filename=f"文档{i}.txt"))
-        _write_log_entry(kb["id"], [d["id"] for d in docs], "一次全命中", 0)
+        _write_log_entry(client, kb["id"], [d["id"] for d in docs], "一次全命中", 0)
         resp = client.get(f"/api/stats/quality?kb_id={kb['id']}",
                           headers=admin_headers)
         data = resp.json()
@@ -152,7 +166,7 @@ class TestQualitySummary:
         # 只上传不 ingest
         from conftest import upload_doc
         upload_doc(client, kb["id"], filename="未入库.txt")
-        _write_log_entry(kb["id"], [], "问题", 0)
+        _write_log_entry(client, kb["id"], [], "问题", 0)
         resp = client.get(f"/api/stats/quality?kb_id={kb['id']}",
                           headers=admin_headers)
         data = resp.json()
@@ -223,29 +237,30 @@ class TestQualityPermission:
 
 
 class TestLogRetention:
-    """日志 30 天轮转清理（写入时清理过期文件）"""
+    """日志 30 天保留（写入时清理超窗记录）
 
-    def test_expired_files_cleaned_on_write(self, client, admin_headers):
-        from backend.services.retrieval_log import get_retrieval_log_service
-        log_dir = _log_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
-        old_date = (datetime.now() - timedelta(days=32)).strftime("%Y-%m-%d")
-        old_path = log_dir / f"{old_date}.jsonl"
-        old_path.write_text('{"ts":"2026-01-01T00:00:00","kb_id":"x"}\n',
-                            encoding="utf-8")
-        recent_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
-        recent_path = log_dir / f"{recent_date}.jsonl"
-        recent_path.write_text('{"ts":"2026-01-01T00:00:00","kb_id":"x"}\n',
-                               encoding="utf-8")
-        # 触发写入（内部先清理过期文件）
-        get_retrieval_log_service().log("kb_x", "问题", [])
-        assert not old_path.exists(), "超过 30 天的日志文件应被清理"
-        assert recent_path.exists(), "窗口期内的日志文件应保留"
+    原实现按文件名日期删 jsonl 文件，迁到 retrieval_logs 表后改为删记录；
+    原「文件名不合规则保留」的用例随之失效（不再有文件）。
+    """
 
-    def test_unparseable_filename_kept(self, client, admin_headers):
-        """命名不合规的文件不做日期判断，直接保留"""
+    def test_expired_records_cleaned_on_write(self, client, admin_headers):
         from backend.services.retrieval_log import get_retrieval_log_service
-        weird = _log_dir() / "bad_file.jsonl"
-        weird.write_text("x\n", encoding="utf-8")
-        get_retrieval_log_service().log("kb_y", "问题", [])
-        assert weird.exists()
+        kb_id = "kb_retention"
+        _write_log_entry(client, kb_id, [], "过期问题", days_ago=32)
+        _write_log_entry(client, kb_id, [], "保留问题", days_ago=10)
+        assert len(_read_log_entries(client, kb_id)) == 2, "造数据应成功"
+        # 触发一次写入（内部顺带清理超窗记录）
+        client.portal.call(get_retrieval_log_service().log, kb_id, "触发问题", [])
+        queries = [e["query"] for e in _read_log_entries(client, kb_id)]
+        assert "过期问题" not in queries, "超过 30 天的记录应被清理"
+        assert "保留问题" in queries, "窗口期内的记录应保留"
+        assert "触发问题" in queries, "本次写入应成功"
+
+    def test_cleanup_is_table_wide(self, client, admin_headers):
+        """清理是全表的：**别的 kb** 的过期记录同样清掉（保证表大小有界）"""
+        from backend.services.retrieval_log import get_retrieval_log_service
+        _write_log_entry(client, "kb_other", [], "他库过期", days_ago=40)
+        assert len(_read_log_entries(client, "kb_other")) == 1
+        client.portal.call(get_retrieval_log_service().log, "kb_self", "问题", [])
+        assert _read_log_entries(client, "kb_other") == [], \
+            "他 kb 的超窗记录也应被清理（否则被扫描时表无限增长）"

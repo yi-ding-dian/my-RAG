@@ -30,8 +30,15 @@ def _pw_bytes(password: str) -> bytes:
 
 
 def hash_password(password: str) -> str:
-    """bcrypt 哈希（返回 str，入库）"""
-    return bcrypt.hashpw(_pw_bytes(password), bcrypt.gensalt()).decode("utf-8")
+    """bcrypt 哈希（返回 str，入库）
+
+    cost 取 `settings.BCRYPT_ROUNDS`（默认 12，生产强度）；测试环境
+    conftest 降到 4 —— 全套测试每个用例都要建种子用户，默认 cost 下单次
+    0.2s × 近两千用例 ≈ 400 秒纯等待，而这里要验的是哈希/校验逻辑本身。
+    """
+    return bcrypt.hashpw(
+        _pw_bytes(password),
+        bcrypt.gensalt(config_settings.BCRYPT_ROUNDS)).decode("utf-8")
 
 
 def verify_password(password: str, hashed: str) -> bool:

@@ -36,7 +36,7 @@ async def login(request: Request, body: LoginRequest,
     限速（防爆破）：同一 IP 窗口内失败 >= 5 次 → 429 锁定 60 秒（可配，
     见 rate_limit）；成功自动清零。
     """
-    remaining = rate_check(request)
+    remaining = await rate_check(request)
     if remaining is not None:
         logger.warning("登录限速: IP=%s 锁定中（剩余约 %ss）", rate_ip_of(request),
                        remaining)
@@ -45,14 +45,14 @@ async def login(request: Request, body: LoginRequest,
             detail=f"登录尝试过于频繁，请 {remaining} 秒后再试")
     user = await auth_service.login(db, body.username, body.password)
     if user is None:
-        rate_record_failure(request)
+        await rate_record_failure(request)
         await audit_service.record_action(
             None, action="auth.login", target_type="user",
             target_name=body.username, detail={"username": body.username},
             status="failed", request=request)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     # 成功：清零该 IP 失败记录（防锁定正常用户换密码后回来）
-    rate_record_success(request)
+    await rate_record_success(request)
     await audit_service.record_action(
         user, action="auth.login", target_type="user",
         target_id=user.id, target_name=user.username,

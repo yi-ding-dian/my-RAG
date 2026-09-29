@@ -7,7 +7,8 @@ Chroma collection 里已有旧维度向量，新维度写入/检索会抛错且�
   返回 {kb_id, collection_vectors, current_dim, model_dim, compatible, message}
 - 重建任务管理（start_rebuild_task / get_rebuild_status / run_rebuild_task）：
   清空 collection 旧向量 → 逐文档重新 embedding（当前激活模型）→ 写回，
-  串行执行防内存爆炸，任务状态内存 dict + 落盘 data/rebuild_tasks.json
+  串行执行防内存爆炸，任务状态落库（tasks 表，见 services/task_service.py）——
+  跨 worker 可见、进程重启不丢，防重靠 active_key 唯一约束
 - VectorDimensionError：检索/入库维度不匹配时的可识别异常（错误信息透传前端）
 """
 from __future__ import annotations
@@ -16,20 +17,20 @@ import asyncio
 import json
 import logging
 import os
-import uuid
-from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional
 
-from backend.config import DATA_DIR, get_active_config
+from backend.config import get_active_config
+from backend.models.task_models import (TASK_DONE, TASK_FAILED, TASK_RUNNING,
+                                        TASK_TYPE_REBUILD)
 from backend.services import embedding_service as _embedding_module
+from backend.services.task_service import (TaskHandle, claim_task,
+                                           get_latest_task,
+                                           get_running_task_id)
 from backend.services.vector_store import get_vector_store
 from backend.logger import AppLog
 
 logger = logging.getLogger(__name__)
 log = AppLog(__name__)
-
-_TASK_FILE = DATA_DIR / "rebuild_tasks.json"
 
 # 向量重建后台任务并发上限（默认 2，环境变量 REBUILD_CONCURRENCY 可调）：
 # 多知识库同时重建会打爆 embedding API；信号量惰性绑定首次运行事件循环，
@@ -59,9 +60,12 @@ def _chunk_embed_text(c: dict) -> str:
         return f"【上下文】{ctx}\n{text}"
     return text
 
-# ---- 重建任务状态（内存为主，任务完成时落盘，重启后仍可查历史）----
-_rebuild_tasks: Dict[str, dict] = {}        # task_id -> 任务状态 dict
-_last_task_by_kb: Dict[str, str] = {}       # kb_id -> 最近一次 task_id
+# ---- 重建任务状态：落库（models/task_models.py 的 tasks 表）----
+# 原为模块级 dict（`_rebuild_tasks` / `_last_task_by_kb`）+ JSON 落盘兜底，
+# 多 worker 下会分裂（别的 worker 查不到任务，前端显示"没在跑"实际在跑），
+# 且那套落盘是"只写不读"——`_load_tasks_from_disk` 只填 kb_id→task_id 映射、
+# 从不填充任务字典，重启后 get_rebuild_status 恒返回空状态。
+# 改用 tasks 表后：状态跨进程可见、重启不丢、active_key 唯一约束天然防重。
 
 
 class VectorDimensionError(Exception):
@@ -184,63 +188,8 @@ async def kb_vector_summary(kb_id: str) -> dict:
 
 # ==================== 重建任务管理 ====================
 
-def _load_tasks_from_disk() -> None:
-    """启动/首次查询时加载历史任务状态（重启后保留最近一次结果）"""
-    try:
-        if _TASK_FILE.exists():
-            data = json.loads(_TASK_FILE.read_text(encoding="utf-8"))
-            tasks = data.get("tasks") or {}
-            for tid, task in tasks.items():
-                if task.get("kb_id"):
-                    _last_task_by_kb.setdefault(task["kb_id"], tid)
-    except Exception as e:
-        logger.warning("加载重建任务历史失败: %s", e)
-
-
-def _save_tasks_to_disk() -> None:
-    """任务完成后落盘（仅保留最近任务，重启丢失可接受的兜底持久化）"""
-    try:
-        keep = {tid: t for tid, t in _rebuild_tasks.items()
-                if t.get("kb_id") in _last_task_by_kb
-                and _last_task_by_kb[t["kb_id"]] == tid}
-        _TASK_FILE.write_text(
-            json.dumps({"tasks": keep}, ensure_ascii=False, indent=2),
-            encoding="utf-8")
-    except Exception as e:
-        logger.warning("保存重建任务历史失败: %s", e)
-
-
-def start_rebuild_task(kb_id: str) -> str:
-    """启动重建任务，返回 task_id（已有 running 任务则复用，幂等防重复触发）"""
-    tid = _last_task_by_kb.get(kb_id)
-    if tid and _rebuild_tasks.get(tid, {}).get("running"):
-        return tid
-    task_id = uuid.uuid4().hex[:12]
-    _rebuild_tasks[task_id] = {
-        "task_id": task_id,
-        "kb_id": kb_id,
-        "running": True,
-        "done": 0,
-        "total": 0,
-        "failed": 0,
-        "current_doc": None,
-        "finished_at": None,
-        "errors": [],
-    }
-    _last_task_by_kb[kb_id] = task_id
-    logger.info("启动重建向量任务: kb=%s task=%s", kb_id, task_id)
-    return task_id
-
-
-def get_rebuild_status(kb_id: str) -> dict:
-    """查询知识库重建任务状态（内存优先，落盘历史兜底）"""
-    task_id = _last_task_by_kb.get(kb_id)
-    if task_id and task_id in _rebuild_tasks:
-        return _rebuild_tasks[task_id]
-    if not _rebuild_tasks:
-        _load_tasks_from_disk()
-    if task_id and task_id in _rebuild_tasks:
-        return _rebuild_tasks[task_id]
+def _empty_status(kb_id: str) -> dict:
+    """无任务历史时的空状态（保持原响应契约）"""
     return {
         "kb_id": kb_id,
         "task_id": None,
@@ -254,7 +203,56 @@ def get_rebuild_status(kb_id: str) -> dict:
     }
 
 
-async def _backfill_missing_vectors(kb_id: str, task: dict, vec, emb_svc,
+def _task_to_status(task) -> dict:
+    """TaskORM → 前端契约（保留原字段名，running 由 status 推导）"""
+    try:
+        errors = json.loads(task.errors) if task.errors else []
+    except (TypeError, ValueError):
+        errors = []
+    return {
+        "kb_id": task.target_id,
+        "task_id": task.id,
+        "running": task.status == TASK_RUNNING,
+        "done": task.done,
+        "total": task.total,
+        "failed": task.failed,
+        "current_doc": task.current_doc,
+        "finished_at": task.finished_at,
+        "errors": errors,
+    }
+
+
+async def start_rebuild_task(kb_id: str) -> str:
+    """启动重建任务，返回 task_id（已有 running 任务则复用，幂等防重复触发）
+
+    防重由 tasks.active_key 的 UNIQUE 约束保证——并发触发时只有一个
+    INSERT 能成功，另一个走"复用已有任务"分支；跨 worker 同样成立。
+    """
+    for _ in range(2):
+        task_id = await claim_task(TASK_TYPE_REBUILD, kb_id)
+        if task_id is not None:
+            logger.info("启动重建向量任务: kb=%s task=%s", kb_id, task_id)
+            return task_id
+        existing = await get_running_task_id(TASK_TYPE_REBUILD, kb_id)
+        if existing:
+            logger.info("重建任务已在运行，复用: kb=%s task=%s", kb_id, existing)
+            return existing
+        # 抢占失败又查不到 running：原任务恰好在这一瞬结束并释放了 active_key，
+        # 重试一次即可（第二次循环）
+    raise RuntimeError("重建任务启动失败（并发冲突），请重试")
+
+
+async def get_rebuild_status(kb_id: str) -> dict:
+    """查询知识库重建任务状态（最近一次任务）
+
+    落库后重启不丢、跨 worker 一致——原来内存 dict 重启即空，且 JSON 落盘
+    是"只写不读"，重启后这里恒返回空状态。
+    """
+    task = await get_latest_task(TASK_TYPE_REBUILD, kb_id)
+    return _task_to_status(task) if task else _empty_status(kb_id)
+
+
+async def _backfill_missing_vectors(kb_id: str, handle: TaskHandle, vec, emb_svc,
                                     snapshot_ids: set) -> None:
     """增量补齐重建期间新入库文档的向量（快照重建后的收尾阶段调用）
 
@@ -270,13 +268,13 @@ async def _backfill_missing_vectors(kb_id: str, task: dict, vec, emb_svc,
     all_ingested = [d for d in doc_svc.list_by_kb(kb_id, include_deleted=True)
                     if d.status == "ingested"]
     # total 含增量文档（快照 ⊂ all_ingested，除非重建期间被彻底删除）
-    task["total"] = len(all_ingested)
+    await handle.set_total(len(all_ingested))
     existing = {meta.get("document_id")
                 for _, _, meta in await vec.get_all(kb_id)}
     for doc in all_ingested:
         if doc.id in snapshot_ids or doc.id in existing:
             continue
-        task["current_doc"] = doc.original_name
+        await handle.set_current(doc.original_name)
         try:
             pairs = [(_chunk_embed_text(c), c) for c in (doc.chunks_meta or [])
                      if c.get("text")]
@@ -301,19 +299,15 @@ async def _backfill_missing_vectors(kb_id: str, task: dict, vec, emb_svc,
             } for i, (_, c) in enumerate(pairs)]
             await vec.add(kb_id, doc.id, doc.original_name, texts, embeddings,
                           metadatas=metadatas)
-            task["done"] += 1
+            await handle.inc_done()
             logger.info("增量补齐向量: kb=%s doc=%s chunks=%d", kb_id,
                         doc.original_name, len(texts))
         except Exception as e:
-            task["failed"] += 1
-            task["errors"].append({
-                "doc_id": doc.id,
-                "doc_name": doc.original_name,
-                "error": str(e)[:500],
-            })
+            await handle.inc_failed(doc_id=doc.id, doc_name=doc.original_name,
+                                    error=str(e)[:500])
             logger.warning("增量补齐失败: kb=%s doc=%s err=%s", kb_id,
                            doc.original_name, str(e)[:200])
-        task["current_doc"] = None
+        await handle.set_current(None)
 
 
 async def run_rebuild_task(kb_id: str, task_id: str) -> None:
@@ -321,7 +315,8 @@ async def run_rebuild_task(kb_id: str, task_id: str) -> None:
 
     流程：全量拉取 collection 条目（文本+metadata 保留，供重新 embedding）
     → 清空 collection 旧维度向量 → 逐个已入库文档重新 embedding 并写回；
-    失败文档跳过继续后续，最后汇总 failed 列表。任务状态实时写入内存 dict。
+    失败文档跳过继续后续，最后汇总 failed 列表。任务进度实时落库（tasks 表），
+    跨 worker / 进程重启均可见。
     并发上限：模块级信号量（REBUILD_CONCURRENCY，默认 2），
     多知识库同时重建不会打爆 embedding API。
     """
@@ -334,7 +329,8 @@ async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
     from backend.services.document_service import get_document_service
     from backend.services.retrieval_service import get_retrieval_service
 
-    task = _rebuild_tasks[task_id]
+    handle = TaskHandle(task_id)
+    status = TASK_DONE
     doc_svc = get_document_service()
     vec = get_vector_store()
     emb_svc = _embedding_module.get_embedding_service()
@@ -343,7 +339,7 @@ async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
         # 恢复后无需重新解析）；只重建已入库的（ingested）
         docs = [d for d in doc_svc.list_by_kb(kb_id, include_deleted=True)
                 if d.status == "ingested"]
-        task["total"] = len(docs)
+        await handle.set_total(len(docs))
 
         # 0) 清空前先全量拉取条目（文本 + 完整 metadata：parent_text/偏移等保真），
         #    按文档分组；drop 后 collection 为空无法再取
@@ -359,7 +355,7 @@ async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
 
         # 2) 逐文档重新 embedding + 写回（串行执行防内存爆炸）
         for doc in docs:
-            task["current_doc"] = doc.original_name
+            await handle.set_current(doc.original_name)
             try:
                 pairs = by_doc.get(doc.id, [])
                 if pairs:
@@ -379,39 +375,34 @@ async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
                     raise RuntimeError("重新向量化结果为空或数量不一致")
                 await vec.add(kb_id, doc.id, doc.original_name, texts, embeddings,
                               metadatas=metadatas)
-                task["done"] += 1
+                await handle.inc_done()
                 logger.info("重建向量: kb=%s doc=%s chunks=%d", kb_id,
                             doc.original_name, len(texts))
             except Exception as e:
-                task["failed"] += 1
-                task["errors"].append({
-                    "doc_id": doc.id,
-                    "doc_name": doc.original_name,
-                    "error": str(e)[:500],
-                })
+                await handle.inc_failed(doc_id=doc.id,
+                                        doc_name=doc.original_name,
+                                        error=str(e)[:500])
                 logger.warning("重建向量失败: kb=%s doc=%s err=%s", kb_id,
                                doc.original_name, str(e)[:200])
-            task["current_doc"] = None
+            await handle.set_current(None)
 
         # 2.5) 增量补齐：重建快照生成后、旧 collection 被 drop 期间完成 ingest
         #     的文档，其向量已随旧 collection 一起删除且不在快照内
         #     → 重新向量化入库，防"ingested 但检索永久丢失"
         await _backfill_missing_vectors(
-            kb_id, task, vec, emb_svc, snapshot_ids={d.id for d in docs})
+            kb_id, handle, vec, emb_svc, snapshot_ids={d.id for d in docs})
 
         # 3) 收尾：BM25 索引失效（重建时已 pop 一次，写回后 count 变化自动重建双保险）
-        if task["failed"] == 0 and task["done"] > 0:
+        if handle.failed == 0 and handle.done > 0:
             get_retrieval_service().invalidate_bm25(kb_id)
         logger.info("重建向量完成: kb=%s done=%d failed=%d", kb_id,
-                    task["done"], task["failed"])
+                    handle.done, handle.failed)
     except Exception as e:
         # 任务级兜底（如 get_all 异常）：任务仍标记结束，信息进 errors
         log.system_error("重建向量任务异常: kb=%s task=%s", kb_id, task_id, exc_info=True)
-        task["failed"] = task.get("failed", 0) + 1
-        task["errors"].append({"doc_id": None, "doc_name": None,
-                               "error": f"任务级异常: {str(e)[:500]}"})
+        await handle.inc_failed(doc_id=None, doc_name=None,
+                                error=f"任务级异常: {str(e)[:500]}")
+        status = TASK_FAILED
     finally:
-        task["running"] = False
-        task["current_doc"] = None
-        task["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        _save_tasks_to_disk()
+        # 置终态并释放 active_key（放掉防重占位，允许下次触发）
+        await handle.finish(status)

@@ -129,6 +129,27 @@ class Settings(BaseSettings):
     # 认证（JWT 签名密钥，必须通过 .env 注入强随机值 ≥16 字符，否则拒绝启动）
     JWT_SECRET: str = ""
 
+    # bcrypt 哈希 cost（对数轮数）：默认 12 ≈ 单次 0.2s，是生产应有的强度。
+    # 测试环境由 conftest 设为 4（bcrypt 最小值，~1ms）——全套测试每个用例都要
+    # 建种子用户（哈希一次），默认 cost 下总共要白烧 400 秒；测试验的是"哈希/
+    # 校验逻辑正确"，不是"哈希够不够慢"，降 cost 不影响测试有效性。
+    # 调高它会让登录变慢但更难暴力破解，生产一般不需要动。
+    BCRYPT_ROUNDS: int = 12
+
+    # ---- 系统级故障告警推送（红灯亮起/恢复时推到群机器人）----
+    # 群机器人 webhook 地址（钉钉/企业微信/飞书），**留空则只在本地落 [ALERT]
+    # 日志**。平台按 URL 域名自动识别，换平台不用改代码。
+    # 属于密钥材料（拿到即可向该群发消息），只走 .env，不进配置档案 UI。
+    ALERT_WEBHOOK_URL: str = ""
+    # 钉钉「加签」模式的密钥（SEC 开头）。用「自定义关键词」模式时留空。
+    ALERT_WEBHOOK_SECRET: str = ""
+
+    # 后台健康自检开关（services/health_watch.py）：启动后每 60s 主动探测关键依赖
+    # 并复核灯色，不依赖前端轮询。测试环境由 conftest 关闭——自检会真去探测依赖，
+    # 而测试里的服务地址指向不可达端口，会产生系统级故障日志、污染 logs 用例的
+    # 灯色断言。
+    HEALTH_WATCH_ENABLED: bool = True
+
     model_config = {
         "env_file": str(BASE_DIR / ".env"),
         "env_file_encoding": "utf-8",

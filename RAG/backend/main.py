@@ -28,7 +28,7 @@ from backend.routers import (audit, auth, chat, departments, ext_query, files,
 from backend.routers.documents import admin as admin_documents
 from backend.routers.documents import crud as documents
 from backend.routers.documents import smart_parse
-from backend.logger import SystemFaultFilter
+from backend.logger import HttpNoiseFilter, SystemFaultFilter
 from backend.logger.handlers import DailyRotatingFileHandler
 from backend.logger import AppLog
 
@@ -66,8 +66,23 @@ def _install_fault_filter() -> None:
             handler.addFilter(SystemFaultFilter())
 
 
+def _install_noise_filter() -> None:
+    """给 root 的所有 handler 挂第三方 HTTP 噪音 filter（幂等）
+
+    丢弃 httpx 的 2xx/3xx 请求回显与 httpcore/urllib3 连接层提示——实测占单日
+    日志的 55%（图片摘要并发时一次刷几百行），把业务日志整个淹没；**保留 4xx/5xx**
+    （依赖服务返回错误是排障重点）。原先靠 `/api/logs/tail` 的 `hide_http` 参数在
+    读取时跳过：日志照样落盘、照样占磁盘、概览统计口径照样被污染，这里从写入侧
+    拦掉。挂 handler 的理由同 _install_fault_filter。
+    """
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, HttpNoiseFilter) for f in handler.filters):
+            handler.addFilter(HttpNoiseFilter())
+
+
 _setup_file_logging()
 _install_fault_filter()
+_install_noise_filter()
 logger = logging.getLogger(__name__)
 log = AppLog(__name__)
 
@@ -115,8 +130,23 @@ async def lifespan(app: FastAPI):
     if graph_stuck:
         logger.warning("启动恢复: %d 个图谱构建中断文档已标记失败（可重新构建）",
                        len(graph_stuck))
+    # 后台任务状态恢复：进程重启后残留的 running 任务（向量重建/图谱构建）已随
+    # 进程消失，但状态仍占着 tasks.active_key（UNIQUE 约束）——不清理则同一目标
+    # 再也无法启动新任务，前端也一直显示"进行中"
+    from backend.services.task_service import reset_stuck_tasks
+    stuck_tasks = await reset_stuck_tasks()
+    if stuck_tasks:
+        logger.warning("启动恢复: %d 个中断的后台任务已标记失败（可重新触发）",
+                       stuck_tasks)
+    # 后台健康自检：**不依赖前端轮询**的告警触发源（详见 services/health_watch.py）
+    # —— 红灯判定原本由 /api/logs/health 这类接口驱动，而它们靠前端轮询；没人
+    # 打开页面就不检查、不告警。这个后台协程每 60s 主动探测依赖 + 复核灯色，
+    # 有变化时落日志并推 webhook。
+    from backend.services import health_watch
+    health_watch.start()
     logger.info("=" * 50)
     yield
+    health_watch.stop()
     logger.info("my-RAG 服务关闭")
 
 

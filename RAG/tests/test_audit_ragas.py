@@ -57,16 +57,26 @@ def _audit_items(client, headers, **params):
     return resp.json()["items"]
 
 
-def _write_retrieval_log(kb_id, query, hit_doc_ids):
-    """手工写一条今日检索日志（preview 采样数据源）"""
-    from backend.config import DATA_DIR
+def _write_retrieval_log(client, kb_id, query, hit_doc_ids):
+    """直接落库造一条今日检索日志（preview 采样数据源）
+
+    检索日志已从 `data/retrieval_logs/*.jsonl` 迁到 `retrieval_logs` 表；
+    用 `client.portal.call` 在 TestClient 同一事件循环内写库（全局 async
+    engine 绑定该 loop，另起 loop 会跨 loop 报错）。
+    """
+    from backend.db import get_session
+    from backend.models.retrieval_log_models import RetrievalLogORM
     now = datetime.now()
-    path = DATA_DIR / "retrieval_logs" / f"{now.strftime('%Y-%m-%d')}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {"ts": now.isoformat(timespec="seconds"), "kb_id": kb_id,
-             "query": query, "hit_doc_ids": list(hit_doc_ids)}
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    async def _run():
+        async with get_session() as session:
+            session.add(RetrievalLogORM(
+                kb_id=kb_id, query=query,
+                hit_doc_ids=json.dumps(list(hit_doc_ids), ensure_ascii=False),
+                created_at=now.strftime("%Y-%m-%d %H:%M:%S")))
+            await session.commit()
+
+    client.portal.call(_run)
 
 
 class TestRagasAudit:
@@ -105,7 +115,7 @@ class TestRagasAudit:
                                   fake_ragas):
         """preview 模式（仅采样不发起评估）不落审计记录"""
         kb = create_kb(client)
-        _write_retrieval_log(kb["id"], "测试问题", ["d1"])
+        _write_retrieval_log(client, kb["id"], "测试问题", ["d1"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"], "preview": True, "sample_count": 5,
             "sample_source": "logs",

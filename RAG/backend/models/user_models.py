@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.db import Base
@@ -136,6 +136,32 @@ class AuditLogORM(Base):
     ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16))
     created_at: Mapped[str] = mapped_column(String(32), index=True)
+
+
+class LoginAttemptORM(Base):
+    """登录失败记录（防爆破计数，**落库而非进程内存**）
+
+    为什么落库：内存实现（旧版 `rate_limit._failures`）在单 worker 下够用，
+    但多 worker 部署时各进程独立计数——攻击者打到不同 worker 即重置，限流
+    阈值被放大 N 倍（N=worker 数）。落库后与进程数无关，重启也不清零。
+
+    表很小（只在登录失败时写一条，超窗记录由 record_failure 顺带清理），
+    索引为两条固定查询路径服务：
+    - (ip, attempted_at) 复合索引：`WHERE ip=? AND attempted_at > cutoff`
+      （判定是否锁定）与 `DELETE WHERE ip=?`（登录成功清零）；
+    - attempted_at 单列索引：`DELETE WHERE attempted_at < cutoff`
+      （全表清理超窗记录，不带 ip 前缀，用不上复合索引）。
+    时间同样用 "%Y-%m-%d %H:%M:%S" 字符串，字典序即时间序。
+    """
+    __tablename__ = "login_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    ip: Mapped[str] = mapped_column(String(64))
+    attempted_at: Mapped[str] = mapped_column(String(32), index=True)
+
+    __table_args__ = (
+        Index("idx_login_attempts_ip_time", "ip", "attempted_at"),
+    )
 
 
 class AuditLogPublic(BaseModel):

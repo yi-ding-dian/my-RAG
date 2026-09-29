@@ -88,9 +88,12 @@ class RetrievalService:
                         and bool((rcfg.base_url or "").strip())
                         and bool((rcfg.model or "").strip()))
         if enable_hybrid is not None or enable_rerank is not None:
-            logger.info("检索实验参数: kb=%s enable_hybrid=%s enable_rerank=%s "
-                        "top_k=%d min_score=%.4f",
-                        kb_id, enable_hybrid, enable_rerank, top_k, min_score)
+            # DEBUG 级：这是**检索实验页**每次试参数都打一条的调试信息，实测占
+            # 单日日志 13%（仅次于 httpx 回显）。实验参数在请求响应里已回显给
+            # 用户，排查时需要再临时开到 DEBUG。
+            logger.debug("检索实验参数: kb=%s enable_hybrid=%s enable_rerank=%s "
+                         "top_k=%d min_score=%.4f",
+                         kb_id, enable_hybrid, enable_rerank, top_k, min_score)
 
         # rerank 启用时先产出更多候选（top_n），重排后再截取 top_k
         candidate_count = max(top_k, rcfg.top_n) if rerank_ready else top_k
@@ -152,7 +155,7 @@ class RetrievalService:
         # 共用此入口自动覆盖；日志失败仅告警不影响检索结果）
         try:
             from backend.services.retrieval_log import get_retrieval_log_service
-            get_retrieval_log_service().log(
+            await get_retrieval_log_service().log(
                 kb_id, query,
                 list(dict.fromkeys(s.document_id for s in sources
                                    if s.document_id)))

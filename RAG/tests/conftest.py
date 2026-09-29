@@ -29,6 +29,7 @@ import os
 import shutil
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +45,22 @@ os.environ["DATA_DIR"] = str(TEST_DATA_DIR)
 os.environ["MYSQL_URL"] = "sqlite+aiosqlite://"
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["JWT_SECRET"] = "test-secret-test-secret"
+# 告警 webhook 置空（**防止测试真的往群里发消息**）：.env 里配了真实的钉钉/
+# 企微地址，而 pydantic-settings 会读 .env —— 不覆盖的话，凡触发 notify_health
+# 的用例（logs overview/health/ack 那些）都会向真实群推送。环境变量优先级
+# 高于 .env 文件，置空即屏蔽。webhook 推送逻辑本身由 test_alert_webhook.py
+# 用 fake httpx 显式验证。
+os.environ["ALERT_WEBHOOK_URL"] = ""
+os.environ["ALERT_WEBHOOK_SECRET"] = ""
+# 后台健康自检关闭：它会在 STARTUP_DELAY 后真去探测依赖，而测试里的服务地址
+# 指向不可达端口（59999 等），探测失败会写系统级故障日志 → 污染 logs 用例的
+# 灯色断言（"期望绿灯"的用例读到别处产生的故障）。自检逻辑本身由
+# test_health_watch.py 用 monkeypatch 显式验证。
+os.environ["HEALTH_WATCH_ENABLED"] = "false"
+# bcrypt cost 降到最小值 4：默认 12 单次约 0.2s，而每个用例的 client fixture
+# 都要 init_db 建种子用户（哈希一次），近两千用例累计约 400 秒纯等待。
+# 测试验的是哈希/校验逻辑，不是哈希够不够慢，降 cost 不影响有效性。
+os.environ["BCRYPT_ROUNDS"] = "4"
 # 登录限速关闭：测试同 IP 高频登录（含专门验证 401 的用例）会累积失败计数，
 # 触发 429 锁定误伤后续用例（限流自身的行为由 test_rate_limit.py 显式开启验证）
 os.environ["LOGIN_RATE_LIMIT_ENABLED"] = "false"
@@ -188,6 +205,10 @@ def _isolated_env():
         d.mkdir(parents=True, exist_ok=True)
     for p in list(DATA_DIR.glob("*.json")) + list(DATA_DIR.glob("*.jsonl")):
         p.unlink()
+    # 告警去重状态（alert.notify_health 落盘于 data/logs/）：该目录不在上面
+    # 的清空范围内，不单独删会让灯色在用例间串味（上个用例留下的红灯状态
+    # 会让下个用例的「首次绿灯不报」断言失败）
+    (DATA_DIR / "logs" / ".alert_state.json").unlink(missing_ok=True)
     reset_services()
     yield
 
@@ -306,6 +327,32 @@ def user_headers(client, admin_headers, dept_admin_headers):
     dept_id = _find_dept_id(client, admin_headers, "测试部门")
     return create_user(client, admin_headers, dept_id,
                        "user_test", "user123456", "普通用户")
+
+
+# ==================== 检索日志（测试造数据） ====================
+
+def write_retrieval_log(client, kb_id, query, hit_doc_ids, days_ago=0):
+    """直接落库造一条检索日志（days_ago 天前），供质量统计/采样用例构造输入
+
+    检索日志已从 `data/retrieval_logs/*.jsonl` 迁到 `retrieval_logs` 表；
+    测试需要"N 天前"的历史数据，走不了真实检索路径，故直接写库。
+
+    用 `client.portal.call` 在 TestClient **自己的事件循环**里执行——全局
+    async engine 绑定该 loop，另起 loop（如 asyncio.run）会报跨 loop 错误。
+    """
+    from backend.db import get_session
+    from backend.models.retrieval_log_models import RetrievalLogORM
+    d = datetime.now() - timedelta(days=days_ago)
+
+    async def _run():
+        async with get_session() as session:
+            session.add(RetrievalLogORM(
+                kb_id=kb_id, query=query,
+                hit_doc_ids=json.dumps(list(hit_doc_ids), ensure_ascii=False),
+                created_at=d.strftime("%Y-%m-%d %H:%M:%S")))
+            await session.commit()
+
+    client.portal.call(_run)
 
 
 # ==================== 离线 mock：embedding ====================

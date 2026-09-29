@@ -38,6 +38,35 @@ def _force_ingested(doc_svc, doc_id, chunks_meta):
                        chunk_count=len(chunks_meta))
 
 
+class _FakeHandle:
+    """TaskHandle 测试替身（单元测试不碰数据库，只验计数与调用）
+
+    `_backfill_missing_vectors` 的进度句柄已从 dict 改为 TaskHandle
+    （进度落 tasks 表，跨 worker 可见）；纯单元测试不需要真库，用它顶替。
+    """
+
+    def __init__(self, done: int = 0, failed: int = 0):
+        self.done = done
+        self.failed = failed
+        self.total = 0
+        self.current_doc = None
+        self.errors: list = []
+
+    async def set_total(self, total: int) -> None:
+        self.total = total
+
+    async def set_current(self, name) -> None:
+        self.current_doc = name
+
+    async def inc_done(self) -> None:
+        self.done += 1
+
+    async def inc_failed(self, *, doc_id, doc_name, error) -> None:
+        self.failed += 1
+        self.errors.append({"doc_id": doc_id, "doc_name": doc_name,
+                            "error": error})
+
+
 class TestBackfillUnit:
 
     def test_backfill_missing_vectors(self):
@@ -65,12 +94,12 @@ class TestBackfillUnit:
             # C：uploaded（不参与补齐）
             doc_svc.create(kb_id=kb_id, original_name="C.txt", size=10)
 
-            task = {"done": 1, "failed": 0, "errors": [], "current_doc": None}
+            handle = _FakeHandle(done=1)
             await dim_check._backfill_missing_vectors(
-                kb_id, task, vec, FakeEmb(), snapshot_ids={a.id})
+                kb_id, handle, vec, FakeEmb(), snapshot_ids={a.id})
 
-            assert task["done"] == 2 and task["failed"] == 0
-            assert task["total"] == 2  # total 含增量文档（A+B，C 未入库不算）
+            assert handle.done == 2 and handle.failed == 0
+            assert handle.total == 2  # total 含增量文档（A+B，C 未入库不算）
             allv = await vec.get_all(kb_id)
             doc_ids = {m.get("document_id") for _, _, m in allv}
             assert doc_ids == {a.id, b.id}
@@ -98,11 +127,11 @@ class TestBackfillUnit:
                             [{"text": "A 内容一", "char_start": 0, "char_end": 4}])
             await vec.add(kb_id, a.id, "A.txt", ["A 内容一"],
                     [char_vector("A 内容一")])
-            task = {"done": 0, "failed": 0, "errors": [], "current_doc": None}
+            handle = _FakeHandle()
             # 快照不含 A（模拟重建期间新入库），但 collection 已有其向量
             await dim_check._backfill_missing_vectors(
-                kb_id, task, vec, FakeEmb(), snapshot_ids=set())
-            assert task["done"] == 0 and task["failed"] == 0
+                kb_id, handle, vec, FakeEmb(), snapshot_ids=set())
+            assert handle.done == 0 and handle.failed == 0
             assert len(await vec.get_all(kb_id)) == 1  # 未重复写入
 
         asyncio.run(_run())
@@ -121,9 +150,9 @@ class TestBackfillUnit:
             _force_ingested(doc_svc, b.id,
                             [{"text": "B 内容一", "char_start": 0, "char_end": 4}])
             doc_svc.soft_delete(b.id)  # 重建期间被软删
-            task = {"done": 0, "failed": 0, "errors": [], "current_doc": None}
+            handle = _FakeHandle()
             await dim_check._backfill_missing_vectors(
-                kb_id, task, vec, FakeEmb(), snapshot_ids=set())
+                kb_id, handle, vec, FakeEmb(), snapshot_ids=set())
             metas = [m for _, _, m in await vec.get_all(kb_id)]
             assert len(metas) == 1
             assert metas[0]["doc_active"] is False

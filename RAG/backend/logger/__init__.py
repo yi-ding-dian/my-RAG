@@ -13,6 +13,8 @@
 `alert`（红灯上报口子），业务代码一般不用直接碰。
 """
 from backend.logger.app_log import AppLog, LogLevel
-from backend.logger.filters import SYSTEM_PREFIX, SystemFaultFilter
+from backend.logger.filters import (SYSTEM_PREFIX, HttpNoiseFilter,
+                                    SystemFaultFilter)
 
-__all__ = ["AppLog", "LogLevel", "SYSTEM_PREFIX", "SystemFaultFilter"]
+__all__ = ["AppLog", "LogLevel", "SYSTEM_PREFIX", "HttpNoiseFilter",
+           "SystemFaultFilter"]

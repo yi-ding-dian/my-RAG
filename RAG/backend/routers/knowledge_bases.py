@@ -271,7 +271,7 @@ async def rebuild_vectors(request: Request, kb_id: str,
     响应契约: {task_id}（已有 running 任务时复用，幂等防重复触发）
     """
     kb = await kb_or_404(db, kb_id, user, manage=True)
-    task_id = start_rebuild_task(kb_id)
+    task_id = await start_rebuild_task(kb_id)
     asyncio.create_task(run_rebuild_task(kb_id, task_id))
     await audit_service.record_action(
         user, action="kb.rebuild-vectors", target_type="kb",
@@ -290,4 +290,4 @@ async def rebuild_status(kb_id: str, db: AsyncSession = Depends(get_db),
     - 无任务历史时: task_id=null, running=false, done/total/failed=0
     """
     await kb_or_404(db, kb_id, user)
-    return get_rebuild_status(kb_id)
+    return await get_rebuild_status(kb_id)

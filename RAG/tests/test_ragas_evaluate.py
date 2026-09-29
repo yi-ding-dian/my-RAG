@@ -15,13 +15,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
 
 import pytest
 
 from backend.config import DATA_DIR, get_active_config
 from backend.services import ragas_sampling
-from conftest import create_kb
+from conftest import create_kb, write_retrieval_log
 
 # 测试样本默认指标（与路由默认一致：需 ground_truth 的 3 个——
 # 手动测试集场景用户填了正确答案，默认启用可评标准答案的指标）
@@ -30,23 +29,6 @@ DEFAULT_METRICS = ["context_recall", "answer_correctness", "answer_similarity"]
 
 # ==================== 工具：写日志 / 写会话 ====================
 
-def _log_dir():
-    return DATA_DIR / "retrieval_logs"
-
-
-def _write_log(kb_id, query, hit_doc_ids, days_ago=0):
-    """手工写一条检索日志（days_ago 天前，构造跨天数据）"""
-    d = datetime.now() - timedelta(days=days_ago)
-    path = _log_dir() / f"{d.strftime('%Y-%m-%d')}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "ts": d.isoformat(timespec="seconds"),
-        "kb_id": kb_id,
-        "query": query,
-        "hit_doc_ids": list(hit_doc_ids),
-    }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _write_session(kb_id, session_id, pairs, updated_at="2026-08-08 10:00:00"):
@@ -110,26 +92,28 @@ def fake_ragas(monkeypatch):
 
 class TestSampling:
 
-    def test_logs_dedup_recent_answer_empty(self):
+    def test_logs_dedup_recent_answer_empty(self, client):
         """logs 采样：query 去重保留最近一次，answer 留空（非必填），空白 query 跳过"""
         kb_id = "kb-sampling-logs"
-        _write_log(kb_id, "历史问题", ["d1"], days_ago=1)
-        _write_log(kb_id, "历史问题", ["d1"], days_ago=1)  # 重复
-        _write_log(kb_id, "   ", [], days_ago=0)          # 空白 query 跳过
-        _write_log(kb_id, "最新问题", ["d2"], days_ago=0)
-        samples = ragas_sampling.sample_from_logs(kb_id, 10)
+        write_retrieval_log(client, kb_id, "历史问题", ["d1"], days_ago=1)
+        write_retrieval_log(client, kb_id, "历史问题", ["d1"], days_ago=1)  # 重复
+        write_retrieval_log(client, kb_id, "   ", [], days_ago=0)          # 空白 query 跳过
+        write_retrieval_log(client, kb_id, "最新问题", ["d2"], days_ago=0)
+        # sample_from_logs 已随检索日志落库改为 async：用 portal 在同一 loop 调用
+        samples = client.portal.call(ragas_sampling.sample_from_logs, kb_id, 10)
         questions = [s["question"] for s in samples]
         # 倒序遍历保最近：最新问题(今天) 先于 历史问题(昨天)，去重后各一条
         assert questions == ["最新问题", "历史问题"]
         assert all(s["answer"] == "" for s in samples)
-        assert ragas_sampling.sample_from_logs("kb-none", 10) == []
+        assert client.portal.call(
+            ragas_sampling.sample_from_logs, "kb-none", 10) == []
 
-    def test_logs_limit(self):
+    def test_logs_limit(self, client):
         """logs 采样：limit 截断"""
         kb_id = "kb-sampling-limit"
         for i in range(5):
-            _write_log(kb_id, f"问题{i}", ["d"])
-        samples = ragas_sampling.sample_from_logs(kb_id, 2)
+            write_retrieval_log(client, kb_id, f"问题{i}", ["d"])
+        samples = client.portal.call(ragas_sampling.sample_from_logs, kb_id, 2)
         assert len(samples) == 2
 
     def test_chat_pairs_assembly(self):
@@ -173,9 +157,9 @@ class TestStartEvaluation:
         """logs 来源全流程：采样去重 → contexts（空库=空列表）→ 上传 → 创建任务
         （llm 覆盖活跃配置）→ 元数据落盘 → 响应"""
         kb = create_kb(client)  # 空库
-        _write_log(kb["id"], "Python 是什么？", ["d1"])
-        _write_log(kb["id"], "Python 是什么？", ["d1"])  # 重复应去重
-        _write_log(kb["id"], "如何部署？", ["d2"])
+        write_retrieval_log(client, kb["id"], "Python 是什么？", ["d1"])
+        write_retrieval_log(client, kb["id"], "Python 是什么？", ["d1"])  # 重复应去重
+        write_retrieval_log(client, kb["id"], "如何部署？", ["d2"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"], "sample_count": 20, "sample_source": "logs",
             "top_k": 3,
@@ -249,7 +233,7 @@ class TestStartEvaluation:
                                            admin_headers, fake_ragas):
         """自定义指标透传（含去重保序）"""
         kb = create_kb(client)
-        _write_log(kb["id"], "问题", ["d"])
+        write_retrieval_log(client, kb["id"], "问题", ["d"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"], "metrics": ["faithfulness", "faithfulness",
                                            "context_recall", "answer_relevancy"],
@@ -341,7 +325,7 @@ class TestPermissions:
                                           dept_admin_headers, fake_ragas):
         """dept_admin 本部门库可发起"""
         kb = create_kb(client, headers=dept_admin_headers)  # 建库强制本部门
-        _write_log(kb["id"], "部门问题", ["d"])
+        write_retrieval_log(client, kb["id"], "部门问题", ["d"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"],
         }, headers=dept_admin_headers)

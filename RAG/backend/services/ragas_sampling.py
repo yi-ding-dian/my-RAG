@@ -4,9 +4,9 @@
 - 手动测试集（stats 路由组装）：用户填写问题 + 正确答案（=ground_truth），
   不经过本模块采样，仅复用 fill_contexts 检索填上下文。
 - 自动采样（本模块，从知识库真实使用记录中采样）：
-  - logs（默认）：data/retrieval_logs 近 30 天该 kb 的真实检索问题。按 query
-    去重保留最近一次，answer 留空（RAGAS 样本 answer 非必填，默认 ""），可
-    评估忠实度/上下文类指标；局限：无标准答案，需 ground_truth 的指标不可用。
+  - logs（默认）：检索日志（retrieval_logs 表）近 30 天该 kb 的真实检索问题。
+    按 query 去重保留最近一次，answer 留空（RAGAS 样本 answer 非必填，默认 ""），
+    可评估忠实度/上下文类指标；局限：无标准答案，需 ground_truth 的指标不可用。
   - chat：data/chat 该 kb 会话中的 user 问题 + 对应 assistant 回答（最近会话
     优先，问题去重，答案截断 MAX_ANSWER_CHARS 防超长样本撑爆数据集）。
 - contexts：对每个问题调 retrieval_service.retrieve(kb_id, question, top_k)，
@@ -44,13 +44,14 @@ RAGAS_TASKS_FILE: Path = DATA_DIR / "ragas_tasks.json"
 
 # ==================== 采样 ====================
 
-def sample_from_logs(kb_id: str, limit: int) -> List[Dict]:
+async def sample_from_logs(kb_id: str, limit: int) -> List[Dict]:
     """从检索日志采样真实问题（近 30 天，query 去重保最近，answer 留空）
 
     返回 [{question, answer: ""}, ...]（最多 limit 条，最近优先）；
-    日志 query 落盘时截断 100 字（retrieval_log 约束）。
+    日志 query 落库时截断 100 字（retrieval_log 约束）。
     """
-    entries = get_retrieval_log_service().read(kb_id, window_days=SAMPLE_WINDOW_DAYS)
+    entries = await get_retrieval_log_service().read(
+        kb_id, window_days=SAMPLE_WINDOW_DAYS)
     seen: set = set()
     out: List[Dict] = []
     # 日志按时间正序 → 倒序遍历保证去重后保留"最近一次"出现

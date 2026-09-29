@@ -1,118 +1,121 @@
-"""检索质量日志：data/retrieval_logs/{YYYY-MM-DD}.jsonl
+"""检索质量日志：落库（retrieval_logs 表，见 models/retrieval_log_models.py）
 
-- log(): 每次检索完成后追加一条 {"ts": iso, "kb_id", "query"(前100字),
-  "hit_doc_ids": [...]}；无命中时 hit_doc_ids 为空数组（保证日粒度
-  hit_rate = 有命中的检索数 / 总检索数 语义成立，zero_hit 判断也准确）
-- 按天轮转，保留 30 天（写入/读取时清理过期文件；单例首次创建即清理一次，
-  覆盖"启动"与"写入"两个时机）
-- 线程锁保证并发追加不交错（单行追加 + OS append 原子性双保险）
+- `log()`：每次检索完成后追加一条（query 截断 100 字，无命中时 hit_doc_ids
+  为空数组——保证日粒度 hit_rate = 有命中的检索数 / 总检索数 语义成立，
+  zero_hit 判断也准确）
+- `read()`：近 window_days 天内该 kb 的条目，按时间正序；走
+  `(kb_id, created_at)` 索引，只读该 kb 窗口内的行
+  （原 JSONL 版是全量扫 30 天文件 + 逐行 json.loads + 再按 kb_id 过滤，
+  复杂度 O(30 天总历史量)）
+- 保留 RETENTION_DAYS 天：写入时顺带清理超窗记录，表大小有界
 
-调用位置说明：由 retrieval_service.retrieve 成功返回前统一记录（chat
-SSE 问答与检索测试页共用同一入口），不在路由层重复埋点——所有检索入口
-自动覆盖，且不触碰检索核心逻辑。
+调用位置说明：由 `retrieval_service.retrieve` 成功返回前统一记录（chat SSE
+问答与检索测试页共用同一入口），不在路由层重复埋点——所有检索入口自动覆盖，
+且不触碰检索核心逻辑。
 """
 from __future__ import annotations
 
 import json
 import logging
-import threading
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Dict, List, Optional
 
-from backend.config import DATA_DIR
+from sqlalchemy import delete, select
+
+from backend.db import get_session
+from backend.models.retrieval_log_models import RetrievalLogORM
+from backend.models.user_models import now_str
 
 logger = logging.getLogger(__name__)
 
-# 日志保留天数（超过该天数的 jsonl 文件在写入/读取时清理）
+# 日志保留天数（超过该天数的记录在写入时清理）
 RETENTION_DAYS = 30
-# query 落盘截断长度（防止超长问题撑爆日志）
+# query 截断长度（防止超长问题撑爆日志）
 MAX_QUERY_CHARS = 100
 
-LOG_DIR = DATA_DIR / "retrieval_logs"
+
+def _read_start(days: int) -> str:
+    """读取窗口起点："含今天在内共 days 天"的第一天（日期字符串）
+
+    与原 JSONL 版一致（那边按文件名日期过滤 `fdate < today - (days-1)`）。
+    日期字符串与 created_at（"%Y-%m-%d %H:%M:%S"）比较：字典序即时间序。
+    """
+    start = datetime.now().date() - timedelta(days=max(1, days) - 1)
+    return start.strftime("%Y-%m-%d")
+
+
+def _cleanup_cutoff(days: int) -> str:
+    """清理阈值：早于该日期的记录删除
+
+    比读取窗口再多留 1 天（与原实现的边界行为一致：cutoff = today - days，
+    删除 `fdate < cutoff`）。
+    """
+    cutoff = datetime.now().date() - timedelta(days=max(1, days))
+    return cutoff.strftime("%Y-%m-%d")
+
+
+def _to_entry(row: RetrievalLogORM) -> Dict:
+    """ORM → 对外契约（保持原 JSONL 的字段名与 ts 格式，调用方无需改动）"""
+    try:
+        hits = json.loads(row.hit_doc_ids) if row.hit_doc_ids else []
+    except (TypeError, ValueError):
+        hits = []
+    return {
+        # 原契约的 ts 是 ISO 格式（datetime.isoformat）；库里按项目惯例存空格
+        # 分隔，这里换回 ISO——_build_daily 的 fromisoformat 两种都吃，但保持
+        # 契约不变更稳妥
+        "ts": row.created_at.replace(" ", "T"),
+        "kb_id": row.kb_id,
+        "query": row.query,
+        "hit_doc_ids": hits,
+    }
 
 
 class RetrievalLogService:
 
-    def __init__(self):
-        self._lock = threading.Lock()
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            self._cleanup_expired()
-        except Exception as e:
-            logger.warning("检索日志目录初始化清理失败: %s", e)
-
     # ---------------- 写入 ----------------
 
-    def log(self, kb_id: str, query: str, hit_doc_ids: List[str]) -> None:
-        """追加一条检索日志（检索完成时调用，含无命中的空数组条目）"""
-        entry = {
-            "ts": datetime.now().isoformat(timespec="seconds"),
-            "kb_id": kb_id,
-            "query": (query or "").strip()[:MAX_QUERY_CHARS],
-            "hit_doc_ids": list(hit_doc_ids),
-        }
+    async def log(self, kb_id: str, query: str, hit_doc_ids: List[str]) -> None:
+        """追加一条检索日志（检索完成时调用，含无命中的空数组条目）
+
+        并发安全由数据库保证（原实现是文件追加 + 线程锁）。写失败仅告警，
+        绝不影响检索主流程。
+        """
         try:
-            with self._lock:
-                self._cleanup_expired()
-                path = LOG_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.jsonl"
-                with path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except Exception as e:
-            # 日志失败绝不影响检索主流程
-            logger.warning("检索日志写入失败: kb=%s err=%s", kb_id, e)
+            async with get_session() as session:
+                session.add(RetrievalLogORM(
+                    kb_id=kb_id,
+                    query=(query or "").strip()[:MAX_QUERY_CHARS],
+                    hit_doc_ids=json.dumps(list(hit_doc_ids),
+                                           ensure_ascii=False),
+                    created_at=now_str()))
+                # 顺带清理超窗记录（全表）：让表大小有界，不必另起定时任务
+                await session.execute(
+                    delete(RetrievalLogORM).where(
+                        RetrievalLogORM.created_at < _cleanup_cutoff(RETENTION_DAYS)))
+                await session.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("检索日志写入失败: kb=%s err=%s", kb_id, str(e)[:150])
 
     # ---------------- 读取 ----------------
 
-    def read(self, kb_id: str, window_days: int = RETENTION_DAYS) -> List[Dict]:
+    async def read(self, kb_id: str, window_days: int = RETENTION_DAYS) -> List[Dict]:
         """读取近 window_days 天内（含今天）该 kb 的日志条目，按时间正序
 
-        只读当前留存的文件；文件缺失/行损坏静默跳过（数据不足返回空列表，
-        调用方按无数据展示，不报错）。
+        数据不足/查询失败返回空列表（调用方按无数据展示，不报错）。
         """
-        today = datetime.now().date()
-        start = today - timedelta(days=window_days - 1)
-        entries: List[Dict] = []
         try:
-            for f in sorted(LOG_DIR.glob("*.jsonl")):
-                fdate = self._parse_filename_date(f)
-                if fdate is None or fdate < start or fdate > today:
-                    continue
-                for line in f.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if d.get("kb_id") == kb_id:
-                        entries.append(d)
-        except Exception as e:
-            logger.warning("检索日志读取失败: kb=%s err=%s", kb_id, e)
-        return entries
-
-    # ---------------- 清理 ----------------
-
-    @staticmethod
-    def _parse_filename_date(path: Path) -> Optional[object]:
-        """从文件名（YYYY-MM-DD.jsonl）解析日期；命名不合规返回 None"""
-        try:
-            return datetime.strptime(path.stem, "%Y-%m-%d").date()
-        except ValueError:
-            return None
-
-    def _cleanup_expired(self) -> None:
-        """删除超过 RETENTION_DAYS 天的日志文件（命名不合规的文件保留）"""
-        cutoff = datetime.now().date() - timedelta(days=RETENTION_DAYS)
-        for f in LOG_DIR.glob("*.jsonl"):
-            fdate = self._parse_filename_date(f)
-            if fdate is not None and fdate < cutoff:
-                try:
-                    f.unlink(missing_ok=True)
-                    logger.info("检索日志过期清理: %s", f.name)
-                except OSError as e:
-                    logger.warning("检索日志清理失败: %s err=%s", f.name, e)
+            async with get_session() as session:
+                rows = (await session.execute(
+                    select(RetrievalLogORM)
+                    .where(RetrievalLogORM.kb_id == kb_id,
+                           RetrievalLogORM.created_at >= _read_start(window_days))
+                    .order_by(RetrievalLogORM.created_at, RetrievalLogORM.id)
+                )).scalars().all()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("检索日志读取失败: kb=%s err=%s", kb_id, str(e)[:150])
+            return []
+        return [_to_entry(r) for r in rows]
 
 
 _retrieval_log_service: Optional[RetrievalLogService] = None

@@ -17,13 +17,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
 
 import pytest
 
 from backend.config import DATA_DIR, get_active_config
 from backend.services import ragas_sampling
-from conftest import create_kb, upload_and_ingest
+from conftest import create_kb, upload_and_ingest, write_retrieval_log
 
 # 手动测试集场景的默认指标（与路由默认一致：需 ground_truth 的 3 个）
 DEFAULT_METRICS = ["context_recall", "answer_correctness", "answer_similarity"]
@@ -31,23 +30,6 @@ DEFAULT_METRICS = ["context_recall", "answer_correctness", "answer_similarity"]
 
 # ==================== 工具：写日志 / 写会话 ====================
 
-def _log_dir():
-    return DATA_DIR / "retrieval_logs"
-
-
-def _write_log(kb_id, query, hit_doc_ids, days_ago=0):
-    """手工写一条检索日志（days_ago 天前，构造跨天数据）"""
-    d = datetime.now() - timedelta(days=days_ago)
-    path = _log_dir() / f"{d.strftime('%Y-%m-%d')}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "ts": d.isoformat(timespec="seconds"),
-        "kb_id": kb_id,
-        "query": query,
-        "hit_doc_ids": list(hit_doc_ids),
-    }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _write_session(kb_id, session_id, pairs, updated_at="2026-08-08 10:00:00"):
@@ -119,7 +101,7 @@ class TestManualSamples:
         无日志无会话（空库）也能发起——证明未走自动采样路径；
         同时传 sample_count=0（自动采样模式会 400）也成功——证明参数被忽略。
         """
-        def _boom(*args, **kwargs):
+        async def _boom(*args, **kwargs):
             raise AssertionError("samples 模式不应调用采样逻辑")
         monkeypatch.setattr("backend.routers.stats.ragas_sampling.sample_from_logs",
                             _boom)
@@ -277,7 +259,7 @@ class TestPreviewMode:
                           fake_ragas):
         """logs 来源预览：question + answer 留空"""
         kb = create_kb(client)
-        _write_log(kb["id"], "真实问题", ["d1"])
+        write_retrieval_log(client, kb["id"], "真实问题", ["d1"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"], "sample_source": "logs", "preview": True,
         }, headers=admin_headers)
@@ -289,7 +271,7 @@ class TestPreviewMode:
                                      admin_headers, fake_ragas):
         """预览模式不校验 metrics（非法指标也能预览，无需选指标）"""
         kb = create_kb(client)
-        _write_log(kb["id"], "问题", ["d"])
+        write_retrieval_log(client, kb["id"], "问题", ["d"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"], "metrics": ["not_a_metric"], "preview": True,
         }, headers=admin_headers)
@@ -326,7 +308,7 @@ class TestCompatibility:
                                                 admin_headers, fake_ragas):
         """不传 samples → 走自动采样（logs），元数据 source=logs（原逻辑）"""
         kb = create_kb(client)
-        _write_log(kb["id"], "旧调用问题", ["d"])
+        write_retrieval_log(client, kb["id"], "旧调用问题", ["d"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"], "sample_source": "logs", "sample_count": 10,
         }, headers=admin_headers)

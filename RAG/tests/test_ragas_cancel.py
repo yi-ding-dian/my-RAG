@@ -15,26 +15,14 @@
 """
 from __future__ import annotations
 
-import json
-from datetime import datetime
-
 import pytest
 
-from backend.config import DATA_DIR
 from backend.services import ragas_sampling
 from backend.services.ragas_client import RagasApiError
-from conftest import create_department_and_admin, create_kb
+from conftest import (create_department_and_admin, create_kb,
+                      write_retrieval_log)
 
 
-def _write_log(kb_id, query, hit_doc_ids):
-    """手工写一条检索日志（构造发起评估的采样输入）"""
-    d = datetime.now()
-    path = DATA_DIR / "retrieval_logs" / f"{d.strftime('%Y-%m-%d')}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {"ts": d.isoformat(timespec="seconds"), "kb_id": kb_id,
-             "query": query, "hit_doc_ids": list(hit_doc_ids)}
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _uid(client, headers) -> str:
@@ -221,7 +209,7 @@ class TestMetaUserIdSource:
                                    admin_headers):
         """发起评估 → 本地元数据记录发起人 user_id（取消权限校验依据）"""
         kb = create_kb(client)
-        _write_log(kb["id"], "Python 是什么？", ["d1"])
+        write_retrieval_log(client, kb["id"], "Python 是什么？", ["d1"])
         resp = client.post("/api/stats/ragas/evaluations", json={
             "kb_id": kb["id"],
         }, headers=admin_headers)

@@ -35,6 +35,8 @@ from backend.models.rag_models import (ChunkInfo, DocumentDetail,
                                        DocxOutlineResponse, GraphBuildRequest,
                                        IngestRequest, ParsedHeading,
                                        RenameDocumentRequest, UrlImportRequest)
+from backend.models.task_models import (TASK_CANCELLED, TASK_DONE, TASK_FAILED,
+                                        TASK_TYPE_GRAPH)
 from backend.models.user_models import UserPublic
 from backend.services import audit_service
 from backend.services.document_service import (SUPPORTED_EXTS,
@@ -51,6 +53,8 @@ from backend.services.parsers.probe import probe_parsers
 from backend.services.retrieval_service import get_retrieval_service
 from backend.services.settings.service import find_llm_item
 from backend.services.storage_service import get_storage_service
+from backend.services.task_service import (TaskHandle, claim_task,
+                                           request_cancel, watch_cancel)
 from backend.services.vector_store import get_vector_store
 from backend.services.web_importer import (WebFetchError, build_filename,
                                            fetch_webpage)
@@ -1039,16 +1043,18 @@ async def purge_document(request: Request, kb_id: str, doc_id: str,
     return {"message": "文档已彻底删除", "doc_id": doc_id}
 
 
-# 图谱构建任务进程内并发保护（双保险：graph_status=building 持久化为主判定，
-# 路由校验与任务启动之间存在异步窗口，set 防同一文档重复触发）
-_GRAPH_RUNNING: set = set()
-# 图谱构建中断信号：doc_id → asyncio.Event（cancel 接口 set，任务检查点消费，
-# 任务结束 finally 清理；构建中中断 → 任务尽快停止、恢复原状态、不落盘）
-_GRAPH_CANCEL: dict = {}
+# 图谱构建任务的并发保护与中断信号已改为落库（models/task_models.py 的 tasks 表）：
+# - 防重：tasks.active_key 的 UNIQUE 约束（"graph:{doc_id}"）替代原进程内 set，
+#   跨 worker 安全，也不再有"路由校验 → 任务启动"之间漏判的异步窗口；
+# - 中断：tasks.cancel_requested 标志 + watch_cancel 桥接成进程内 Event
+#   （原 _GRAPH_CANCEL 存 Event 对象，取消请求打到别的 worker 就找不到它 → 409
+#   "当前不在图谱构建中"，而任务其实在跑）。
+# 主判定仍是 doc.graph_status == "building"（路由层 409 用）；两者互补：前者
+# 给用户即时反馈，tasks 表保证同一文档不会并发构建两次。
 
 
-async def _run_graph_build(kb_id: str, doc_id: str, llm_model: Optional[str] = None,
-                           cancel_event: Optional[asyncio.Event] = None):
+async def _run_graph_build(kb_id: str, doc_id: str,
+                           llm_model: Optional[str] = None):
     """后台图谱补建/重建任务（路由层 asyncio.create_task 调用）
 
     - 复用文档现有切块（chunks_meta 的 text+偏移重建 Chunk），不重新解析、
@@ -1061,25 +1067,36 @@ async def _run_graph_build(kb_id: str, doc_id: str, llm_model: Optional[str] = N
       任务内生效，不写回 doc.parser_config，再次构建不带该字段仍用文档
       原配置/激活模型）；不传/空 → 沿用文档 parser_config.parse_llm_model；
       传了但不在激活档案 → 回退文档配置/激活模型（warning 日志，不失败）
-    - cancel_event（可选）：中断信号——置位后 build_graph_for_doc 取消未
-      开始的块抽取且不落盘，本任务恢复构建前原状态（graph_status 不变，
-      旧图谱保留），_GRAPH_RUNNING 释放后可再次构建
+    - 中断：取消接口写 tasks.cancel_requested（任何 worker 都可写），
+      本进程的 watch_cancel 轮询到后 set 进程内 Event；build_graph_for_doc
+      的检查点照旧检查该 Event。置位后取消未开始的块抽取且不落盘，本任务
+      恢复构建前原状态（graph_status 不变，旧图谱保留），释放后可再次构建
     - build_graph_for_doc 内建幂等：合并前 remove_doc_refs 清该文档旧引用
       → 重建天然"清旧覆盖"，实体/关系不翻倍
     - 状态机：building（任务开始）→ ready（成功）/ failed + graph_error（异常）
     - 抽取全部失败（LLM 未配置/调用全失败/响应全无效）按失败处理，原因写回
       graph_error 供前端 tooltip 展示
+
+    任务进度与占位落在 tasks 表（`active_key` 唯一约束防重）——抢占失败说明
+    已有任务在跑，本次静默跳过，不再依赖进程内 set。
     """
     doc_svc = get_document_service()
-    if doc_id in _GRAPH_RUNNING:
+    task_id = await claim_task(TASK_TYPE_GRAPH, doc_id)
+    if task_id is None:
+        logger.info("图谱构建任务已存在，跳过重复启动: doc=%s kb=%s", doc_id, kb_id)
         return
-    _GRAPH_RUNNING.add(doc_id)
+    cancel_event = asyncio.Event()
+    watcher = asyncio.create_task(watch_cancel(task_id, cancel_event))
+    handle = TaskHandle(task_id)
+    status = TASK_DONE
     try:
         doc = doc_svc.get(doc_id)
         if not doc or doc.deleted:
+            status = TASK_FAILED
             return
         prev_status = doc.graph_status or "none"
         if doc_svc.update_graph_status(doc_id, "building") is None:
+            status = TASK_FAILED
             return
         chunks = [Chunk(text=str(c.get("text") or ""),
                         char_start=int(c.get("char_start") or 0),
@@ -1101,12 +1118,13 @@ async def _run_graph_build(kb_id: str, doc_id: str, llm_model: Optional[str] = N
             kb_id, doc_id, doc.original_name, chunks,
             raw_texts=[c.text for c in chunks], cfg=cfg,
             cancel_event=cancel_event)
-        if cancel_event and cancel_event.is_set():
+        if cancel_event.is_set():
             # 中断：本次结果不落盘（build_graph_for_doc 已跳过合并/保存），
             # 恢复构建前状态，旧图谱原样保留
             doc_svc.update_graph_status(doc_id, prev_status)
             logger.info("图谱构建已中断: %s (%s) 恢复原状态=%s",
                         doc.original_name, doc_id, prev_status)
+            status = TASK_CANCELLED
             return
         if stats.get("chunks") and not stats.get("extracted"):
             # 全部块无实体：LLM 未配置/调用全失败/响应全无效（合法空结果
@@ -1121,12 +1139,13 @@ async def _run_graph_build(kb_id: str, doc_id: str, llm_model: Optional[str] = N
     except Exception as e:
         logger.warning("图谱构建失败: %s err=%s", doc_id, str(e)[:200])
         doc_svc.update_graph_status(doc_id, "failed", error=str(e)[:500])
+        status = TASK_FAILED
     finally:
-        _GRAPH_RUNNING.discard(doc_id)
-        # 只清理自己创建的中断信号（中断后立刻重建时新任务已注册新 event，
-        # 旧任务收尾不得误删新任务的可中断句柄）
-        if _GRAPH_CANCEL.get(doc_id) is cancel_event:
-            _GRAPH_CANCEL.pop(doc_id, None)
+        # 置终态 + 释放 active_key（放掉防重占位，允许下次构建）；随后停掉
+        # 取消轮询协程（set 让它的 while 立即退出，gather 收尾防协程泄漏）
+        await handle.finish(status)
+        cancel_event.set()
+        await asyncio.gather(watcher, return_exceptions=True)
 
 
 @router.post("/{doc_id}/graph-build")
@@ -1155,10 +1174,7 @@ async def build_document_graph(request: Request, kb_id: str, doc_id: str,
     if doc.graph_status == "building":
         raise HTTPException(status_code=409, detail="图谱正在构建中，请稍候")
     llm_model = req.llm_model if req else None
-    cancel_ev = asyncio.Event()
-    _GRAPH_CANCEL[doc_id] = cancel_ev
-    asyncio.create_task(_run_graph_build(kb_id, doc_id, llm_model=llm_model,
-                                         cancel_event=cancel_ev))
+    asyncio.create_task(_run_graph_build(kb_id, doc_id, llm_model=llm_model))
     await audit_service.record_action(
         user, action="doc.graph-build", target_type="doc",
         target_id=doc_id, target_name=doc.original_name,
@@ -1175,18 +1191,20 @@ async def cancel_document_graph_build(request: Request, kb_id: str, doc_id: str,
                                       user: UserPublic = Depends(get_current_user)):
     """中断进行中的图谱构建（后台任务取消信号，can_manage_kb）
 
-    - 仅构建中（graph_status=building 且有任务取消信号）可中断：
+    - 仅构建中（graph_status=building 且有 running 任务）可中断：
       非构建中 → 409"当前不在图谱构建中，无法中断"
     - 置取消信号后任务尽快停止：未开始的块抽取取消、本次结果不落盘、
-      恢复构建前状态（旧图谱保留），_GRAPH_RUNNING 释放后可再次构建
+      恢复构建前状态（旧图谱保留），任务占位释放后可再次构建
       （状态恢复在任务检查点完成，接口立即返回"中断请求已发送"）
+    - 取消信号写 tasks.cancel_requested（**任何 worker 都可写**）——原实现
+      只 set 本进程的 asyncio.Event，取消请求打到别的 worker 会误报 409
     """
     await kb_or_404(db, kb_id, user, manage=True)
     doc = _get_doc_or_404(kb_id, doc_id)
-    cancel_ev = _GRAPH_CANCEL.get(doc_id)
-    if doc.graph_status != "building" or not cancel_ev:
+    # doc.graph_status 给即时反馈；tasks 表是任务侧权威（写库，跨 worker 生效）
+    if doc.graph_status != "building" or not await request_cancel(
+            TASK_TYPE_GRAPH, doc_id):
         raise HTTPException(status_code=409, detail="当前不在图谱构建中，无法中断")
-    cancel_ev.set()
     await audit_service.record_action(
         user, action="doc.graph-build-cancel", target_type="doc",
         target_id=doc_id, target_name=doc.original_name, request=request)
