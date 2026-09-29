@@ -1,5 +1,5 @@
 import AppModal from '../../../shared/components/common/AppModal';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert, 
   App as AntApp, 
@@ -19,7 +19,7 @@ import {
 import { CheckCircleFilled, CloseCircleFilled, EyeOutlined } from '@ant-design/icons';
 import type { DocumentItem, ImgSummaryFormat, IngestConfig, MinerUBackend, MinerUEffort, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../../../shared/api/client';
 import {
-  asApiError, getLlmModelList, getParserStatus, ingestDocument, testLlmModelByName } from '../../../shared/api/client';
+  asApiError, getLlmModelList, getParserStatus, getDocxOutline, ingestDocument, testLlmModelByName } from '../../../shared/api/client';
 /** 通用切块默认分隔符集（与后端 RecursiveChunker.DEFAULT_SEPARATORS 对应，
     去掉字符级兜底 "" 与逗号；换行以键盘转义 \n 形式展示与编辑） */
 const DEFAULT_DELIMITERS = ['\n\n', '\n', '。', '；'];
@@ -394,6 +394,49 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   const knowledgeGraph = Form.useWatch('knowledge_graph', form);
   const imageSummary = Form.useWatch('image_summary', form);
 
+  // ---- Word 文档选了 MinerU 的「层级丢失」预警 ----
+  // 背景（实测事故）：一份有规范标题样式的 .docx（Word 里 496 个 Heading 1~6
+  // 标题）被 MinerU 解析后，544 个标题里 541 个被压成同一级，还多出 49 个把
+  // 正文（"注意事项:"）误标成标题的假标题——切块详情的「目录」因此不可读；
+  // 同一份文档换「结构解析」则层级完整。这里在**选 MinerU 时就亮黄条**，
+  // 而不是等解析完、切完块、翻目录才发现走错了路。
+  const isWordDoc = docFileType === 'docx' || docFileType === 'doc';
+  const [outlineProbe, setOutlineProbe] = useState<
+    { count: number; max_level: number } | null>(null);
+  // 已探测过的 `${doc.id}|${parseMode}`：同一文档来回切解析方式不重复请求
+  const probeKeyRef = useRef('');
+  useEffect(() => {
+    const key = `${doc?.id}|${parseMode}`;
+    if (!open || !doc || !kbId || !isWordDoc || parseMode !== 'MinerU') {
+      setOutlineProbe(null);
+      probeKeyRef.current = '';
+      return;
+    }
+    if (probeKeyRef.current === key) return;
+    probeKeyRef.current = key;
+    let cancelled = false;
+    // 走「查看文档结构」同一个接口（结构解析的产物，实测 100MB docx 只要 0.4s）
+    getDocxOutline(doc.kb_id || kbId, doc.id)
+      .then(res => {
+        if (!cancelled) {
+          setOutlineProbe({
+            count: res.data.count ?? 0,
+            max_level: res.data.max_level ?? 0,
+          });
+        }
+      })
+      .catch(() => {
+        // 探测失败静默：这只是条提示，不该打扰用户（后端提取异常时接口
+        // 返回 200 + warning，能走到这里的是网络/权限类错误）
+        if (!cancelled) setOutlineProbe(null);
+      });
+    return () => { cancelled = true; };
+  }, [open, doc, kbId, isWordDoc, parseMode]);
+  // 有真层级才提醒：max_level>=2 说明这份文档确实有上下级会被压平；
+  // 只有一级标题时（或压根没标题）MinerU 的损失有限，不必打扰
+  const showLevelLossHint = !!outlineProbe
+    && outlineProbe.max_level >= 2 && outlineProbe.count >= 3;
+
   // ===== 解析方式联动显隐（设置不了的就不显示；依据后端实际生效范围）=====
   // 前端解析方式直接映射引擎提交（MinerU→mineru / DeepDOC→deepdoc /
   // PlainText→plain，无自动档），后端 resolve_parser_config 后
@@ -666,6 +709,20 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
             style={{ marginBottom: 16 }}
             message="Excel/CSV 本地结构化直读"
             description="表格数据直接转为 markdown 管道表格入库，无需解析引擎（MinerU/DeepDOC 等）；切块按 Sheet 名称分节。"
+          />
+        )}
+        {showLevelLossHint && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="这份文档有规范的标题层级，MinerU 解析会把它压平"
+            description={
+              `结构解析读出 ${outlineProbe!.count} 个标题、最深 ${outlineProbe!.max_level} 级。`
+              + 'MinerU 输出时会丢掉层级差（实测有文档 541 个标题被压成同一级，'
+              + '还把「注意事项：」这类正文误标成标题），切块后的「目录」会变得不可读。'
+              + '改用「结构解析」可完整保留 Word 的标题层级。'
+            }
           />
         )}
         {isPdfLike && (
