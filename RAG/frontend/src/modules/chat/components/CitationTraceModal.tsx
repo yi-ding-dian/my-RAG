@@ -137,6 +137,10 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
           fullText={detail.full_text}
           initialIndex={source?.chunk_index}
           answerText={answerText}
+          // 目录树数据源：getDocument 已经把 headings 取回来了，必须透传——
+          // 漏传会让右上角「目录」显示"未识别到标题（解析产物里没有 Markdown
+          // 标题）"，而左边的块里明明带着 ## 标题（实测反馈的 bug）
+          headings={detail.headings}
         />
       ) : null}
     </AppModal>
