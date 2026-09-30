@@ -34,8 +34,9 @@ interface MessageListProps {
   waiting?: boolean;
   /** 等待阶段的进度提示文案（Agentic 决策进度；空=「正在思考…」） */
   waitingHint?: string;
-  /** 点击回答中 [n] 引用标或引用面板"查看原文"时回调（打开溯源弹窗，可选） */
-  onCitationClick?: (source: Source) => void;
+  /** 点击回答中 [n] 引用标或引用面板"查看原文"时回调（打开溯源弹窗，可选）。
+   *  第二个参数是 [n] 紧邻的前文，供弹窗定位到原文里对应的那句话 */
+  onCitationClick?: (source: Source, anchor?: string, answerText?: string) => void;
   /** 会话 ID（反馈关联：定位消息序号） */
   sessionId?: string;
   /** 知识库 ID（反馈关联） */
@@ -115,13 +116,16 @@ const cleanSourceSummary = (text: string): string => {
 const CitationMark: React.FC<{
   n: number;
   source: Source;
+  /** [n] 紧邻的前文（约 24 字）：溯源弹窗用它认出"这句话在原文哪儿"，
+   *  见 renderCitationContent 的说明 */
+  anchor?: string;
   answerText: string;
-  onClick: (source: Source) => void;
+  onClick: (source: Source, anchor?: string, answerText?: string) => void;
   /** 摘要窗口大小（字）：配置档案「聊天设置 → 引用设置」，默认 600 */
   snippetChars: number;
   /** 该消息正在流式生成中：跳过 Tooltip 与高亮计算，只渲染上标 */
   streaming?: boolean;
-}> = ({ n, source, answerText, onClick, snippetChars, streaming }) => {
+}> = ({ n, source, anchor, answerText, onClick, snippetChars, streaming }) => {
   // Tooltip 弹层方向：引用标位于视口上部（顶部导航高度内）时改显示在下方，
   // 防止弹层弹出后遮挡页面顶部导航栏（antd 避让只针对视口、不感知导航层）
   const [placement, setPlacement] = useState<'top' | 'bottom'>('top');
@@ -166,7 +170,10 @@ const CitationMark: React.FC<{
       className="citation-mark"
       onClick={(e) => {
         e.stopPropagation();
-        onClick(source);
+        // 把**本消息的回答文本**一并带出去当高亮基准：同一个块常被多条回答
+        // 引用，靠 source.id 反查会永远命中第一条，于是标出别的消息里才有的
+        // 词——看着就是"乱高亮"
+        onClick(source, anchor, answerText);
       }}
       style={{
         fontSize: 12,
@@ -247,10 +254,18 @@ const CitationMark: React.FC<{
  *   剩余 (url) 原样输出（模型受句尾 [n] 指令约束不会生成，可接受）
  * - 流式增量中未闭合的 "[3"（无 ]）不匹配，输出过程中原样展示
  */
+/**
+ * 引用锚点取多长：[n] 紧邻的前文，用于在溯源弹窗里认出"这句话在原文的哪里"。
+ * 太短（如"用户"）会在块里命中一堆高亮，也装不下被引的那整句（实测 24 字时
+ * 锚点装不下 26 字的"图片说明：带有蓝色箭头标注的…截图。"，反而退去匹配
+ * "界面截图"这种短词、定位到块里更早的另一处）；太长则可能跨句匹配不上。
+ */
+const CITATION_ANCHOR_CHARS = 40;
+
 const renderCitationContent = (
   content: string,
   sources: Source[] | undefined,
-  onCitationClick: ((source: Source) => void) | undefined,
+  onCitationClick: ((source: Source, anchor?: string, answerText?: string) => void) | undefined,
   snippetChars: number,
   streaming: boolean,
 ): React.ReactNode[] => {
@@ -265,6 +280,10 @@ const renderCitationContent = (
     const m = re.exec(content);
     if (!m) break;
     if (m.index > last) parts.push(content.slice(last, m.index));
+    // [n] 前那句话就是要它支撑的论点（"…其含义表示用户被篡改[1]"）。
+    // 溯源弹窗拿它去块内认高亮——一块里常有好几处高亮（"用户配置"×4、
+    // "用户图标"…），只取第一处会停在块头，跟没定位一样。
+    const anchor = content.slice(Math.max(0, m.index - CITATION_ANCHOR_CHARS), m.index);
     const nums = m[1].split(',').map(s => parseInt(s.trim(), 10));
     if (nums.every(n => !sources[n - 1])) {
       // 编号全部越界：整段原样输出（既有降级行为）
@@ -279,6 +298,7 @@ const renderCitationContent = (
               key={key++}
               n={n}
               source={source}
+              anchor={anchor}
               answerText={content}
               onClick={onCitationClick}
               snippetChars={snippetChars}
@@ -322,7 +342,7 @@ const ANSWER_IMAGE_MAX_WIDTH = 'min(720px, 100%)';
 const renderContent = (
   content: string,
   sources: Source[] | undefined,
-  onCitationClick: ((source: Source) => void) | undefined,
+  onCitationClick: ((source: Source, anchor?: string, answerText?: string) => void) | undefined,
   snippetChars: number,
   streaming: boolean,
 ): React.ReactNode[] => {
@@ -452,7 +472,7 @@ interface MessageItemProps {
   textTertiary: string;
   userId: string;
   userAvatar?: string | null;
-  onCitationClick?: (s: Source) => void;
+  onCitationClick?: (s: Source, anchor?: string, answerText?: string) => void;
   /** 打开引用来源弹窗（sources + 高亮基准原文） */
   onOpenSources: (sources: Source[], answerText: string) => void;
   /** 打开请求详情弹窗 */

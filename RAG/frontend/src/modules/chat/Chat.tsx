@@ -565,16 +565,30 @@ const ChatPage: React.FC = () => {
   const [traceSource, setTraceSource] = useState<Source | null>(null);
   // 引用溯源弹窗的回答文本（该引用所属回答消息的 content；原文回答-对齐高亮匹配基准）
   const [traceAnswerText, setTraceAnswerText] = useState('');
+  // [n] 紧邻的前文：弹窗拿它认出"这句话在原文哪儿"（一块里常有好几处高亮，
+  // 只认块会停在块头，见 ChunkCompareView 的定位说明）
+  const [traceAnchor, setTraceAnchor] = useState('');
 
-  // 点击回答中 [n] 引用标 / 引用面板"查看原文"：打开溯源弹窗，并按 source.id
-  // 反查所属回答（原文-对齐高亮的匹配基准）。空依赖 + messagesRef —— 回调引用稳定，
-  // 下游 MessageItem 的 memo 才拦得住重渲染（源注释见 messagesRef 定义处）
-  const handleCitationClick = useCallback((s: Source) => {
-    setTraceSource(s);
-    const msg = messagesRef.current.find(m => (m.sources ?? []).some(sr => sr.id === s.id));
-    // 高亮基准用清洗后文本（与气泡渲染一致，所见即所算）
-    setTraceAnswerText(cleanAnswerText(msg?.content ?? ''));
-  }, []);
+  // 点击回答中 [n] 引用标 / 引用面板"查看原文"：打开溯源弹窗。
+  //
+  // 高亮基准（answerText）**直接用被点那条消息的回答**，不按 source.id 反查：
+  // 同一个块常被多条回答引用（各自引用它的不同侧面），反查 find 永远命中第一条，
+  // 高亮就按别人的回答算了——标出来的全是别的消息里才有的词，看着像"乱高亮"。
+  // 空依赖 + messagesRef —— 回调引用稳定，下游 MessageItem 的 memo 才拦得住重渲染
+  const handleCitationClick = useCallback(
+    (s: Source, anchor?: string, answer?: string) => {
+      setTraceSource(s);
+      setTraceAnchor(anchor ?? '');
+      // 高亮基准用清洗后文本（与气泡渲染一致，所见即所算）；
+      // 引用面板"查看原文"这条路不带 answer，回退按 source.id 反查
+      let base = answer;
+      if (base == null) {
+        const msg = messagesRef.current.find(
+          m => (m.sources ?? []).some(sr => sr.id === s.id));
+        base = msg?.content ?? '';
+      }
+      setTraceAnswerText(cleanAnswerText(base));
+    }, []);
   // 会话重命名：弹窗编辑标题（默认值当前标题）
   const [renameTarget, setRenameTarget] = useState<ChatSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -1239,6 +1253,7 @@ const ChatPage: React.FC = () => {
         source={traceSource}
         onClose={() => setTraceSource(null)}
         answerText={traceAnswerText}
+        anchorText={traceAnchor}
       />
     </div>
   );

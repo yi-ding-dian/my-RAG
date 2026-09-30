@@ -56,6 +56,11 @@ interface ChunkCompareViewProps {
    * 无命中/缺省原样显示；与全文搜索高亮并存（搜索匹配优先，重叠处不嵌套 mark）
    */
   answerText?: string;
+  /**
+   * [n] 紧邻的前文（约 24 字，引用溯源用）：一块原文里常有好几处与回答重叠
+   * 的高亮，只按块定位会停在块头。拿这段前文认一下，才能落到真正被引的那句。
+   */
+  anchorText?: string;
 }
 
 interface RawChunk {
@@ -176,6 +181,7 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
   initialIndex,
   fillHeight,
   answerText,
+  anchorText,
 }) => {
   const { token } = theme.useToken();
   // 当前主题主色：块/区间高亮跟随预设（原硬编码 #2563eb）
@@ -417,13 +423,59 @@ const ChunkCompareView: React.FC<ChunkCompareViewProps> = ({
     if (idx < 0) return;
     if (Math.floor(idx / PAGE_SIZE) + 1 === 1) {
       // 目标块在第 1 页：DOM 已就绪，直接滚动（仅挂载时一次）
+      //
+      // 两个要点（都是实测踩出来的）：
+      // 1. **先展开目标块**：块默认只显示 200 字符预览，引用命中的那句话常
+      //    落在后半段，不展开就看不到；展开是 setState，要等渲染落地再滚
+      // 2. 左栏用 block:'start' + behavior:'auto'，**不用 nearest**：nearest
+      //    在"元素已部分可见"时不滚，而右栏那段 smooth 动画正连带滚着外层
+      //    容器，两者打架的结果是最终停在文档开头——看起来就跟没定位一样
+      setExpandedIdx(prev => new Set(prev).add(initialIndex));
       window.setTimeout(() => {
         const seg = segOf(start);
         setProgrammatic();
-        document.getElementById(`chunk-seg-${seg ? seg.start : start}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-        // 左栏同步滚到目标块（即时滚动防联动回拉）
-        document.getElementById(`chunk-list-${initialIndex}`)?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-      }, 0);
+        // 块内常有好几处高亮，取"落在 [n] 前文里"且**最长**的那个：前文是
+        // "其含义表示用户被篡改"时，块里那四处"用户配置"都不在前文中，只有
+        // "用户被篡改"命中；取最长是为了排除"用户"这类短词的干扰。
+        // 都没命中（回答与原文用词差太多）才退回第一处，再退回块起点。
+        const pickHighlight = (root: Element | null): Element | null => {
+          if (!root) return null;
+          const hls = [...root.querySelectorAll('.citation-highlight')];
+          if (!hls.length) return null;
+          if (anchorText) {
+            // 双向包含：高亮那句可能比锚点长（锚点只是 [n] 前的一段），
+            // 只判 `anchorText.includes(highlight)` 会漏掉整句、退去匹配
+            // "界面截图"这类短词——而那词块内有多处，会定位到更早的另一处
+            const hits = hls.filter(h => {
+              const t = (h.textContent ?? '').trim();
+              return t && (anchorText.includes(t) || t.includes(anchorText));
+            });
+            if (hits.length) {
+              return hits.reduce((a, b) => (
+                (b.textContent?.length ?? 0) > (a.textContent?.length ?? 0) ? b : a));
+            }
+          }
+          return hls[0];
+        };
+        /**
+         * 滚到目标：**不贴顶**，上方留出约 1/3 视高的上文。
+         *
+         * 原先用 `block:'start'` 把目标顶到最上面，结果引用那句话前面的铺垫
+         * （"以下是这些图标所代表的意思："）被切在视口外，看着没头没尾；
+         * 而且贴顶时人会本能地觉得"这是块的开头"，反而认不出引用的位置。
+         * 用即时滚动（不用 smooth）——平滑动画会与左右栏联动打架。
+         */
+        const scrollSoft = (el: Element | null, scroller: HTMLElement | null) => {
+          if (!el || !scroller) return;
+          const delta = el.getBoundingClientRect().top
+            - scroller.getBoundingClientRect().top;
+          scroller.scrollTop += delta - scroller.clientHeight / 3;
+        };
+        const leftEl = document.getElementById(`chunk-list-${initialIndex}`);
+        if (leftEl) scrollSoft(pickHighlight(leftEl) ?? leftEl, leftScrollRef.current);
+        const rightEl = document.getElementById(`chunk-seg-${seg ? seg.start : start}`);
+        if (rightEl) scrollSoft(pickHighlight(rightEl) ?? rightEl, rightScrollRef.current);
+      }, 60);
       return;
     }
     // 目标块不在第 1 页：初始页 effect 已 setPage(目标页)，切页渲染后由 [page] effect 定位

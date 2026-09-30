@@ -17,6 +17,12 @@ interface CitationTraceModalProps {
    * 对文档 chunks/原文文本叠加与引用面板同源的 .citation-highlight 高亮
    */
   answerText?: string;
+  /**
+   * [n] 紧邻的前文（约 24 字）：一块原文里常有好几处与回答重叠的高亮
+   * （"用户配置"×4、"用户图标"…），只按块定位会停在块头；拿这段前文去认，
+   * 才能落到"这句话在原文的哪儿"。透传给 ChunkCompareView。
+   */
+  anchorText?: string;
 }
 
 /**
@@ -32,6 +38,7 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
   source,
   onClose,
   answerText,
+  anchorText,
 }) => {
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -137,6 +144,7 @@ const CitationTraceModal: React.FC<CitationTraceModalProps> = ({
           fullText={detail.full_text}
           initialIndex={source?.chunk_index}
           answerText={answerText}
+          anchorText={anchorText}
           // 目录树数据源：getDocument 已经把 headings 取回来了，必须透传——
           // 漏传会让右上角「目录」显示"未识别到标题（解析产物里没有 Markdown
           // 标题）"，而左边的块里明明带着 ## 标题（实测反馈的 bug）
