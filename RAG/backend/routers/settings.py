@@ -36,6 +36,10 @@ from backend.db import get_db
 from backend.deps import get_current_user, require_super_admin, require_user_admin
 from backend.models.user_models import DepartmentORM, UserPublic
 from backend.services import audit_service, department_service
+# 读图模板（入库摘要与聊天识图共用的「看图策略」）
+from backend.services.chat_vision import render_default_prompt
+from backend.services.image_templates import (resolve_template_body,
+                                              template_options)
 from backend.services.settings.service import (LLM_TEST_TIMEOUT,
                                                SECTION_SCHEMA,
                                                find_llm_item,
@@ -179,9 +183,30 @@ def _effective_chat_payload(profile: dict,
     # thinking_control，用着思考模型 apex-quality 却继承了激活条目的 'none'）
     llm_options = _model_options((profile.get("llm") or {}).get("models"))
     vision_options = _model_options((profile.get("vision") or {}).get("models"))
+    # 读图模板可选列表：带**正文全文**——前端要用它拼「当前会发的提示词」预览
+    #（只给截断预览的话，图片摘要面板里那份提示词就少一截，看着像跟模板无关）。
+    # 另附 40 字单行预览供下拉展示（多行正文塞进选项会把下拉撑开）
+    tmpl_items = (profile.get("image_templates") or {}).get("items")
+    image_template_options = [
+        {"name": t["name"], "prompt": t["prompt"],
+         "preview": " ".join(t["prompt"][:40].split())}
+        for t in template_options(tmpl_items)
+    ]
+    # 「没填自定义提示词时实际会发什么」——前端拿去当 placeholder / 拼预览。
+    # 用 **merged**（部门覆盖后）而非 profile：部门选了模板就该看到本部门那份
+    image_template_body = resolve_template_body(
+        (merged.get("chat") or {}).get("image_template") or "", tmpl_items)
+    default_image_prompt = render_default_prompt(image_template_body)
     return {**merged, "llm": llm, "dept": dept,
             "image_summary": img_summary,
             "llm_options": llm_options, "vision_options": vision_options,
+            "image_template_options": image_template_options,
+            # 当前生效的模板**正文**（合并后）——前端拼「图片摘要提示词」预览用：
+            # 那份提示词 = 模板正文 + 字段输出段，前端拼预览时得知道前半截
+            "image_template_body": image_template_body,
+            # 「没填自定义提示词时实际会发什么」——前端拿去当 placeholder，
+            # 避免前端硬编码一份副本（后端改默认后那种副本会悄悄过期）
+            "default_image_prompt": default_image_prompt,
             # 提示词库条目：部门管理员可读（与 vision_options 同理，只给
             # 名称与正文，供部门配置里选一条给自己部门用）
             "prompt_options": list_prompt_items(),

@@ -392,6 +392,10 @@ class ChatConfig(BaseModel):
     # 注意：提示词要求"抄更多内容"时要同步调大 image_desc_max_chars，
     # 否则硬截断会把多抄的部分切掉，反而比不调更差
     image_prompt: str = ""
+    # 读图模板名（超管预置几套「看图策略」，部门按名选，入库摘要与聊天识图
+    # **共用**同一套——见 services/image_templates）。
+    # 空 = 用内置默认那套；image_prompt 非空时以它为准（自定义出口）
+    image_template: str = ""
     # 单次最多几张图：前端超限直接拦（不发请求），后端路由再校验一次
     image_max_count: int = 3
     # 单张图片大小上限（MB）：同上，前后端各校验一次

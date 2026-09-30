@@ -72,7 +72,9 @@ interface DeptChatValues {
   chat_kg_enhance: boolean;
   chat_query_rewrite: boolean;
   chat_query_rewrite_rounds: number;
-  /** 聊天识图的读图提示词（空 = 跟随超管在配置档案里设的全局默认） */
+  /** 读图模板名（空 = 用默认那套；入库摘要与聊天识图共用同一套「看图策略」） */
+  chat_image_template: string;
+  /** 自定义读图提示词（填了就**优先于**模板，是本部门的专用出口） */
   chat_image_prompt: string;
 }
 
@@ -116,6 +118,12 @@ const DeptConfig: React.FC = () => {
   /** 超管配的图片解析模型（只有名字，不含连接信息与密钥） */
   const [llmOptions, setLlmOptions] =
     useState<Array<{ name: string; model: string }>>([]);
+  const [imageTemplateOptions, setImageTemplateOptions] =
+    useState<Array<{ name: string; prompt: string; preview: string }>>([]);
+  /** 没填自定义提示词时**实际会发**的完整提示词（后端按当前模板生成） */
+  const [defaultImagePrompt, setDefaultImagePrompt] = useState('');
+  /** 当前生效的模板正文（合并后）——拼「图片摘要提示词」预览的前半截 */
+  const [imageTemplateBody, setImageTemplateBody] = useState('');
   const [visionOptions, setVisionOptions] = useState<Array<{ name: string; model: string }>>([]);
   /** 超管配的系统提示词库条目（部门只"选"用哪条，不能编辑库本身） */
   const [promptOptions, setPromptOptions] = useState<Array<{ name: string; content: string }>>([]);
@@ -133,29 +141,38 @@ const DeptConfig: React.FC = () => {
   const imgOptScene = Form.useWatch('img_opt_describe_scene', imgForm);
   const imgOptLayout = Form.useWatch('img_opt_describe_layout', imgForm);
 
-  /** 上一次的输出格式：用来识别"格式变了"（格式与提示词是配套的，变了必须重算） */
+  /** 上一次的输出格式 / 读图模板：用来识别"变了"（提示词与这两者配套，变了必须重算） */
   const prevImgFmtRef = useRef<string | undefined>(undefined);
+  const prevImgTmplRef = useRef<string | undefined>(undefined);
+  /** 读图模板（部门选的；空 = 跟随全局） */
+  const chatTemplate = Form.useWatch('chat_image_template', chatForm);
+  /** 该模板的正文：选了就用那份，没选用后端下发的"当前生效"那份 */
+  const tmplBody = (imageTemplateOptions.find(t => t.name === chatTemplate)?.prompt)
+    ?? imageTemplateBody;
 
   useEffect(() => {
-    // **输出格式变了就强制重算**（并解除"已自定义"）：旧提示词是照旧格式写的，
-    // 留着会让模型按旧格式作答、而代码按新格式解析——与解析入口的处理同一道理。
-    // 其余情况（勾选项变化 / 手动微调）仍尊重 touched：用户的微调不该被选项覆盖。
+    // **输出格式或读图模板变了就强制重算**（并解除"已自定义"）：旧提示词是照
+    // 旧格式/旧模板写的，留着会让模型按旧的那套作答、而代码按新的解析——与解析
+    // 入口的处理同一道理。其余情况（勾选项变化 / 手动微调）仍尊重 touched。
     // 首次（prev 为 undefined，含加载回填）不算"变化"，避免把存过的提示词冲掉。
     const fmtChanged = prevImgFmtRef.current !== undefined
       && prevImgFmtRef.current !== imgFmt;
+    const tmplChanged = prevImgTmplRef.current !== undefined
+      && prevImgTmplRef.current !== chatTemplate;
     prevImgFmtRef.current = imgFmt;
-    if (!fmtChanged && imgPromptTouched) return;
+    prevImgTmplRef.current = chatTemplate;
+    if (!fmtChanged && !tmplChanged && imgPromptTouched) return;
     imgForm.setFieldsValue({
       img_prompt: buildDefaultImgPrompt({
         label_type: imgOptLabel ?? true,
         read_text: imgOptText ?? true,
         describe_scene: imgOptScene ?? true,
         describe_layout: imgOptLayout ?? false,
-      }, imgFmt ?? 'fields'),
+      }, imgFmt ?? 'fields', tmplBody),
     });
-    if (fmtChanged) setImgPromptTouched(false);
+    if (fmtChanged || tmplChanged) setImgPromptTouched(false);
   }, [imgPromptTouched, imgFmt, imgOptLabel, imgOptText, imgOptScene,
-      imgOptLayout, imgForm]);
+      imgOptLayout, imgForm, chatTemplate, tmplBody]);
 
   /** 合并值回填：未设置字段显示全局值（占位提示），api_key 为脱敏值 */
   const load = useCallback(async () => {
@@ -169,6 +186,13 @@ const DeptConfig: React.FC = () => {
         dept?: { llm?: { model?: string; temperature?: number | null;
                          max_tokens?: number | null } } | null;
       }).dept?.llm;
+      // 聊天识图两项同理：存的是**部门覆盖值**（留空 = 跟随全局）。用合并值
+      // 回填的话，部门没选时会显示全局那份，一保存就固化成部门覆盖——以后
+      // 超管改了全局，这个部门就不再跟随了
+      const deptChat = (res.data as {
+        dept?: { chat?: { image_template?: string;
+                          image_prompt?: string } } | null;
+      }).dept?.chat;
       llmForm.setFieldsValue({
         llm_model: deptLlm?.model ?? undefined,
         llm_temperature: deptLlm?.temperature ?? undefined,
@@ -188,10 +212,10 @@ const DeptConfig: React.FC = () => {
         chat_kg_enhance: chat?.kg_enhance ?? true,
         chat_query_rewrite: chat?.query_rewrite ?? true,
         chat_query_rewrite_rounds: chat?.query_rewrite_rounds ?? 3,
-        // 聊天识图提示词：显示的是「本部门覆盖值或全局值」的合并值
-        //（与同页 image_summary 的 prompt 同口径：管理员看到的就是当前生效值；
-        //  清空后保存 = 取消本部门覆盖，回到跟随全局）
-        chat_image_prompt: chat?.image_prompt ?? '',
+        // 聊天识图：**模板**（与入库摘要共用的「看图策略」）+ 自定义提示词
+        //（自定义填了优先于模板）。两者都填**部门覆盖值**，留空 = 跟随全局
+        chat_image_template: deptChat?.image_template ?? '',
+        chat_image_prompt: deptChat?.image_prompt ?? '',
       });
       const retr = res.data.retrieval;
       const agentic = res.data.agentic;
@@ -211,6 +235,16 @@ const DeptConfig: React.FC = () => {
       setLlmOptions((res.data as {
         llm_options?: Array<{ name: string; model: string }>;
       }).llm_options ?? []);
+      setImageTemplateOptions((res.data as {
+        image_template_options?: Array<{ name: string; prompt: string;
+                                         preview: string }>;
+      }).image_template_options ?? []);
+      setDefaultImagePrompt((res.data as {
+        default_image_prompt?: string;
+      }).default_image_prompt ?? '');
+      setImageTemplateBody((res.data as {
+        image_template_body?: string;
+      }).image_template_body ?? '');
       setVisionOptions(img.vision_options ?? []);
       setPromptOptions((res.data as { prompt_options?: Array<{ name: string; content: string }> })
         .prompt_options ?? []);
@@ -288,7 +322,9 @@ const DeptConfig: React.FC = () => {
           kg_enhance: vals.chat_kg_enhance,
           query_rewrite: vals.chat_query_rewrite,
           query_rewrite_rounds: vals.chat_query_rewrite_rounds,
-          // 聊天识图提示词（部门可覆盖）：空串 = 取消本部门覆盖 → 跟随全局
+          // 聊天识图：模板名（空串 = 跟随全局）+ 自定义提示词
+          //（自定义非空时优先于模板；两个都清空 = 回到跟随全局）
+          image_template: vals.chat_image_template ?? '',
           image_prompt: vals.chat_image_prompt ?? '',
         },
       });
@@ -570,13 +606,38 @@ const DeptConfig: React.FC = () => {
           {/* 聊天识图提示词（部门可覆盖，后端 whitelist chat.image_prompt）：
               各部门的图差别大（财务报表 / 运维报错截图 / 人事证照），一份
               全局提示词不可能都对，故允许本部门定制 */}
+          {/* 读图策略：**选模板**（入库摘要与聊天识图共用同一套「看图策略」），
+              自定义提示词是留给确实特殊的部门的出口——填了就优先于模板 */}
+          <Form.Item
+            name="chat_image_template"
+            label="读图模板"
+            extra="员工在聊天里发图、以及文档入库生成图片摘要时，共用这套「看图策略」——两边关注同样的东西、排除同样的东西，图文检索才容易互相对上。留空 = 用默认那套。"
+          >
+            <Select allowClear placeholder="用默认（通用）"
+              options={imageTemplateOptions.map(t => ({
+                value: t.name,
+                label: t.preview ? `${t.name}（${t.preview}…）` : t.name,
+              }))} />
+          </Form.Item>
           <Form.Item
             name="chat_image_prompt"
-            label="聊天识图提示词"
-            extra="员工在聊天里发图时，用这段提示词让视觉模型读图。全部删空 = 跟随超管的全局设置；填了则本部门不再跟随全局。两个占位符都建议保留：{max_chars} 替换为描述字数上限；{question} 替换为员工当前的问题——写上它才会带着问题读图（图里有箭头/红框/圈注时能定位到具体元素、报出准确名称），不写就是盲读，读图效果会明显变差。"
+            label={
+              <Space size={8}>
+                自定义读图提示词（高级）
+                {/* 一键填入「当前实际会发」的那份——留空时输入框只有灰字
+                    placeholder，想看清全文/在它基础上改都够不着 */}
+                <Button type="link" size="small"
+                  style={{ padding: 0, height: 'auto' }}
+                  onClick={() => chatForm.setFieldsValue({
+                    chat_image_prompt: defaultImagePrompt,
+                  })}>
+                  填入当前生效的提示词
+                </Button>
+              </Space>
+            }
+            extra="填了就优先于上面的模板，本部门不再用模板——仅当内置模板都不适用时才填。两个占位符可选：{max_chars} 替换为描述字数上限；{question} 替换为员工当前的问题，写上它才会带着问题读图（图里有箭头/红框/圈注时能定位到具体元素、报出准确名称），不写就是盲读，读图效果会明显变差。"
           >
-            <TextArea rows={5}
-              placeholder="留空 = 跟随超管的全局设置；要按本部门的图片类型定制时再填…" />
+            <TextArea rows={4} placeholder={defaultImagePrompt} />
           </Form.Item>
         </Form>
       ),

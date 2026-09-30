@@ -37,12 +37,17 @@ const IMG_FIXED_TAIL = `
 - 不要开场白，不要总结
 `;
 
-/** 按选项 + 输出格式拼默认提示词
+/** 按选项 + 输出格式 + **读图模板**拼默认提示词
  *
- *  brief 格式不读图中文字——适合"整页全是文字但不需要理解含义"的图，
- *  代价是图里的字检索不到，故不适合证照类。 */
+ *  `template`：选中的读图模板正文（`image_template_options[].prompt`）。它与
+ *  聊天识图**共用**——拼在最前面，后面才接各自的输出要求，这样界面上看到的
+ *  提示词与实际发给模型的完全一致（此前前端不拼模板，预览少一截，看着像
+ *  「读图模板」和「图片摘要提示词」两回事）。
+ *
+ *  brief 格式**不用模板**：它明确"不读图中文字"，与模板的"逐字抄录"直接
+ *  冲突，硬拼会给模型自相矛盾的指令。 */
 export function buildDefaultImgPrompt(
-  opts: Record<string, boolean>, fmt: string,
+  opts: Record<string, boolean>, fmt: string, template = '',
 ): string {
   if (fmt === 'brief') {
     return '用一句话说明这张图片大致是什么、用来做什么的'
@@ -52,14 +57,18 @@ export function buildDefaultImgPrompt(
       + '- 不超过 30 字，写成一句话\n'
       + '- 直接输出这句话，不要加「这张图片」之类的开场白，不要换行';
   }
+  const body = (template || '').trim();
+  const head = body ? `${body}\n\n` : '';
   const lines = IMG_OPTION_ORDER.filter(k => opts[k]).map(k => IMG_OPTION_LINES[k]);
   const use = lines.length ? lines : [IMG_OPTION_LINES.read_text];
   if (fmt === 'prose') {
-    return '请查看这张图片，用中文写一段 2~4 句的客观描述，用于文档检索。\n\n'
-      + '**首句先用一句话概括这是什么（文件类型或场景）**，再展开细节。\n\n'
+    return head
+      + '请用中文写一段 2~4 句的客观描述，用于文档检索。\n'
+      + '**首句先用一句话概括这是什么（文件类型或场景）**，再展开细节。\n'
       + '要点：\n' + use.map(l => `- ${l}`).join('\n') + '\n' + IMG_FIXED_TAIL;
   }
-  return '请查看这张图片，按下面的字段输出中文描述，用于文档检索。\n\n'
+  return head
+    + '请按下面的字段输出中文描述，用于文档检索。\n'
     + '每行一个字段，只输出这几行，不要加其他说明：\n'
     + [IMG_BRIEF_LINE, ...use].join('\n') + '\n' + IMG_FIXED_TAIL;
 }

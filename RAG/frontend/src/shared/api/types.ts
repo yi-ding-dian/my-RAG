@@ -1301,9 +1301,12 @@ export interface ChatConfig {
   image_max_mb?: number;
   /** 识图用哪个多模态模型（vision 段条目名）；空 = 跟随「图片摘要」选的模型 */
   image_model?: string;
-  /** 读图提示词（空 = 内置默认）；支持 {max_chars} 占位符，部门可覆盖 */
+  /** 读图模板名（空 = 内置默认那套）。入库摘要与聊天识图共用同一套
+   *  「看图策略」——两边关注同样的东西、排除同样的东西，描述才同构 */
+  image_template?: string;
+  /** 自定义读图提示词（非空时优先于模板）；支持 {max_chars}/{question} 占位符 */
   image_prompt?: string;
-  /** 图片描述长度上限（字，默认 800）：超出硬截断 */
+  /** 图片描述长度上限（字，默认 200）：超出硬截断 */
   image_desc_max_chars?: number;
 }
 
@@ -1495,7 +1498,9 @@ export interface ChatSettingsPayload {
     citation_snippet_chars?: number;
     /** 进 prompt 的检索片段总量预算（token，默认 6000；见配置档案「聊天设置」） */
     prompt_total_max_tokens?: number;
-    /** 聊天识图的读图提示词（空串 = 跟随全局/内置默认）。部门可覆盖：
+    /** 读图模板名（空串 = 跟随全局）。部门可覆盖 */
+    image_template?: string;
+    /** 自定义读图提示词（空串 = 用模板；非空时优先于模板）。部门可覆盖：
      *  GET 返回合并值（本部门设过就是本部门的），提交空串 = 取消本部门覆盖 */
     image_prompt?: string;
   };

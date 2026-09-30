@@ -726,7 +726,10 @@ class IngestionService(_TraceMixin, _ImageMixin):
 
             new_text, stats = await img_summ.summarize_images(
                 text, images, model_cfg=cfg["model"],
-                summary_cfg=summary_cfg, on_progress=_on_progress,
+                summary_cfg=summary_cfg,
+                # 选中的读图模板（与聊天识图共用同一套「看图策略」）
+                template=cfg.get("template") or "",
+                on_progress=_on_progress,
                 concurrency=_image_summary_concurrency())
         except Exception as e:
             logger.warning("图片摘要阶段失败，按原样继续: %s (%s)", doc_id, e)

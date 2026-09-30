@@ -421,6 +421,13 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             # 对空串跳过，与 system_prompt 同语义）
             "image_prompt": {"condition": "not_none", "on_null": "restore",
                              "whitelist": True, "fill_missing": True},
+            # 读图模板名（超管预置几套「看图策略」，部门按名选）。与
+            # image_prompt 是「选模板」与「自定义」的关系：image_prompt
+            # 非空时以它为准（自定义出口），否则用选中的模板。
+            # 空 = 用内置默认那套。部门可覆盖（whitelist）
+            "image_template": {"strip": True, "condition": "not_none",
+                               "on_null": "restore", "whitelist": True,
+                               "fill_missing": True},
             "image_max_count": {"condition": "not_none", "fill_missing": True,
                                 "range": (1, 20)},
             "image_max_mb": {"condition": "not_none", "fill_missing": True,

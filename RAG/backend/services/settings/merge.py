@@ -54,6 +54,7 @@ def chat_payload(profile: dict) -> dict:
             # 部门可覆盖，留空 = 跟随全局——同一坑：漏了这行部门就永远改不动
             # （image_model 不在此处：它不给部门覆盖，见 schema 注释）
             "image_prompt": chat.get("image_prompt", ""),
+            "image_template": chat.get("image_template", ""),
         },
         "agentic": {
             "enabled": agentic.get("enabled", False),

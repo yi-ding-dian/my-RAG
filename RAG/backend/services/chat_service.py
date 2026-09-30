@@ -42,6 +42,8 @@ from backend.services.agentic_service import get_agentic_service
 # chat_vision 里——**调读图行为改那个文件**，这里只留文案与入口
 from backend.services.chat_vision import (VISION_UNAVAILABLE_MSG,
                                           describe_images)
+# 读图模板：入库摘要与聊天识图共用同一套「看图策略」（见 image_templates）
+from backend.services.image_templates import resolve_template_body
 from backend.services.query_rewriter import rewrite_query
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service,
@@ -519,14 +521,17 @@ class ChatService:
                     images, vision_model,
                     int(cfg.chat.image_desc_max_chars),
                     get_storage_service(),
-                    # 提示词：部门覆盖 → 全局 → 空串（describe_images 内部
-                    # 回退内置默认，见 chat_vision）
+                    # 自定义提示词（部门覆盖 → 全局 → 空串）；非空时优先于模板
                     merged_chat.get("image_prompt") or "",
                     # 用户问题一并喂给视觉模型（带问题读图）：盲读会把整页
                     # 界面当查询词，用户问的却是箭头指的那一个字段——问题
                     # 传进去，模型才知道往哪儿看。只发图不打字时路由层已补
                     # 中性提问词，真为空时 chat_vision 内还有占位兜底
-                    question=message)
+                    question=message,
+                    # 选中的读图模板（入库摘要用的是同一套「看图策略」——
+                    # 两边关注同样的东西、排除同样的东西，描述才同构）
+                    template=resolve_template_body(
+                        merged_chat.get("image_template") or ""))
                 if img_err:
                     # 单次读图失败多为这张图本身的问题（格式怪/损坏/被拒答），
                     # 记 warning 不点红灯——视觉模型真挂了由 /vision-status

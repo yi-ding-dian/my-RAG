@@ -35,7 +35,10 @@ GLOBAL = {
              "citation_snippet_chars": 600,
              # 聊天识图的读图提示词（空 = 用内置默认）。同一个坑第三次：
              # chat_payload 是硬编码字段表，漏了它部门覆盖就永远拿不到
-             "image_prompt": ""},
+             "image_prompt": "",
+             # 读图模板名（空 = 内置默认那套）。同一个坑第四次：新增 chat 段
+             # 字段时，chat_payload 与这里必须两处同步
+             "image_template": ""},
     "retrieval": {"top_k": 5, "similarity_threshold": 0.0},
 }
 

@@ -9,7 +9,7 @@ import AppModal, { AppModalFooter } from '../../shared/components/common/AppModa
 import {
   asApiError, createProfile, updateProfile,
   testDraftConnection, testLlmConnection, testProfileConnection, testVisionConnection,
-  getLlmModelList, LLMModelItem,
+  getLlmModelList, getChatSettings, LLMModelItem,
 } from '../../shared/api/client';
 import type {
   ParserLlmModelItem, ServiceProfile, ServiceProfileInput,
@@ -181,6 +181,12 @@ const ProfileEditorModal: React.FC<{
   const [modelEditIdx, setModelEditIdx] = useState<number | null>(null);
   // ---- 图片解析模型 ----
   const [visionModels, setVisionModels] = useState<VisionModelItem[]>([]);
+  // ---- 读图模板（聊天识图与入库摘要共用的「看图策略」）----
+  /** 可选模板列表（后端下发） */
+  const [imageTemplateOptions, setImageTemplateOptions] =
+    useState<Array<{ name: string; preview: string }>>([]);
+  /** 没填自定义提示词时**实际会发**的提示词——给 placeholder 用，跟着模板走 */
+  const [defaultImagePrompt, setDefaultImagePrompt] = useState('');
   const [visionActive, setVisionActive] = useState(0);
   const [visionTestingIdx, setVisionTestingIdx] = useState<number | null>(null);
   const [visionModalOpen, setVisionModalOpen] = useState(false);
@@ -286,6 +292,32 @@ const ProfileEditorModal: React.FC<{
       })
       .catch(() => {
         if (!cancelled) setHeadingModelOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  // 读图模板下拉数据源 + 当前默认提示词（placeholder 用）：弹窗打开时拉取。
+  // 与上面的「标题分层模型」同款：登录即可读；失败静默（表单退回空列表，
+  // 用户仍能填自定义提示词）
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    getChatSettings()
+      .then(res => {
+        if (cancelled) return;
+        const d = res.data as {
+          image_template_options?: Array<{ name: string; preview: string }>;
+          default_image_prompt?: string;
+        };
+        setImageTemplateOptions(d.image_template_options ?? []);
+        setDefaultImagePrompt(d.default_image_prompt ?? '');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setImageTemplateOptions([]);
+        setDefaultImagePrompt('');
       });
     return () => {
       cancelled = true;
@@ -778,6 +810,8 @@ const ProfileEditorModal: React.FC<{
                   <ChatPanel
                     llmModels={llmModels}
                     visionModels={visionModels}
+                    imageTemplateOptions={imageTemplateOptions}
+                    defaultImagePrompt={defaultImagePrompt}
                     onEdit={() => setDirty(true)}
                   />
                 ),

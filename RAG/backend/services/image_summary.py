@@ -34,6 +34,8 @@ from typing import Dict, List, Optional, Tuple
 
 from backend.config import (ImageSummaryConfig, VisionModelConfig,
                             get_active_config)
+# 读图模板：入库摘要与聊天识图共用同一套「看图策略」（见 image_templates）
+from backend.services.image_templates import resolve_template_body
 from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,
                                          get_llm_client, llm_completion)
 
@@ -123,8 +125,13 @@ _TEMPERATURE = 0.1  # 摘要要稳定可复现，不吃创造性
 # ---- 提示词构造（结构化选项 → 提示词；部门可微调后 cfg.prompt 优先） ----
 
 def default_prompt(options: Optional[Dict[str, bool]] = None,
-                   output_format: str = "fields") -> str:
+                   output_format: str = "fields",
+                   template: str = "") -> str:
     """内置默认模板（部门未配提示词时使用）
+
+    **看图策略来自 `template`**（`image_templates`，与聊天识图共用同一套），
+    本函数只负责在其后追加各自的输出要求——两边关注同样的东西、排除同样的
+    东西，生成的描述才同构、以图搜图时向量才靠得近。
 
     三种输出格式：
     - fields：**一句话简介 + 固定字段**（类型/文字/画面/…），检索命中率最高
@@ -132,7 +139,8 @@ def default_prompt(options: Optional[Dict[str, bool]] = None,
     - prose：自然段，读起来自然（首句仍要求先概括这是什么）
     - brief：一句话简介，**不读图中文字** —— 适合"整页全是文字但不需要
       理解含义"的图（如合同条款扫描件）；代价是图里的字检索不到，
-      故不适合证照类
+      故不适合证照类。**它不用模板**：模板要求"逐字抄录"，与 brief 的
+      "不读文字"直接冲突，硬拼会得到自相矛盾的指令
     """
     if output_format == "brief":
         return ("用一句话说明这张图片大致是什么、用来做什么的"
@@ -143,28 +151,35 @@ def default_prompt(options: Optional[Dict[str, bool]] = None,
                 "- 不超过 30 字，写成一句话\n"
                 "- 直接输出这句话，不要加「这张图片」之类的开场白，不要换行"
                 )
+    body = (template or "").strip() or resolve_template_body("")
     opts = options if options else DEFAULT_OPTIONS
     fields = [_OPTION_LINES[k] for k in _OPTION_ORDER
               if opts.get(k) and k in _OPTION_LINES]
     if not fields:  # 全不勾的极端配置：退回"只读文字"，至少还有检索价值
         fields = [_OPTION_LINES["read_text"]]
     if output_format == "prose":
-        head = ("请查看这张图片，用中文写一段 2~4 句的客观描述，用于文档检索。\n\n"
-                "**首句先用一句话概括这是什么（文件类型或场景）**，再展开细节。\n\n"
+        head = (body + "\n\n"
+                "请用中文写一段 2~4 句的客观描述，用于文档检索。\n"
+                "**首句先用一句话概括这是什么（文件类型或场景）**，再展开细节。\n"
                 "要点：\n")
         return head + "\n".join(f"- {f}" for f in fields) + "\n" + _FIXED_TAIL
-    head = ("请查看这张图片，按下面的字段输出中文描述，用于文档检索。\n\n"
+    head = (body + "\n\n"
+            "请按下面的字段输出中文描述，用于文档检索。\n"
             "每行一个字段，只输出这几行，不要加其他说明：\n")
     # 「简介」恒排在首位（字段本身不在 _OPTION_LINES 里，不受选项开关影响）
     return head + "\n".join([_BRIEF_LINE] + fields) + "\n" + _FIXED_TAIL
 
 
-def build_prompt(cfg: ImageSummaryConfig) -> str:
-    """按配置生成提示词（部门自定义过则直接用，否则用默认模板）"""
+def build_prompt(cfg: ImageSummaryConfig, template: str = "") -> str:
+    """按配置生成提示词（部门自定义过则直接用，否则「模板 + 字段输出段」）
+
+    template：选中的读图模板正文（见 services/image_templates）。入库摘要与
+    聊天识图**共用同一套「看图策略」**，只是各自追加的输出要求不同。
+    """
     custom = (cfg.prompt or "").strip()
     if custom:
         return custom
-    return default_prompt(cfg.options, cfg.output_format)
+    return default_prompt(cfg.options, cfg.output_format, template)
 
 
 # ---- 输出校验 ----
@@ -331,13 +346,17 @@ async def resolve_summary_cfg(db, dept_id: Optional[str]) -> ImageSummaryConfig:
 
 
 def effective_prompt(cfg: ImageSummaryConfig,
-                     fmt: Optional[str] = None) -> Tuple[str, str]:
+                     fmt: Optional[str] = None,
+                     template: str = "") -> Tuple[str, str]:
     """本次入库**实际会用**的提示词 + 来源（后端唯一真相源，前端只展示不计算）
 
-    - fmt 未指定 / 与配置的格式一致 → 部门自定义提示词优先，否则内置默认模板
+    - fmt 未指定 / 与配置的格式一致 → 部门自定义提示词优先，否则「模板 +
+      输出段」
     - fmt 与配置的格式**不同** → 强制该格式的内置模板：部门那份自定义提示词
       是照旧格式写的，套到新格式上会让模型按旧格式作答、而代码按新格式解析
       （字段行被折叠成一行再截断），产出没法用的内容
+
+    template：选中的读图模板正文（见 services/image_templates）。
 
     返回 (prompt, "custom" | "default")。解析时的覆盖逻辑（见
     ingestion/service.py 的 _stage_image_summary）与本函数同源，保证
@@ -349,8 +368,8 @@ def effective_prompt(cfg: ImageSummaryConfig,
         custom = (cfg.prompt or "").strip()
         if custom:
             return custom, "custom"
-        return default_prompt(cfg.options, cur), "default"
-    return default_prompt(cfg.options, want), "default"
+        return default_prompt(cfg.options, cur, template), "default"
+    return default_prompt(cfg.options, want, template), "default"
 
 
 def _vision_models() -> List[dict]:
@@ -430,10 +449,30 @@ def _model_cfg(entry: dict) -> Optional[VisionModelConfig]:
     return model_cfg
 
 
+async def _resolve_template_name(db, dept_id: Optional[str]) -> str:
+    """读图模板名（部门覆盖 → 全局；空 = 内置默认那套）
+
+    模板存在 **chat 段**（`chat.image_template`）而不是 image_summary 段：
+    它是聊天识图与入库摘要**共用**的「看图策略」，主要使用场景是聊天识图
+    （用户发图提问），入库这边跨段读一下即可。
+    """
+    from backend.services.department_service import get_department_config
+    from backend.services.settings.service import get_settings_service
+
+    profile = get_settings_service().get_active() or {}
+    global_name = (profile.get("chat") or {}).get("image_template") or ""
+    if not dept_id:
+        return global_name
+    dept_cfg = await get_department_config(db, dept_id)
+    dept_name = (dept_cfg.get("chat") or {}).get("image_template") or ""
+    return dept_name or global_name
+
+
 async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     """解析生效的图片摘要配置（部门覆盖 → 全局）；不可用 → None
 
-    返回 {"model": VisionModelConfig, "summary": ImageSummaryConfig}。
+    返回 {"model": VisionModelConfig, "summary": ImageSummaryConfig,
+          "template": str}（template 是选中的读图模板名，可空）。
 
     模型来自**超管配的候选池**（图片解析模型 + LLM 模型，见 _resolve_entry），
     部门只选"用哪一个"（按 name 匹配）——部门看不到也改不了连接信息与密钥。
@@ -454,7 +493,9 @@ async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     model_cfg = _model_cfg(entry)
     if model_cfg is None:
         return None
-    return {"model": model_cfg, "summary": summary}
+    template_name = await _resolve_template_name(db, dept_id)
+    return {"model": model_cfg, "summary": summary,
+            "template": template_name}
 
 
 async def resolve_chat_vision(db, dept_id: Optional[str]
@@ -524,6 +565,7 @@ async def summarize_images(
     *,
     model_cfg: VisionModelConfig,
     summary_cfg: ImageSummaryConfig,
+    template: str = "",
     client=None,
     on_progress=None,
     concurrency: int = 1,
@@ -555,7 +597,7 @@ async def summarize_images(
     if not refs:
         return markdown, stats
 
-    prompt = build_prompt(summary_cfg)
+    prompt = build_prompt(summary_cfg, template)
     output_format = summary_cfg.output_format or "fields"
     limit = max(0, int(summary_cfg.max_images or 0))
     by_name = {im.get("name"): im.get("data") for im in images}

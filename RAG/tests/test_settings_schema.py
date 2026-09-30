@@ -143,7 +143,9 @@ class TestWhitelistFromSchema:
             "citation_snippet_chars", "prompt_total_max_tokens",
             # 聊天识图的读图提示词：部门可覆盖（各部门的图差别大），
             # 而 image_model 刻意不在其中（模型涉及密钥，超管定）
-            "image_prompt"}
+            "image_prompt",
+            # 读图模板名（部门选一套；入库摘要与聊天识图共用）
+            "image_template"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
         # llm 段只开「条目名 + 温度/Token」：部门按条目**选**，不再逐字段抄
@@ -223,7 +225,8 @@ class TestCoerceBehavior:
                                # 空串：识图模型未单独指定（跟随图片摘要）、
                                # 读图提示词未自定义（用内置默认）
                                "image_model": "",
-                               "image_prompt": ""}
+                               "image_prompt": "",
+                               "image_template": ""}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()
         assert out["mysql"] == {

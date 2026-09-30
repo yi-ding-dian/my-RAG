@@ -1,35 +1,25 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Col, Divider, Form, Input, InputNumber, Row, Select, Switch, Typography } from 'antd';
+import { Button, Col, Divider, Form, Input, InputNumber, Row, Select, Space, Switch, Typography } from 'antd';
 import type { LLMModelItem, VisionModelItem } from '../../shared/api/types';
 import { buildDefaultImgPrompt } from './imageSummaryPrompt';
 
 const { Text } = Typography;
 
-/**
- * 内置读图提示词——**仅用于输入框的 placeholder，不与后端联动**
- *
- * 真值以后端 `chat_vision._CHAT_IMAGE_PROMPT` 为准（前端这份改了不影响实际
- * 调用）；贴在这里只是为了让"留空 = 用默认"不是个黑盒：用户得先看见默认长
- * 什么样，才知道该往哪儿改。改后端常量时同步改这里即可，不一致最多是提示
- * 文案过期，不会有行为差异。
- *
- * 两个占位符：`{max_chars}` 换成描述字数上限、`{question}` 换成用户当前问题。
- * 自定义提示词写了 `{question}` 才会带上问题读图（不写 = 盲读，行为同旧版）。
- */
-const DEFAULT_IMAGE_PROMPT = `请描述这张图片，供知识库检索与问答使用。用户就这张图提的问题是：「{question}」。
-要求：
-1. **逐字抄录图中所有文字**：标题、单位名、编号、字段名、按钮名、型号、参数、报错信息、日期。这些是拿去知识库检索的关键词，必须一字不差，不得概括或改写。每项只列一次，不要重复；
-2. 图中有**箭头、红框、圈注、高亮**等标记时，明确说明它指向哪个元素（报出该元素的准确名称）——用户的问题通常就针对这个元素；
-3. 图中有**印章、签字、表格、图表**时，说明其内容与数量；若是界面或报错截图，说明是什么系统、什么页面、什么操作、什么提示；
-4. **只描述真实看到的内容**：不推测、不补充常识、不回答图片之外的问题。文字模糊看不清时，明确说明看不清，**绝对不要猜测或编造**任何编号与数字；
-5. **不要描述头像、昵称、时间戳、聊天气泡、背景装饰**等与内容无关的元素——它们不是检索线索，只会挤占篇幅；
-6. 简洁中文，不超过 {max_chars} 字。`;
+// 内置读图提示词的 placeholder **不再在前端硬编码**：后端按当前选中的模板
+// 实时生成（`/api/settings/chat` 的 `default_image_prompt`），超管换了模板
+// placeholder 就跟着变。此前前端留了一份副本，后端把默认改成"模板 + 追加段"
+// 之后那份副本就过期了——用户照着过期副本改，改出来的是上一版的行为。
 
 interface Props {
   /** LLM 模型列表：「识图模型」的首选来源——多模态模型通常就配在这份列表里 */
   llmModels: LLMModelItem[];
   /** 图片解析模型列表（配置档案 vision 段），后端候选池的另一半 */
   visionModels: VisionModelItem[];
+  /** 读图模板可选列表（后端下发；入库摘要与聊天识图共用同一套「看图策略」） */
+  imageTemplateOptions: Array<{ name: string; preview: string }>;
+  /** 没填自定义提示词时**实际会发**的提示词（后端按当前模板生成，占位符保留）
+   *  —— 拿去当 placeholder。不走前端常量：那样后端改默认后副本会悄悄过期 */
+  defaultImagePrompt: string;
   /** 通知外层"内容被改过"：切换提示词来源走的是程序化 setFieldsValue，
    *  不触发 Form.onValuesChange（脏标记唯一来源），不手动报到就会关窗不提示 */
   onEdit: () => void;
@@ -72,7 +62,9 @@ const imageModelOptions = (
  *   落在窗口外，浮层里什么也标不出来——这正是此前"引用浮层看不到高亮"的原因。
  * - 聊天识图：发送图片 → 视觉模型读图 → 描述参与检索与回答（下方分组）
  */
-const ChatPanel: React.FC<Props> = ({ llmModels, visionModels, onEdit }) => {
+const ChatPanel: React.FC<Props> = ({
+  llmModels, visionModels, imageTemplateOptions, defaultImagePrompt, onEdit,
+}) => {
   const form = Form.useFormInstance();
   // ---- 读图提示词的来源：可以复用「图片摘要」那份 ----
   // 取「图片摘要」面板里配的那份；没配就用它的选项 + 格式算一份默认出来
@@ -141,7 +133,7 @@ const ChatPanel: React.FC<Props> = ({ llmModels, visionModels, onEdit }) => {
     if (src === 'builtin') form.setFieldsValue({ chat_image_prompt: '' });
     if (src === 'summary') form.setFieldsValue({ chat_image_prompt: summaryPrompt });
     if (src === 'custom' && !cur) {
-      form.setFieldsValue({ chat_image_prompt: DEFAULT_IMAGE_PROMPT });
+      form.setFieldsValue({ chat_image_prompt: defaultImagePrompt });
     }
     onEdit();
   };
@@ -362,29 +354,57 @@ const ChatPanel: React.FC<Props> = ({ llmModels, visionModels, onEdit }) => {
     </Row>
 
     <Form.Item
+      name="chat_image_template"
+      label="默认读图模板"
+      extra="入库摘要与聊天识图共用这套「看图策略」——两边关注同样的东西、排除同样的东西，图文检索才容易互相对上。留空 = 用内置默认（通用）。部门管理员可在「部门配置」里为本部门另选一套。"
+    >
+      <Select allowClear placeholder="用内置默认（通用）"
+        options={imageTemplateOptions.map(t => ({
+          value: t.name,
+          label: t.preview ? `${t.name}（${t.preview}…）` : t.name,
+        }))} />
+    </Form.Item>
+
+    <Form.Item
       name="chat_image_prompt"
-      label="读图提示词"
+      label={
+        <Space size={8}>
+          读图提示词（自定义）
+          {/* 一键填入「当前实际会发」的那份——留空时只有灰字 placeholder，
+              想看清全文、或在它基础上改都够不着 */}
+          <Button type="link" size="small"
+            style={{ padding: 0, height: 'auto' }}
+            onClick={() => {
+              form.setFieldsValue({ chat_image_prompt: defaultImagePrompt });
+              onEdit();
+            }}>
+            填入当前生效的提示词
+          </Button>
+        </Space>
+      }
       tooltip={
         <div style={{ fontSize: 12, lineHeight: '18px' }}>
-          发给视觉模型的提示词。<b>留空 = 用下方 placeholder 里的内置默认。</b>
+          发给视觉模型的提示词。<b>留空 = 用上面选中的模板</b>（没选则内置
+          「通用」），下方灰字就是当前会发出去的那份。
           <div style={{ marginTop: 6 }}>
-            <b>支持 {'{max_chars}'} 占位符</b>，运行时替换为上面的「描述长度
-            上限」。建议保留——不写它长度约束就只剩硬截断兜底。
+            <b>支持 {'{max_chars}'} 与 {'{question}'} 两个占位符</b>：前者替换为
+            上面的「描述长度上限」，后者替换为员工当前的问题——写上它才会
+            <b>带着问题读图</b>（图里有箭头/红框时能定位到具体元素），不写就是
+            盲读，效果明显变差。
           </div>
           <div style={{ marginTop: 6 }}>
-            部门管理员可在「部门配置 → 对话增强」再覆盖一层；部门留空则跟随这里。
+            部门管理员可在「部门配置 → 对话」再覆盖一层；部门留空则跟随这里。
           </div>
           <div style={{ marginTop: 6 }}>
-            调优提示：这段描述会<b>同时</b>并入检索词并注入回答，所以要
-            「逐字抄录关键文字 + 简洁叙述」。若只想让模型回答得更细，改这里
-            没用——主模型看到的是描述而非原图。
+            调优提示：这段描述会<b>同时</b>并入检索词并注入回答。若只想让模型
+            回答得更细，改这里没用——主模型看到的是描述而非原图。
           </div>
         </div>
       }
     >
       <Input.TextArea
         rows={6}
-        placeholder={DEFAULT_IMAGE_PROMPT}
+        placeholder={defaultImagePrompt}
         style={{ fontSize: 12, lineHeight: '18px' }}
       />
     </Form.Item>
