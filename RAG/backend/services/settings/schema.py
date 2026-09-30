@@ -36,7 +36,8 @@ from backend.config import (AgenticConfig, ChatConfig, ChunkingConfig,
                             ContextualRetrievalConfig,
                             DeepDocConfig, EmbeddingConfig,
                             GotenbergConfig,
-                            ImageSummaryConfig, IngestionConfig,
+                            ImageSummaryConfig, ImageTemplatesConfig,
+                            IngestionConfig,
                             LLMConfig, MinerUConfig, MinIOConfig, MySQLConfig,
                             PromptLibraryConfig,
                             RerankConfig, RetrievalConfig, ServiceConfig,
@@ -453,6 +454,15 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
                              # 需保留 items: [] 作为合法初值
                              "condition": "not_none"}},
         # 旧档案没有这个段 → coerce 时补 items: []（否则前端读到 undefined）
+        fill_section=True),
+    # 读图模板库（超管增删改，部门按名选；入库摘要与聊天识图共用）。
+    # 与 prompts 段同款：apply_to_config=False —— 它不做运行时"全局配置"的字段，
+    # 只作为**可选模板来源**被 resolve_template_body 读取；
+    # items: [] 是合法初值（= 用代码内置那几套），故 condition=not_none
+    "image_templates": _reflect_section(
+        "image_templates", ImageTemplatesConfig,
+        overrides={"items": {"apply_to_config": False,
+                             "condition": "not_none"}},
         fill_section=True),
     "agentic": _reflect_section("agentic", AgenticConfig,
         overrides={

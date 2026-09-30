@@ -449,30 +449,35 @@ def _model_cfg(entry: dict) -> Optional[VisionModelConfig]:
     return model_cfg
 
 
-async def _resolve_template_name(db, dept_id: Optional[str]) -> str:
-    """读图模板名（部门覆盖 → 全局；空 = 内置默认那套）
+async def _resolve_template_body(db, dept_id: Optional[str]) -> str:
+    """读图模板**正文**（部门覆盖 → 全局 → 内置默认那套）
 
     模板存在 **chat 段**（`chat.image_template`）而不是 image_summary 段：
     它是聊天识图与入库摘要**共用**的「看图策略」，主要使用场景是聊天识图
     （用户发图提问），入库这边跨段读一下即可。
+
+    **返回正文而非名字**——调用方（`build_prompt`）直接把它拼进提示词。
+    早先这里返回名字，调用方又按正文用，结果提示词开头拼进去的是一行模板名。
     """
     from backend.services.department_service import get_department_config
     from backend.services.settings.service import get_settings_service
 
     profile = get_settings_service().get_active() or {}
+    tmpl_items = (profile.get("image_templates") or {}).get("items")
     global_name = (profile.get("chat") or {}).get("image_template") or ""
-    if not dept_id:
-        return global_name
-    dept_cfg = await get_department_config(db, dept_id)
-    dept_name = (dept_cfg.get("chat") or {}).get("image_template") or ""
-    return dept_name or global_name
+    name = global_name
+    if dept_id:
+        dept_cfg = await get_department_config(db, dept_id)
+        dept_name = (dept_cfg.get("chat") or {}).get("image_template") or ""
+        name = dept_name or global_name
+    return resolve_template_body(name, tmpl_items)
 
 
 async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     """解析生效的图片摘要配置（部门覆盖 → 全局）；不可用 → None
 
     返回 {"model": VisionModelConfig, "summary": ImageSummaryConfig,
-          "template": str}（template 是选中的读图模板名，可空）。
+          "template": str}（template 是选中的读图模板**正文**，可空）。
 
     模型来自**超管配的候选池**（图片解析模型 + LLM 模型，见 _resolve_entry），
     部门只选"用哪一个"（按 name 匹配）——部门看不到也改不了连接信息与密钥。
@@ -493,9 +498,9 @@ async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     model_cfg = _model_cfg(entry)
     if model_cfg is None:
         return None
-    template_name = await _resolve_template_name(db, dept_id)
+    template_body = await _resolve_template_body(db, dept_id)
     return {"model": model_cfg, "summary": summary,
-            "template": template_name}
+            "template": template_body}
 
 
 async def resolve_chat_vision(db, dept_id: Optional[str]

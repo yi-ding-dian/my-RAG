@@ -106,7 +106,7 @@ interface PanelTestResult {
 
 /** 折叠区的全部面板 key（保存前要展开它们，见 handleSave） */
 const ALL_PANELS = [
-  'llm', 'retrieval', 'ingest', 'chat', 'prompts',
+  'llm', 'retrieval', 'ingest', 'chat', 'prompts', 'image_templates',
   'embedding', 'parse', 'vision', 'image_summary', 'minio', 'vector_store',
 ];
 
@@ -182,11 +182,24 @@ const ProfileEditorModal: React.FC<{
   // ---- 图片解析模型 ----
   const [visionModels, setVisionModels] = useState<VisionModelItem[]>([]);
   // ---- 读图模板（聊天识图与入库摘要共用的「看图策略」）----
-  /** 可选模板列表（后端下发） */
+  /** 可选模板列表（后端下发，带正文——「载入内置模板」要用） */
   const [imageTemplateOptions, setImageTemplateOptions] =
-    useState<Array<{ name: string; preview: string }>>([]);
+    useState<Array<{ name: string; prompt: string; preview: string }>>([]);
   /** 没填自定义提示词时**实际会发**的提示词——给 placeholder 用，跟着模板走 */
   const [defaultImagePrompt, setDefaultImagePrompt] = useState('');
+  /** 档案里配的读图模板（空 = 正在用代码内置那几套） */
+  const watchedTemplates = Form.useWatch(['image_templates', 'items'], form)
+    ?? [];
+  /** 把内置模板载入表单（之后可编辑；不保存就不会固化，仍跟随代码更新） */
+  const loadBuiltinTemplates = () => {
+    form.setFieldsValue({
+      image_templates: {
+        items: imageTemplateOptions.map(t => ({ name: t.name,
+                                                prompt: t.prompt })),
+      },
+    });
+    setDirty(true);
+  };
   const [visionActive, setVisionActive] = useState(0);
   const [visionTestingIdx, setVisionTestingIdx] = useState<number | null>(null);
   const [visionModalOpen, setVisionModalOpen] = useState(false);
@@ -308,7 +321,8 @@ const ProfileEditorModal: React.FC<{
       .then(res => {
         if (cancelled) return;
         const d = res.data as {
-          image_template_options?: Array<{ name: string; preview: string }>;
+          image_template_options?: Array<{ name: string; prompt: string;
+                                           preview: string }>;
           default_image_prompt?: string;
         };
         setImageTemplateOptions(d.image_template_options ?? []);
@@ -941,6 +955,124 @@ const ProfileEditorModal: React.FC<{
                               onClick={() => add({ name: '', content: '' })}
                             >
                               添加提示词
+                            </Button>
+                          </>
+                        )}
+                      </Form.List>
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                key: 'image_templates',
+                label: '读图模板库',
+                children: (
+                  <div>
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 12, padding: '6px 12px' }}
+                      message={
+                        <span style={{ fontSize: 12 }}>
+                          入库摘要与聊天识图<b>共用</b>这套「看图策略」，部门按名选一套。
+                          模板<b>只写「看什么」</b>（逐字抄录关键文字、排除头像/时间戳等
+                          装饰、看不清就明说），<b>不写输出格式</b>——输出形态由入库
+                          （字段行）与聊天（自然语言 + 用户问题）各自追加。
+                        </span>
+                      }
+                    />
+                    {watchedTemplates.length === 0 && (
+                      <Alert
+                        type="warning"
+                        showIcon
+                        style={{ marginBottom: 12, padding: '6px 12px' }}
+                        message={
+                          <span style={{ fontSize: 12 }}>
+                            当前用的是<b>内置模板</b>（{imageTemplateOptions.length} 套，
+                            随代码更新）。要把它们改成自己的一份，先
+                            <Button
+                              type="link"
+                              size="small"
+                              style={{ padding: '0 4px', height: 'auto' }}
+                              onClick={loadBuiltinTemplates}
+                            >
+                              载入内置模板
+                            </Button>
+                            再编辑——载入并保存后即固化为本档案的副本。
+                          </span>
+                        }
+                      />
+                    )}
+                    <div style={{ maxHeight: 260, overflowY: 'auto', paddingRight: 4 }}>
+                      <Form.List name={['image_templates', 'items']}>
+                        {(fields, { add, remove }) => (
+                          <>
+                            {fields.map(({ key, name, ...rest }) => (
+                              <div
+                                key={key}
+                                style={{
+                                  border: '1px solid #f0f0f0',
+                                  borderRadius: 8,
+                                  padding: 12,
+                                  marginBottom: 8,
+                                  background: '#fafafa',
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                                  <div style={{ width: 190, flexShrink: 0, display: 'flex', gap: 8 }}>
+                                    <span style={{ ...LABEL_COL, flexShrink: 0 }}>名称：</span>
+                                    <Form.Item
+                                      {...rest}
+                                      name={[name, 'name']}
+                                      style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
+                                      rules={[{
+                                        required: true, whitespace: true,
+                                        message: '请输入模板名',
+                                      }]}
+                                    >
+                                      <Input placeholder="如：界面与截图" maxLength={30} />
+                                    </Form.Item>
+                                  </div>
+                                  <div style={{ flex: 1, minWidth: 0, display: 'flex', gap: 8 }}>
+                                    <span
+                                      style={{ ...LABEL_COL, ...LABEL_COL_MULTILINE, flexShrink: 0 }}
+                                    >
+                                      正文：
+                                    </span>
+                                    <Form.Item
+                                      {...rest}
+                                      name={[name, 'prompt']}
+                                      style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
+                                      rules={[{
+                                        required: true, whitespace: true,
+                                        message: '请输入模板正文',
+                                      }]}
+                                    >
+                                      <Input.TextArea
+                                        rows={4}
+                                        placeholder="该看什么、不该看什么——不含输出格式"
+                                      />
+                                    </Form.Item>
+                                  </div>
+                                  <Tooltip title="删除该模板">
+                                    <Button
+                                      type="text"
+                                      size="small"
+                                      danger
+                                      icon={<DeleteOutlined />}
+                                      onClick={() => remove(name)}
+                                    />
+                                  </Tooltip>
+                                </div>
+                              </div>
+                            ))}
+                            <Button
+                              type="dashed"
+                              block
+                              icon={<PlusOutlined />}
+                              onClick={() => add({ name: '', prompt: '' })}
+                            >
+                              添加模板
                             </Button>
                           </>
                         )}

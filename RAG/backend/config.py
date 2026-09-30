@@ -419,6 +419,21 @@ class PromptItem(BaseModel):
     content: str = ""
 
 
+class ImageTemplatesConfig(BaseModel):
+    """读图模板库（入库摘要与聊天识图**共用**的「看图策略」）
+
+    放在配置档案里：切换档案时模板随之切换（与 LLM 模型列表、系统提示词库同理）。
+    超管在此增删改，部门按名选一套（`chat.image_template`）。
+
+    模板**只写"看什么"，不写"怎么输出"**——这是入库（字段行回填 chunk）与聊天
+    （自然语言注入 messages）能共用同一套的前提，详见 services/image_templates。
+
+    **空列表 = 用代码内置那几套**（跟随代码更新）；超管一旦编辑/新增，整体存进
+    档案成为副本。所以这里刻意不给默认值——给了就等于开箱即"冻结"在某个版本。
+    """
+    items: list = Field(default_factory=list)
+
+
 class PromptLibraryConfig(BaseModel):
     """系统提示词库（供外部查询引用；不写进运行时全局配置）
 
@@ -594,6 +609,9 @@ class ServiceConfig(BaseModel):
     # 系统提示词库（外部查询引用的可选项来源；内容不参与运行时行为，
     # 挂在 ServiceConfig 上只是为了让配置档案的段能按 dataclass 名反射）
     prompts: PromptLibraryConfig = Field(default_factory=PromptLibraryConfig)
+    # 读图模板库（空 = 用代码内置那几套；见 services/image_templates）
+    image_templates: ImageTemplatesConfig = Field(
+        default_factory=ImageTemplatesConfig)
 
 
 settings = Settings()

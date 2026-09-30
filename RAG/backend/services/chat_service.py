@@ -128,6 +128,18 @@ def _global_llm_models() -> list:
     return ((profile.get("llm") or {}).get("models")) or []
 
 
+def _global_image_templates() -> list:
+    """全局档案的读图模板列表（超管配的；空 = 用代码内置那几套）
+
+    同款：模板库也在档案里，`get_active_config()` 不带它（该段
+    apply_to_config=False，只作可选来源）。
+    """
+    from backend.services.settings.service import get_settings_service
+
+    profile = get_settings_service().get_active() or {}
+    return ((profile.get("image_templates") or {}).get("items")) or []
+
+
 async def delete_session_images(session: ChatSession) -> int:
     """删除会话携带的全部聊天图片（对象存储），返回成功删除数
 
@@ -531,7 +543,8 @@ class ChatService:
                     # 选中的读图模板（入库摘要用的是同一套「看图策略」——
                     # 两边关注同样的东西、排除同样的东西，描述才同构）
                     template=resolve_template_body(
-                        merged_chat.get("image_template") or ""))
+                        merged_chat.get("image_template") or "",
+                        _global_image_templates()))
                 if img_err:
                     # 单次读图失败多为这张图本身的问题（格式怪/损坏/被拒答），
                     # 记 warning 不点红灯——视觉模型真挂了由 /vision-status
