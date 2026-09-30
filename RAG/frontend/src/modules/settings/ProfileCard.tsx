@@ -5,23 +5,65 @@ import {
   DeleteOutlined, EditOutlined, LoadingOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { LLMModelItem, ServiceProfile } from '../../shared/api/client';
-import { DOMAIN_CARDS, emptyTest, sectionLabel } from './shared';
+import { DOMAIN_CARDS, emptyTest, IMG_FMT_LABEL, sectionLabel } from './shared';
 import type { SectionKey, TestItem } from './shared';
 
 const { Text } = Typography;
 
-/** 单条连接测试结果（测试中 / 成功 / 失败） */
+/** 条目地址只留 host:port —— 明细行是缩进小字，带协议和路径太长会换行 */
+const hostOf = (url: string): string => {
+  if (!url) return '';
+  try {
+    return new URL(url).host;
+  } catch {
+    return url.replace(/^https?:\/\//, '').split('/')[0];
+  }
+};
+
+/** 单条连接测试结果（测试中 / 成功 / 失败）
+ *
+ *  模型列表段（LLM / 图片解析模型）会带 `items`——列表里每个模型都测过一遍，
+ *  这里逐条列出：只给一句"3/4 个连不上"看不出是哪个连不上。
+ */
 const TestLine: React.FC<{ item: TestItem; label: string }> = ({ item, label }) => {
   if (item.status === 'idle') return null;
+  const items = item.items ?? [];
   return (
     <div style={{ marginTop: 2, fontSize: 12 }}>
       <Text type="secondary" style={{ marginRight: 8 }}>{label}:</Text>
       {item.status === 'testing' ? (
         <Tag icon={<LoadingOutlined spin />} color="processing">测试中...</Tag>
       ) : item.status === 'success' ? (
-        <Text type="success"><CheckCircleFilled /> {item.msg}</Text>
+        <Text type="success">
+          <CheckCircleFilled />
+          {' '}
+          {items.length
+            ? `${items.length} 个模型全部连接成功`
+            : item.msg}
+        </Text>
       ) : (
         <Text type="danger"><CloseCircleFilled /> {item.msg}</Text>
+      )}
+      {item.status !== 'testing' && items.length > 0 && (
+        <div style={{ marginLeft: 10, marginTop: 1 }}>
+          {items.map((it, i) => (
+            <div key={`${it.name}-${i}`} style={{ fontSize: 11, lineHeight: '17px' }}>
+              {it.ok
+                ? <CheckCircleFilled style={{ color: '#52c41a' }} />
+                : <CloseCircleFilled style={{ color: '#ff4d4f' }} />}
+              {' '}
+              <Text style={{ fontSize: 11 }}>{it.name || '未命名'}</Text>
+              {hostOf(it.url) && (
+                <Text type="secondary" style={{ fontSize: 11 }}> {hostOf(it.url)}</Text>
+              )}
+              {!it.ok && (
+                <Text type="danger" style={{ fontSize: 11 }}>
+                  {' '}{it.message.replace(/（耗时 \d+ms）$/, '')}
+                </Text>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -169,16 +211,27 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
             <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>dim={p.embedding?.dimension}</Text>
           </div>
         </Col>
+        {/* Rerank 是独立的模型服务（有自己的地址），与 Embedding 同款单列一行 */}
+        <Col xs={24} md={12}>
+          <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.rerank}</Text>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {p.retrieval?.rerank?.enabled ? (
+              <>
+                <Text code style={{ fontSize: 12 }}>{p.retrieval.rerank.model || '-'}</Text>
+                <Text style={{ fontSize: 12 }}>{p.retrieval.rerank.base_url}</Text>
+                <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
+                  top_n={p.retrieval.rerank.top_n}
+                </Text>
+              </>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>未启用</Text>
+            )}
+          </div>
+        </Col>
         <Col xs={24} md={12}>
           <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.mineru}</Text>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Text style={{ fontSize: 12 }}>{p.mineru?.url || '-'}</Text>
-          </div>
-        </Col>
-        <Col xs={24} md={12}>
-          <Text type="secondary" style={{ fontSize: 12 }}>{sectionLabel.deepdoc}</Text>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <Text style={{ fontSize: 12 }}>{p.deepdoc?.base_url || '-'}</Text>
           </div>
         </Col>
         <Col xs={24} md={12}>
@@ -194,6 +247,46 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
             </Text>
             <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
               chunk={p.chunking?.chunk_size}/{p.chunking?.overlap}
+            </Text>
+          </div>
+        </Col>
+        <Col xs={24} md={12}>
+          <Text type="secondary" style={{ fontSize: 12 }}>入库与限制</Text>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Text style={{ fontSize: 12 }}>
+              并发 {p.ingestion?.concurrency ?? 3}
+            </Text>
+            <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
+              单库上限 {p.ingestion?.kb_doc_limit ?? 0}
+            </Text>
+            <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
+              上传 {p.ingestion?.max_upload_mb ?? 100}MB
+            </Text>
+          </div>
+        </Col>
+        <Col xs={24} md={12}>
+          <Text type="secondary" style={{ fontSize: 12 }}>聊天设置</Text>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Text style={{ fontSize: 12 }}>
+              输入 {p.chat?.max_query_len ?? 2000} 字
+            </Text>
+            <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
+              上下文 {p.chat?.prompt_total_max_tokens ?? 6000} token
+            </Text>
+            <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
+              识图{p.chat?.image_enabled === false ? '关' : '开'}
+            </Text>
+          </div>
+        </Col>
+        <Col xs={24} md={12}>
+          <Text type="secondary" style={{ fontSize: 12 }}>图片摘要</Text>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Text style={{ fontSize: 12 }}>{p.image_summary?.model || '默认模型'}</Text>
+            <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
+              {IMG_FMT_LABEL[p.image_summary?.output_format ?? 'fields'] ?? '固定字段'}
+            </Text>
+            <Text style={{ fontSize: 12, color: token.colorTextTertiary }}>
+              提示词{p.image_summary?.prompt ? '自定义' : '用模板'}
             </Text>
           </div>
         </Col>
@@ -221,6 +314,11 @@ const ProfileCard: React.FC<ProfileCardProps> = ({
           <TestLine item={tests.llm} label={sectionLabel.llm} />
           <TestLine item={tests.embedding} label={sectionLabel.embedding} />
           <TestLine item={tests.mineru} label={sectionLabel.mineru} />
+          {/* Gotenberg / Rerank / 图片解析模型原先漏了没显示——它们都在
+              探测范围里（见 connect_test.test_connections），结果白白丢掉 */}
+          <TestLine item={tests.gotenberg} label={sectionLabel.gotenberg} />
+          <TestLine item={tests.rerank} label={sectionLabel.rerank} />
+          <TestLine item={tests.vision} label={sectionLabel.vision} />
           <TestLine item={tests.deepdoc} label={sectionLabel.deepdoc} />
           <TestLine item={tests.minio} label={sectionLabel.minio} />
           <TestLine item={tests.vector_store} label={sectionLabel.vector_store} />

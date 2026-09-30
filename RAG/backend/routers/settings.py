@@ -28,7 +28,7 @@ import time
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_active_config
@@ -381,15 +381,28 @@ async def activate_profile(request: Request, profile_id: str,
     return {"message": f"已切换配置档案: {result.get('name')}", "profile": result}
 
 
+def _parse_sections(sections: Optional[str]) -> Optional[list[str]]:
+    """逗号分隔的段名 → 列表；空/未传 → None（语义 = 全测）
+
+    用逗号串而不是 query 数组：axios 把数组序列化成 `sections[]=llm`，
+    FastAPI 的 Query(List[str]) 收不到。
+    """
+    names = [s.strip() for s in (sections or "").split(",") if s.strip()]
+    return names or None
+
+
 @router.post("/profiles/{profile_id}/test")
 async def test_profile(request: Request, profile_id: str,
                        body: Optional[dict] = None,
+                       sections: Optional[str] = Query(
+                           None, description="只测这些段（逗号分隔）；不传=全测"),
                        user: UserPublic = Depends(require_user_admin)):
     """连接测试：按档案测试，body 可选（传未保存的表单值覆盖对应字段）
 
     只测不写（不对配置做任何变更），super_admin / dept_admin 可执行；
     返回: {llm, embedding, mineru, deepdoc, mysql, minio} 各 {ok, latency_ms, message}
-    LLM/Embedding/MySQL/MinIO 5s 超时，MinerU 3s、DeepDoc 8s 超时（短超时避免页面卡死）
+    各段**并发**探测，最坏耗时 = 最慢那一段（而非各段超时之和）；
+    `sections` 可只测点名的段（面板标题上的「测试」按钮用）。
     审计：记各连接成功与否（status=success 仅当全部 ok）。
     """
     svc = get_settings_service()
@@ -434,7 +447,7 @@ async def test_profile(request: Request, profile_id: str,
                         if orig:
                             merged[fname] = orig
                 profile[section] = merged
-    result = await svc.test_connections(profile)
+    result = await svc.test_connections(profile, _parse_sections(sections))
     # skipped 的段（如未配置图片解析模型）不参与"全部就绪"判定——
     # 未配置可选功能是正常状态，不该把整体结果拖成 failed
     ok_map = {k: bool(v.get("ok")) for k, v in result.items()
@@ -442,6 +455,33 @@ async def test_profile(request: Request, profile_id: str,
     await audit_service.record_action(
         user, action="settings.test-connections", target_type="config",
         target_id=profile_id, target_name=profile.get("name"),
+        detail=ok_map,
+        status="success" if all(ok_map.values()) else "failed",
+        request=request)
+    return result
+
+
+@router.post("/test-draft")
+async def test_draft(request: Request, body: dict,
+                     sections: Optional[str] = Query(
+                         None, description="只测这些段（逗号分隔）；不传=全测"),
+                     user: UserPublic = Depends(require_user_admin)):
+    """新建档案（尚未落库）的连接测试：纯按传入的表单值探测，不需要档案 id
+
+    与 /profiles/{id}/test 的差异：没有已存档案作基准，也就没有"空值/脱敏值
+    回查原值"那一步——新建表单本就带着各字段默认值，填什么测什么。新建时
+    "填完地址想先测通再保存"是最常见的动作，原先因为拿不到 id 直接不给测。
+
+    只测不写；审计挂在 target_id="draft" 上。
+    """
+    svc = get_settings_service()
+    profile = {k: v for k, v in body.items() if isinstance(v, dict)}
+    result = await svc.test_connections(profile, _parse_sections(sections))
+    ok_map = {k: bool(v.get("ok")) for k, v in result.items()
+              if not v.get("skipped")}
+    await audit_service.record_action(
+        user, action="settings.test-connections", target_type="config",
+        target_id="draft", target_name=str(body.get("name") or "(新建档案)"),
         detail=ok_map,
         status="success" if all(ok_map.values()) else "failed",
         request=request)

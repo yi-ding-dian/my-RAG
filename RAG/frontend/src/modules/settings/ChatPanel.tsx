@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Col, Divider, Form, Input, InputNumber, Row, Select, Switch, Typography } from 'antd';
-import type { VisionModelItem } from '../../shared/api/types';
+import type { LLMModelItem, VisionModelItem } from '../../shared/api/types';
+import { buildDefaultImgPrompt } from './imageSummaryPrompt';
 
 const { Text } = Typography;
 
@@ -20,9 +21,39 @@ const DEFAULT_IMAGE_PROMPT = `请描述这张图片，供知识库检索与问�
 5. 简洁中文，不超过 {max_chars} 字。`;
 
 interface Props {
-  /** 可选的识图模型（配置档案 vision 段；空 = 跟随「图片摘要」选的模型） */
+  /** LLM 模型列表：「识图模型」的首选来源——多模态模型通常就配在这份列表里 */
+  llmModels: LLMModelItem[];
+  /** 图片解析模型列表（配置档案 vision 段），后端候选池的另一半 */
   visionModels: VisionModelItem[];
+  /** 通知外层"内容被改过"：切换提示词来源走的是程序化 setFieldsValue，
+   *  不触发 Form.onValuesChange（脏标记唯一来源），不手动报到就会关窗不提示 */
+  onEdit: () => void;
 }
+
+/** 识图模型下拉的选项：LLM 模型 + 图片解析模型，同名只留先出现的那份
+ *
+ *  按来源分组显示，是为了让人看清"这个模型是从哪配的"；后端的候选池同样是
+ *  这两份合并（见 image_summary._vision_models），选哪一组都能解析到。
+ */
+const imageModelOptions = (
+  llmModels: LLMModelItem[], visionModels: VisionModelItem[],
+) => {
+  const seen = new Set<string>();
+  const pick = (name: string, model: string) => {
+    if (!name || seen.has(name)) return null;
+    seen.add(name);
+    return {
+      value: name,
+      label: model && model !== name ? `${name}（${model}）` : name,
+    };
+  };
+  const llm = llmModels.map(m => pick(m.name, m.model)).filter(Boolean);
+  const vision = visionModels.map(m => pick(m.name, m.model)).filter(Boolean);
+  const groups: { label: string; options: NonNullable<ReturnType<typeof pick>>[] }[] = [];
+  if (llm.length) groups.push({ label: 'LLM 模型', options: llm as never });
+  if (vision.length) groups.push({ label: '图片解析模型', options: vision as never });
+  return groups;
+};
 
 /**
  * 聊天设置面板（配置档案弹窗）
@@ -36,7 +67,81 @@ interface Props {
  *   落在窗口外，浮层里什么也标不出来——这正是此前"引用浮层看不到高亮"的原因。
  * - 聊天识图：发送图片 → 视觉模型读图 → 描述参与检索与回答（下方分组）
  */
-const ChatPanel: React.FC<Props> = ({ visionModels }) => (
+const ChatPanel: React.FC<Props> = ({ llmModels, visionModels, onEdit }) => {
+  const form = Form.useFormInstance();
+  // ---- 读图提示词的来源：可以复用「图片摘要」那份 ----
+  // 取「图片摘要」面板里配的那份；没配就用它的选项 + 格式算一份默认出来
+  // （与后端 default_prompt 同逻辑，见 imageSummaryPrompt.ts）
+  const sumPrompt = Form.useWatch('image_summary_prompt', form);
+  const sumFmt = Form.useWatch('image_summary_output_format', form);
+  const sumLabel = Form.useWatch('image_summary_opt_label_type', form);
+  const sumText = Form.useWatch('image_summary_opt_read_text', form);
+  const sumScene = Form.useWatch('image_summary_opt_describe_scene', form);
+  const sumLayout = Form.useWatch('image_summary_opt_describe_layout', form);
+  const chatPrompt = Form.useWatch('chat_image_prompt', form);
+  const summaryPrompt = String(sumPrompt ?? '').trim() || buildDefaultImgPrompt({
+    label_type: sumLabel ?? true, read_text: sumText ?? true,
+    describe_scene: sumScene ?? true, describe_layout: sumLayout ?? false,
+  }, sumFmt ?? 'fields');
+
+  /**
+   * 当前用的是哪一份提示词。
+   *
+   * 打开弹窗时**由值反推**（后端只认 `chat.image_prompt` 这一个字符串字段，
+   * 空 = 内置；加"用哪一份"的模式位要动 schema 与部门覆盖逻辑，不值当）。
+   * 但反推只够用在打开那一刻：用户切到「用图片摘要那份」之后，只要再改图片
+   * 摘要的输出格式，那份文本就不再等于框里的快照——纯反推会误判成「自定义」、
+   * 把来源下拉弹回去。所以推断出初值后，改由用户的选择驱动。
+   */
+  const [source, setSource] = useState<'builtin' | 'summary' | 'custom'>('builtin');
+  /** summaryPrompt 的最新值（初始化 effect 只在挂载时跑一次，不便进依赖） */
+  const summaryPromptRef = useRef('');
+  summaryPromptRef.current = summaryPrompt;
+
+  // 回填完成后按值推断一次来源。延到下一个宏任务，因为本面板的 effect 跑在
+  // 父组件回填（fillForm）之前，此刻表单还是空的
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const v = String(form.getFieldValue('chat_image_prompt') ?? '').trim();
+      setSource(!v ? 'builtin'
+        : (v === summaryPromptRef.current ? 'summary' : 'custom'));
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 停在「用图片摘要那份」时，那份一变（换了输出格式/内容选项）就把快照跟上，
+  // 否则框里还是旧格式的文本，而来源又会被反推逻辑判成「自定义」
+  useEffect(() => {
+    if (source !== 'summary') return;
+    if (String(chatPrompt ?? '') === summaryPrompt) return;
+    form.setFieldsValue({ chat_image_prompt: summaryPrompt });
+    onEdit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, summaryPrompt, chatPrompt]);
+
+  /**
+   * 切换来源。
+   *
+   * - 内置：清空 → 后端回退内置读图提示词常量
+   * - 摘要：填入「图片摘要」那份的文本（**快照**，不是引用——后端只认这一个
+   *   字符串字段，引用要动 schema；摘要日后改了，这里会自动落回"自定义"并
+   *   提示那份过期）
+   * - 自定义：空框里先垫上内置那份当起点，否则选完还是"跟随内置"（来源是
+   *   由值反推的，空值等于内置），用户会以为点了没反应
+   */
+  const switchSource = (src: string) => {
+    const cur = String(form.getFieldValue('chat_image_prompt') ?? '').trim();
+    setSource(src as 'builtin' | 'summary' | 'custom');
+    if (src === 'builtin') form.setFieldsValue({ chat_image_prompt: '' });
+    if (src === 'summary') form.setFieldsValue({ chat_image_prompt: summaryPrompt });
+    if (src === 'custom' && !cur) {
+      form.setFieldsValue({ chat_image_prompt: DEFAULT_IMAGE_PROMPT });
+    }
+    onEdit();
+  };
+
+  return (
   <>
     <Row gutter={12}>
       <Col span={8}>
@@ -167,7 +272,8 @@ const ChatPanel: React.FC<Props> = ({ visionModels }) => (
           label="识图模型"
           tooltip={
             <div style={{ fontSize: 12, lineHeight: '18px' }}>
-              读图用哪个多模态模型（选项来自下方「图片解析模型」列表）。
+              读图用哪个多模态模型（选项来自「LLM 模型管理」与「图片解析模型」
+              两份列表，多模态模型配在哪一份都能选）。
               <div style={{ marginTop: 6 }}>
                 <b>留空 = 跟随「图片摘要」选的模型</b>。填了则识图与文档入库
                 解耦：入库摘要要跑几十上百张图、求快求省，聊天识图是用户发完图
@@ -181,15 +287,73 @@ const ChatPanel: React.FC<Props> = ({ visionModels }) => (
         >
           <Select
             allowClear
+            showSearch
+            optionFilterProp="label"
             placeholder="跟随「图片摘要」选的模型"
-            options={visionModels.map(m => ({
-              value: m.name,
-              label: m.model && m.model !== m.name ? `${m.name}（${m.model}）` : m.name,
-            }))}
-            notFoundContent="尚未配置多模态模型"
+            options={imageModelOptions(llmModels, visionModels)}
+            notFoundContent="尚未配置多模态模型（先在「LLM 模型管理」里添加）"
           />
         </Form.Item>
       </Col>
+    </Row>
+
+    <Row gutter={12}>
+      <Col span={8}>
+        <Form.Item
+          label="读图提示词来源"
+          tooltip={
+            <div style={{ fontSize: 12, lineHeight: '18px' }}>
+              选「内置默认」或「图片摘要」时不必自己写。
+              <div style={{ marginTop: 6 }}>
+                两份提示词的用途不同：<b>图片摘要</b>那份是给入库用的三段式
+                结构化输出（类型/文字/画面），套到聊天识图会让描述变成机械
+                字段、丢掉「这是什么系统、报什么错」这类叙述；<b>内置读图</b>
+                那份专为聊天设计（自然语言 + 高密度关键信息 + 长度占位符）。
+                除非你确实想让两处共用一套措辞，否则建议保持内置。
+              </div>
+            </div>
+          }
+        >
+          <Select
+            value={source}
+            onChange={switchSource}
+            options={[
+              { value: 'builtin', label: '跟随内置默认（推荐）' },
+              { value: 'summary', label: '用「图片摘要」那份' },
+              { value: 'custom', label: '自定义（在下方编辑）' },
+            ]}
+          />
+        </Form.Item>
+      </Col>
+      {/* 选了「用图片摘要那份」时，把那份的输出格式也摆在这儿：
+          提示词正文是跟着格式走的，换格式就等于换一份。
+          与「图片摘要」面板里的 image_summary_output_format 是**同一个字段**，
+          两处都绑 name 会共享同一份值——用户改任一边另一边跟着变，正是想要的 */}
+      {source === 'summary' && (
+        <Col span={8}>
+          <Form.Item
+            name="image_summary_output_format"
+            label="图片摘要输出格式"
+            tooltip={
+              <div style={{ fontSize: 12, lineHeight: '18px' }}>
+                这是<b>「图片摘要」的格式</b>（同一份配置）——在这里改，
+                文档入库生成摘要时也会跟着变。
+                <div style={{ marginTop: 6 }}>
+                  提示词正文按格式生成，换格式就等于换一份，所以摆在旁边。
+                </div>
+              </div>
+            }
+          >
+            <Select
+              options={[
+                { value: 'fields', label: '固定字段（类型/文字/画面）' },
+                { value: 'prose', label: '自然段' },
+                { value: 'brief', label: '一句话简介（不读图中文字）' },
+              ]}
+            />
+          </Form.Item>
+        </Col>
+      )}
     </Row>
 
     <Form.Item
@@ -219,7 +383,8 @@ const ChatPanel: React.FC<Props> = ({ visionModels }) => (
         style={{ fontSize: 12, lineHeight: '18px' }}
       />
     </Form.Item>
-  </>
-);
+    </>
+  );
+};
 
 export default ChatPanel;

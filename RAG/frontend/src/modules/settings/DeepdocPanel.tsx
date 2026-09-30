@@ -36,7 +36,7 @@ const DeepdocPanel: React.FC = () => (
           label="密码"
           tooltip="保存后仅显示脱敏值；不修改请留空"
         >
-          <Password placeholder="******" />
+          <Password autoComplete="new-password" placeholder="******" />
         </Form.Item>
       </Col>
       <Col span={8}>

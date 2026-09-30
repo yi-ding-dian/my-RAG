@@ -1,14 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert, App as AntApp, Button, Collapse, Form, Input, Space, Tooltip,
+  Alert, App as AntApp, Button, Collapse, Form, Input, Space, Tag, Tooltip, Typography,
 } from 'antd';
 import {
-  DeleteOutlined, EyeOutlined, PlusOutlined, ThunderboltOutlined,
+  UndoOutlined, DeleteOutlined, EyeOutlined, PlusOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import AppModal, { AppModalFooter } from '../../shared/components/common/AppModal';
 import {
   asApiError, createProfile, updateProfile,
-  testLlmConnection, testProfileConnection, testVisionConnection,
+  testDraftConnection, testLlmConnection, testProfileConnection, testVisionConnection,
   getLlmModelList, LLMModelItem,
 } from '../../shared/api/client';
 import type {
@@ -20,7 +20,6 @@ import {
   toProfileInput, toTestItems,
 } from './shared';
 import type { ProfileFormValues, SectionKey, TestItem } from './shared';
-import ArPanel from './ArPanel';
 import ChatPanel from './ChatPanel';
 import RetrievalPanel from './RetrievalPanel';
 import IngestPanel from './IngestPanel';
@@ -30,6 +29,7 @@ import ParseServicesPanel from './ParseServicesPanel';
 import MinioPanel from './MinioPanel';
 import VectorStorePanel from './VectorStorePanel';
 import VisionPanel from './VisionPanel';
+import ImageSummaryPanel from './ImageSummaryPanel';
 import { LlmModelEditModal, VisionModelEditModal } from './ModelEditModals';
 import PromptDetailModal from './PromptDetailModal';
 import type { PromptPreview } from './PromptDetailModal';
@@ -95,6 +95,21 @@ const NEW_PROFILE_DEFAULTS = {
   vector_store_backend: 'chroma', vector_store_milvus_uri: '',
 };
 
+/** 面板最近一次测试结果（折叠面板内持久展示，关掉面板不丢） */
+interface PanelTestResult {
+  ok: boolean;
+  /** 失败项摘要；全通过时为空串 */
+  msg: string;
+  /** 测试时刻（本地时间字符串） */
+  at: string;
+}
+
+/** 折叠区的全部面板 key（保存前要展开它们，见 handleSave） */
+const ALL_PANELS = [
+  'llm', 'retrieval', 'ingest', 'chat', 'prompts',
+  'embedding', 'parse', 'vision', 'image_summary', 'minio', 'vector_store',
+];
+
 /**
  * 配置档案编辑弹窗（新建 / 编辑共用）
  *
@@ -134,13 +149,28 @@ const ProfileEditorModal: React.FC<{
 
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
-  const [activePanels, setActivePanels] = useState<string[]>(['ar']);
-  /** 上次保存（或刚打开）时的内容指纹：关闭时拿它比，判断有没有未保存的改动 */
+  const [activePanels, setActivePanels] = useState<string[]>([]);
+  /**
+   * 用户是否**真的编辑过**表单或模型列表——关闭时唯一的"脏"判据。
+   *
+   * 不能用"内容指纹变了"当判据（原先是这么做的）：模型列表存在独立 state 里，
+   * 打开弹窗时是异步填进去的，指纹基线却在同一轮 effect 里就记下了，于是
+   * **打开后什么都不改直接关闭也会报"有未保存的改动"**。改成只认用户的编辑
+   * 动作：Form.onValuesChange 只在交互时触发，setFieldsValue 不触发（见
+   * rc-field-form useForm.js，setFieldsValue 不调 onValuesChange）。
+   */
+  const [dirty, setDirty] = useState(false);
+  /** 上次保存（或刚打开）时的内容指纹：脏了之后用它排除"改了又改回原值" */
   const baselineRef = useRef('');
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [promptPreview, setPromptPreview] = useState<PromptPreview | null>(null);
   /** 新建保存成功后的 id：让弹窗就地切成"编辑"态，不必回头去改页面状态 */
   const [createdId, setCreatedId] = useState<string | null>(null);
+  /** 最后一次保存成功后的档案快照：「放弃改动」回到这里（新建保存后也能正确回退） */
+  const [savedSnapshot, setSavedSnapshot] = useState<ServiceProfile | null>(null);
+  /** 各面板最近一次测试结果（面板内持久展示，不像 toast 一闪而过） */
+  const [panelResults, setPanelResults] =
+    useState<Record<string, PanelTestResult>>({});
 
   // ---- LLM 多模型管理 ----
   const [llmModels, setLlmModels] = useState<LLMModelItem[]>([]);
@@ -165,35 +195,50 @@ const ProfileEditorModal: React.FC<{
   const editingId = profile?.id ?? createdId;
 
   /**
+   * 模型列表的"最新值"镜像。
+   *
+   * editFingerprint() 会被 setTimeout 回调这类**旧闭包**调用，直接读 state 拿到的
+   * 是那次渲染的快照——弹窗刚打开时模型列表还在异步填充，读到的永远是空数组，
+   * 基线因此记成 `llm: [], vision: []`，与关闭时的真实列表必然对不上。
+   * 改读 ref：任何闭包拿到的都是最新值。渲染期直接赋值，ref 只用于"读最新"，
+   * 不参与渲染输出。
+   */
+  const llmModelsRef = useRef(llmModels);
+  const llmActiveRef = useRef(llmActive);
+  const visionModelsRef = useRef(visionModels);
+  const visionActiveRef = useRef(visionActive);
+  llmModelsRef.current = llmModels;
+  llmActiveRef.current = llmActive;
+  visionModelsRef.current = visionModels;
+  visionActiveRef.current = visionActive;
+
+  /**
    * 当前编辑内容的指纹：表单全部字段 + 两个模型列表。
    * 后两者存在独立 state 里（不在 Form 中），漏掉它们就会「改了模型列表却
    * 检测不出未保存」。
    */
   const editFingerprint = () => JSON.stringify({
     form: form.getFieldsValue(true),
-    llm: llmModels, llmActive,
-    vision: visionModels, visionActive,
+    llm: llmModelsRef.current, llmActive: llmActiveRef.current,
+    vision: visionModelsRef.current, visionActive: visionActiveRef.current,
   });
 
-  // 打开时按编辑对象初始化；顺带记一份指纹基线。表单值与模型列表都是异步
-  // setState 填进去的，要等这一轮渲染落地再读，否则记下的是空表单。
-  useEffect(() => {
-    if (!open) return undefined;
-    setCreatedId(null);
-    if (profile) {
+  /** 把一份档案（或新建默认值）填进表单与模型列表：打开弹窗、放弃改动共用 */
+  const fillForm = useCallback((p: ServiceProfile | null) => {
+    if (p) {
       // **不要先 form.resetFields()**：它会把 Form.List 的键一起清掉，之后
       // setFieldsValue 塞进去的 prompts.items 渲染不出条目（其余普通字段不受
       // 影响，所以档案名照样回填，只有提示词库空空如也——踩过）。
       // setFieldsValue 本身是全量的，足够盖掉上一次编辑的残留值。
-      form.setFieldsValue(toFormValues(profile));
+      form.setFieldsValue(toFormValues(p));
       // llm 段回填（后端已迁移为 {models, active} 结构）
-      const sec = profile.llm as unknown as {
+      const sec = p.llm as unknown as {
         models?: LLMModelItem[]; active?: number;
       };
       setLlmModels(Array.isArray(sec?.models) && sec.models.length ? sec.models : []);
       setLlmActive(sec?.active ?? 0);
       // vision 段回填（同为 {models, active} 结构）
-      const vsec = profile.vision as unknown as {
+      const vsec = p.vision as unknown as {
         models?: VisionModelItem[]; active?: number;
       };
       setVisionModels(
@@ -206,7 +251,22 @@ const ProfileEditorModal: React.FC<{
       setVisionActive(0);
       form.setFieldsValue(NEW_PROFILE_DEFAULTS);
     }
-    setActivePanels([focusPanel]);
+  }, [form]);
+
+  // 打开时按编辑对象初始化；顺带记一份指纹基线（基线取值见 editFingerprint 注释）
+  useEffect(() => {
+    if (!open) return undefined;
+    setCreatedId(null);
+    setSavedSnapshot(null);
+    setDirty(false);
+    // 显式收起"未保存确认框"：万一上次是被异常路径关掉的，残留的 open=true
+    // 会让它在新一轮编辑刚开始就冒出来
+    setCloseConfirmOpen(false);
+    setPanelResults({});
+    fillForm(profile);
+    // 「档案名称」已提到折叠区之外常驻，没有 'ar' 这个组可展开（域卡的「档案」
+    // 入口只是打开弹窗）
+    setActivePanels(focusPanel && focusPanel !== 'ar' ? [focusPanel] : []);
     const timer = window.setTimeout(() => {
       baselineRef.current = editFingerprint();
     }, 0);
@@ -253,6 +313,7 @@ const ProfileEditorModal: React.FC<{
       return next;
     });
     setModelModalOpen(false);
+    setDirty(true);
   };
 
   const deleteModel = (idx: number) => {
@@ -262,6 +323,7 @@ const ProfileEditorModal: React.FC<{
       setLlmActive(a => (idx === a ? 0 : idx < a ? a - 1 : a));
       return next;
     });
+    setDirty(true);
   };
 
   /** 删除 LLM 模型前的确认：谁在用它（外部查询是按名字指定的） */
@@ -294,6 +356,7 @@ const ProfileEditorModal: React.FC<{
         cancelText: '取消',
         onOk: () => {
           setLlmActive(idx);
+          setDirty(true);
           message.success(`已激活「${item.name}」`);
         },
       });
@@ -302,6 +365,7 @@ const ProfileEditorModal: React.FC<{
       const res = await testLlmConnection(item);
       if (res.data.ok) {
         setLlmActive(idx);
+        setDirty(true);
         message.success(`已激活「${item.name}」（连接成功，${res.data.latency_ms}ms）`);
       } else {
         confirmForce(res.data.reason);
@@ -336,6 +400,7 @@ const ProfileEditorModal: React.FC<{
       return next;
     });
     setVisionModalOpen(false);
+    setDirty(true);
   };
 
   const deleteVisionModel = (idx: number) => {
@@ -345,6 +410,7 @@ const ProfileEditorModal: React.FC<{
       setVisionActive(a => (idx === a ? 0 : idx < a ? a - 1 : a));
       return next;
     });
+    setDirty(true);
   };
 
   /** 删除图片模型前的确认：部门是按名字选它的（image_summary.model） */
@@ -376,6 +442,7 @@ const ProfileEditorModal: React.FC<{
         cancelText: '取消',
         onOk: () => {
           setVisionActive(idx);
+          setDirty(true);
           message.success(`已将「${item.name}」设为默认`);
         },
       });
@@ -384,6 +451,7 @@ const ProfileEditorModal: React.FC<{
       const res = await testVisionConnection(item);
       if (res.data.ok) {
         setVisionActive(idx);
+        setDirty(true);
         message.success(`已将「${item.name}」设为默认`);
       } else {
         confirmForce(res.data.reason);
@@ -396,6 +464,13 @@ const ProfileEditorModal: React.FC<{
   };
 
   // ---- 保存 / 关闭 ----
+  /** 当前表单 + 模型列表组装成后端入参（保存 与"按当前值测试"共用） */
+  const buildInput = (): ServiceProfileInput => toProfileInput(
+    form.getFieldsValue(true) as ProfileFormValues,
+    llmModels.length ? { models: llmModels, active: llmActive } : undefined,
+    visionModels.length ? { models: visionModels, active: visionActive } : undefined,
+  );
+
   const doSave = async (vals: ProfileFormValues) => {
     setSaving(true);
     try {
@@ -404,20 +479,26 @@ const ProfileEditorModal: React.FC<{
       const visionSection = visionModels.length
         ? { models: visionModels, active: visionActive } : undefined;
       const data = toProfileInput(vals, llmSection, visionSection);
+      let saved: ServiceProfile | null = null;
       if (editingId) {
-        await updateProfile(editingId, data);
+        const res = await updateProfile(editingId, data);
+        saved = res.data;
         message.success('配置档案已保存');
       } else {
         // 新建后留在弹窗里继续编辑，但必须记住 id——否则再点一次保存会又建一份
         const res = await createProfile(
           data as ServiceProfileInput & { name: string });
         setCreatedId(res.data.id);
+        saved = res.data;
         message.success('配置档案已创建');
       }
       // 保存后**不关弹窗**：用户可以接着改、接着存，改完自己关
       onSaved();
-      // 存过了，基线随之刷新——否则关窗时会误报"有未保存的改动"
+      // 存过了：基线刷新、脏标记清掉，关窗时不再拦人
       baselineRef.current = editFingerprint();
+      setDirty(false);
+      // 「放弃改动」要能回到最近一次保存的状态（新建保存后 profile 仍是 null）
+      if (saved) setSavedSnapshot(saved);
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '保存失败');
     } finally {
@@ -425,13 +506,58 @@ const ProfileEditorModal: React.FC<{
     }
   };
 
+  /**
+   * 保存：先把所有面板展开再校验。
+   *
+   * 折叠面板是懒渲染的——没展开的面板不进 DOM，它的字段也就没注册进表单，
+   * `validateFields()` 会**直接跳过**它们：必填项空着也能存进去，存出一份
+   * 不完整的配置。所以保存前展开全部，让所有字段都参与到校验里。
+   *
+   * 曾经的做法是给每个面板加 `forceRender`（一直是全渲染），但那把弹窗打开
+   * 拖慢了约 100ms（10 个面板 48 个字段一次性渲染，实测 40ms → 150ms）——
+   * 打开是高频动作、校验漏填是低频场景，成本花错了地方，改成按需展开。
+   *
+   * 展开是异步生效的，得等一帧让 React 渲染完、字段真正注册上，再校验。
+   */
   const handleSave = async () => {
-    const vals = await form.validateFields();
-    await doSave(vals);
+    if (activePanels.length < ALL_PANELS.length) {
+      setActivePanels([...ALL_PANELS]);
+      await new Promise(resolve => { window.setTimeout(resolve, 0); });
+    }
+    try {
+      const vals = await form.validateFields();
+      await doSave(vals);
+    } catch (e: unknown) {
+      // 校验没过：antd 会把出错的字段标红，这里再把它滚进视野——
+      // 展开全部后表单很长，不滚的话用户看不到错在哪
+      const first = (e as { errorFields?: { name: (string | number)[] }[] })
+        ?.errorFields?.[0]?.name;
+      if (first) {
+        form.scrollToField(first as never, { behavior: 'smooth', block: 'center' });
+      }
+    }
   };
 
-  /** 关闭弹窗：有未保存改动时二次确认（打开后没动过就直接关，不打扰） */
+  /** 放弃未保存的改动：回到最近一次保存（或本次打开时）的状态 */
+  const discardChanges = () => {
+    fillForm(savedSnapshot ?? profile);
+    setDirty(false);
+    message.info('已放弃未保存的改动');
+  };
+
+  /**
+   * 关闭弹窗：有未保存改动时二次确认。
+   *
+   * 判据是**用户编辑过**（dirty），而不是"内容变了"——折叠面板是懒渲染的，
+   * 展开一个面板会让它的字段注册进表单、内容随之变化，但那是渲染产物不是
+   * 用户的改动，不该拦人。dirty 之后再比一次指纹，是为了放过"改了又改回
+   * 原值"的情况。
+   */
   const requestClose = () => {
+    if (!dirty) {
+      onClose();
+      return;
+    }
     if (editFingerprint() === baselineRef.current) {
       onClose();
       return;
@@ -439,28 +565,45 @@ const ProfileEditorModal: React.FC<{
     setCloseConfirmOpen(true);
   };
 
-  /** 折叠面板标题"测试"：按档案已保存配置探测该段，toast 结果 */
+  /**
+   * 折叠面板标题"测试"：探测该面板对应的段，toast 结果并留在面板里备查。
+   *
+   * **测的是表单里当前填的值**，不是已保存的配置——改完地址先测通再保存是配置
+   * 时的常规动作。后端只探测传入的段，点「向量存储」不会顺带把 LLM / DeepDoc
+   * 也等一遍。新建档案还没落库（无 id）时走 draft 接口，同样能测。
+   */
   const handlePanelTest = async (panelKey: string, sections: SectionKey[]) => {
-    if (!editingId) {
-      message.warning('请先选择档案再测试');
-      return;
-    }
     setPanelTesting(panelKey);
     try {
-      const res = await testProfileConnection(editingId);
-      // 结果回传页面，驱动卡片上的状态灯（与卡片级测试同源）
-      onTestResult(editingId, toTestItems(res.data), sections);
-      const fail = sections
+      const body = buildInput();
+      const res = editingId
+        ? await testProfileConnection(editingId, body, sections)
+        : await testDraftConnection(body, sections);
+      // 结果回传页面，驱动卡片上的状态灯（新建尚无档案，无处可回传）
+      if (editingId) onTestResult(editingId, toTestItems(res.data), sections);
+      const failed = sections
         .map(k => ({
           key: k,
-          r: (res.data as unknown as Record<string, { ok: boolean; message: string }>)[k],
+          r: (res.data as unknown as
+            Record<string, { ok: boolean; message: string } | undefined>)[k],
         }))
-        .filter(x => x.r)
-        .find(x => !x.r.ok);
-      if (!fail) {
+        .filter((x): x is { key: SectionKey; r: { ok: boolean; message: string } } =>
+          Boolean(x.r))
+        .filter(x => !x.r.ok);
+      setPanelResults(prev => ({
+        ...prev,
+        [panelKey]: {
+          ok: failed.length === 0,
+          at: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+          msg: failed.map(x =>
+            `${sectionLabel[x.key] ?? x.key}：${x.r.message}`).join('；'),
+        },
+      }));
+      if (failed.length === 0) {
         message.success(`${sectionLabel[sections[0]] ?? '配置'}：连接测试通过`);
       } else {
-        message.error(`${sectionLabel[fail.key] ?? fail.key}：${fail.r.message}`);
+        failed.forEach(x =>
+          message.error(`${sectionLabel[x.key] ?? x.key}：${x.r.message}`));
       }
     } catch (e: unknown) {
       message.error(asApiError(e).response?.data?.detail || '测试失败');
@@ -469,7 +612,37 @@ const ProfileEditorModal: React.FC<{
     }
   };
 
-  /** 折叠面板标题：右侧可测面板夹带"测试连接"按钮（toast 成败） */
+  /** 折叠面板内容顶部：最近一次测试的结果条（可关闭，不像 toast 一闪而过） */
+  const withTestResult = (panelKey: string, node: React.ReactNode) => {
+    const r = panelResults[panelKey];
+    if (!r) return node;
+    return (
+      <>
+        <Alert
+          type={r.ok ? 'success' : 'error'}
+          showIcon
+          closable
+          style={{ marginBottom: 12, padding: '5px 12px' }}
+          onClose={() => setPanelResults(prev => {
+            const next = { ...prev };
+            delete next[panelKey];
+            return next;
+          })}
+          message={
+            <span style={{ fontSize: 12 }}>
+              {r.ok ? '连接测试通过' : r.msg}
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {' '}· {r.at}
+              </Typography.Text>
+            </span>
+          }
+        />
+        {node}
+      </>
+    );
+  };
+
+  /** 折叠面板标题：右侧可测面板夹带"测试"按钮（按当前填写值探测该段） */
   const panelLabel = (panelKey: string, title: string) => {
     const secList = PANEL_TEST_SECTIONS[panelKey];
     return (
@@ -481,7 +654,7 @@ const ProfileEditorModal: React.FC<{
       >
         <span>{title}</span>
         {secList && (
-          <Tooltip title="测试连接（使用档案配置）">
+          <Tooltip title="用当前填写的内容测试这一段（不必先保存）">
             <Button
               type="text"
               size="small"
@@ -491,7 +664,9 @@ const ProfileEditorModal: React.FC<{
                 e.stopPropagation();
                 void handlePanelTest(panelKey, secList);
               }}
-            />
+            >
+              测试
+            </Button>
           </Tooltip>
         )}
       </div>
@@ -507,7 +682,12 @@ const ProfileEditorModal: React.FC<{
         dimension="resizable"
         rememberKey="settings-1"
         className="profile-config-modal"
-        title={editingId ? '编辑配置档案' : '新建配置档案'}
+        title={
+          <Space size={8}>
+            <span>{editingId ? '编辑配置档案' : '新建配置档案'}</span>
+            {dirty && <Tag color="warning" style={{ marginInlineEnd: 0 }}>未保存</Tag>}
+          </Space>
+        }
         open={open}
         onCancel={requestClose}
         // 不要「取消」按钮——右上角已有 ✕，两个关闭入口重复。
@@ -518,6 +698,17 @@ const ProfileEditorModal: React.FC<{
             cancelText={null}
             okLoading={saving}
             onOk={handleSave}
+            // 左侧：改了才给「放弃改动」——回到最近一次保存的状态，省得关掉重开
+            extra={dirty && (
+              <Button
+                size="small"
+                icon={<UndoOutlined />}
+                disabled={saving}
+                onClick={discardChanges}
+              >
+                放弃改动
+              </Button>
+            )}
           />
         }
         width={720}
@@ -526,7 +717,25 @@ const ProfileEditorModal: React.FC<{
         // 弹窗外面、按钮出屏）。用户拖过的尺寸由 rememberKey 记住。
         defaultSize={{ w: 720, h: 700 }}
       >
-        <Form form={form} layout="vertical" size="small" disabled={readOnly}>
+        <Form
+          form={form}
+          layout="vertical"
+          size="small"
+          disabled={readOnly}
+          // 脏判据只认用户的实际编辑：setFieldsValue 不触发本回调（rc-field-form），
+          // 所以回填、放弃改动、切换档案都不会误标"未保存"
+          onValuesChange={() => setDirty(true)}
+        >
+          {/* 档案名称常驻在折叠区外：它只有一个字段，单独占一个折叠组既多一次
+              点击、展开后又留一大片空白（原先就是「档案基本设置」那一块） */}
+          <Form.Item
+            name="name"
+            label="档案名称"
+            rules={[{ required: true, message: '请输入档案名称' }]}
+            style={{ marginBottom: 12 }}
+          >
+            <Input placeholder="例如：本地 Qwen 默认、云端 DeepSeek" />
+          </Form.Item>
           <Collapse
             size="small"
             activeKey={activePanels}
@@ -535,18 +744,43 @@ const ProfileEditorModal: React.FC<{
               setActivePanels(keys.filter(Boolean));
             }}
             items={[
-              { key: 'ar', label: '档案基本设置', children: <ArPanel /> },
+              {
+                key: 'llm',
+                label: panelLabel('llm', 'LLM 模型管理'),
+                children: withTestResult('llm', (
+                  <LlmPanel
+                    llmModels={llmModels}
+                    llmActive={llmActive}
+                    llmTestingIdx={llmTestingIdx}
+                    openModelEdit={openModelEdit}
+                    deleteModel={requestDeleteModel}
+                    activateModel={activateModel}
+                  />
+                )),
+              },
               {
                 key: 'retrieval',
                 label: panelLabel('retrieval', '检索与切块'),
-                children: <RetrievalPanel headingModelOptions={headingModelOptions} />,
+                children: withTestResult('retrieval', (
+                  <RetrievalPanel headingModelOptions={headingModelOptions} />
+                )),
               },
-              { key: 'ingest', label: '入库与限制', children: <IngestPanel /> },
+              {
+                key: 'ingest',
+                label: '入库与限制',
+                children: <IngestPanel />,
+              },
               {
                 key: 'chat',
                 label: panelLabel('chat', '聊天设置'),
-                // 传 visionModels：识图模型下拉的选项来自「图片解析模型」列表
-                children: <ChatPanel visionModels={visionModels} />,
+                // 识图模型下拉的选项：LLM 模型 + 图片解析模型两份列表（见 ChatPanel）
+                children: (
+                  <ChatPanel
+                    llmModels={llmModels}
+                    visionModels={visionModels}
+                    onEdit={() => setDirty(true)}
+                  />
+                ),
               },
               {
                 key: 'prompts',
@@ -682,33 +916,21 @@ const ProfileEditorModal: React.FC<{
                 ),
               },
               {
-                key: 'llm',
-                label: panelLabel('llm', 'LLM 对话模型（多模型管理）'),
-                children: (
-                  <LlmPanel
-                    llmModels={llmModels}
-                    llmActive={llmActive}
-                    llmTestingIdx={llmTestingIdx}
-                    openModelEdit={openModelEdit}
-                    deleteModel={requestDeleteModel}
-                    activateModel={activateModel}
-                  />
-                ),
-              },
-              {
                 key: 'embedding',
                 label: panelLabel('embedding', 'Embedding 模型（OpenAI 兼容）'),
-                children: <EmbeddingPanel />,
+                children: withTestResult('embedding', <EmbeddingPanel />),
               },
               {
                 key: 'parse',
                 label: panelLabel('parse', '文档解析相关（MinerU / DeepDoc / 文档转换）'),
-                children: <ParseServicesPanel testItems={testState} />,
+                children: withTestResult('parse', (
+                  <ParseServicesPanel testItems={testState} />
+                )),
               },
               {
                 key: 'vision',
                 label: panelLabel('vision', '图片解析模型（多模态，生成图片摘要）'),
-                children: (
+                children: withTestResult('vision', (
                   <VisionPanel
                     visionModels={visionModels}
                     visionActive={visionActive}
@@ -717,17 +939,28 @@ const ProfileEditorModal: React.FC<{
                     deleteModel={requestDeleteVisionModel}
                     activateModel={activateVisionModel}
                   />
+                )),
+              },
+              {
+                key: 'image_summary',
+                label: '图片摘要（全局默认）',
+                children: (
+                  // 模型下拉的候选来自「图片解析模型」那份列表
+                  <ImageSummaryPanel
+                    visionModels={visionModels}
+                    onEdit={() => setDirty(true)}
+                  />
                 ),
               },
               {
                 key: 'minio',
                 label: panelLabel('minio', '对象存储（MinIO）'),
-                children: <MinioPanel />,
+                children: withTestResult('minio', <MinioPanel />),
               },
               {
                 key: 'vector_store',
                 label: panelLabel('vector_store', '向量存储'),
-                children: <VectorStorePanel />,
+                children: withTestResult('vector_store', <VectorStorePanel />),
               },
             ]}
           />
@@ -756,6 +989,8 @@ const ProfileEditorModal: React.FC<{
       <VisionModelEditModal
         open={visionModalOpen}
         models={visionModels}
+        // 「模型名」下拉的数据源：从 LLM 模型列表里挑，地址/Key 一并带出
+        llmModels={llmModels}
         editIdx={visionEditIdx}
         onSave={saveVisionModel}
         onCancel={() => setVisionModalOpen(false)}

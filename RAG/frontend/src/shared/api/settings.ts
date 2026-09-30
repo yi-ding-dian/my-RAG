@@ -41,8 +41,31 @@ export const deleteProfile = (id: string) =>
 export const activateProfile = (id: string) =>
   api.post<{ message: string; profile: ServiceProfile }>(`/settings/profiles/${id}/activate`);
 
-export const testProfileConnection = (id: string, data?: ServiceProfileInput) =>
-  api.post<ProfileTestResult>(`/settings/profiles/${id}/test`, data || {});
+/**
+ * 档案连接测试（只测不写）。
+ *
+ * - `data`：表单里**当前填的值**——改完地址先测通再保存，是配置时的常规动作；
+ * - `sections`：只测这几段（不传 = 全部）。面板标题上的「测试」只测该面板对应的
+ *   段，点「向量存储」不会顺带把 LLM / DeepDoc 也等一遍。
+ *
+ * 段名用逗号拼接而不是传数组：数组会被 axios 序列化成 `sections[]=llm`，
+ * FastAPI 的 Query(List[str]) 收不到。
+ */
+export const testProfileConnection = (
+  id: string, data?: ServiceProfileInput, sections?: string[],
+) => api.post<ProfileTestResult>(`/settings/profiles/${id}/test`, data || {}, {
+  params: sections?.length ? { sections: sections.join(',') } : undefined,
+});
+
+/**
+ * 尚未落库的配置（新建档案，还没有 id）连接测试：纯用传入的表单值探测。
+ * 返回结构与 /profiles/{id}/test 一致。
+ */
+export const testDraftConnection = (
+  data: ServiceProfileInput, sections?: string[],
+) => api.post<ProfileTestResult>('/settings/test-draft', data, {
+  params: sections?.length ? { sections: sections.join(',') } : undefined,
+});
 
 export const testLlmConnection = (item: Partial<LLMModelItem>) =>
   api.post<LlmTestResult>('/settings/llm/test', item);

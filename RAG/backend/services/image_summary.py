@@ -329,8 +329,10 @@ def effective_prompt(cfg: ImageSummaryConfig,
 def _vision_models() -> List[dict]:
     """活跃档案 vision 段的模型条目（过滤脏数据：非 dict 的一律丢弃）
 
-    **超管配的模型池**——部门只选"用哪一个"（按 name 匹配），看不到也改不了
-    连接信息与密钥。聊天识图与图片摘要共用这一个池子。
+    即「图片解析模型」这份列表。**超管配的模型池**——部门只选"用哪一个"
+    （按 name 匹配），看不到也改不了连接信息与密钥；它同时是"没指定用哪个"
+    时的回退来源（见 _resolve_entry）。候选池还要算上 LLM 段，
+    见 _candidate_models。
     """
     from backend.services.settings.service import get_settings_service
 
@@ -339,15 +341,52 @@ def _vision_models() -> List[dict]:
     return [m for m in models if isinstance(m, dict)]
 
 
-def _pick_entry(models: List[dict], want: str) -> dict:
-    """按名字挑条目；没指定（空串）/ 指定的已被超管删掉 → 列表第一个
+def _candidate_models() -> List[dict]:
+    """视觉模型的候选池 = **图片解析模型 + LLM 模型**（按名去重，vision 优先）
 
-    "选中的被删掉就回退第一个"与 LLM 段 active 的语义一致：管理员的删除
-    动作不该让功能直接不可用，回退比报错更符合预期。
+    多模态模型常常就是同一台推理服务上的一个模型：超管在「LLM 模型管理」里
+    已经配过连接信息了，没道理为了读图再抄一份到「图片解析模型」里。两份都
+    认，选哪边都能解析到；同名时 **vision 段优先**——那份是专为视觉配的
+    （超时、密钥可能与对话用的不同），语义更强。
     """
-    entry = next((m for m in models if (m.get("name") or "") == want),
-                 None) if want else None
-    return entry if entry is not None else models[0]
+    from backend.services.settings.service import get_settings_service
+
+    profile = get_settings_service().get_active() or {}
+    vision = ((profile.get("vision") or {}).get("models")) or []
+    llm = ((profile.get("llm") or {}).get("models")) or []
+    out: List[dict] = []
+    seen = set()
+    for m in [*vision, *llm]:
+        if not isinstance(m, dict):
+            continue
+        name = str(m.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(m)
+    return out
+
+
+def _resolve_entry(want: str) -> Optional[dict]:
+    """挑出生效的视觉模型条目；挑不出来 → None
+
+    指定了名字（chat.image_model / image_summary.model）→ 在**候选池**
+    （图片解析模型 + LLM 模型）里按名找，指定的那个已被删掉则往下回退；
+    没指定 → 回退**图片解析模型**列表第一个。
+
+    回退只在 vision 段里做，是刻意的：候选池里混着 LLM 文本模型，若"没选
+    模型"也去抓第一个，没配视觉模型的档案会悄悄拿个纯文本模型去读图，报出来
+    的是一句看不懂的调用错误，而不是"未配置图片解析模型"。
+    """
+    pool = _candidate_models()
+    if not pool:
+        return None
+    if want:
+        hit = next((m for m in pool if (m.get("name") or "") == want), None)
+        if hit is not None:
+            return hit
+    vision = _vision_models()
+    return vision[0] if vision else None
 
 
 def _model_cfg(entry: dict) -> Optional[VisionModelConfig]:
@@ -369,20 +408,23 @@ async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
 
     返回 {"model": VisionModelConfig, "summary": ImageSummaryConfig}。
 
-    模型来自**超管配的模型列表**（配置档案 vision 段的 models），部门只选
-    "用哪一个"（按 name 匹配）——部门看不到也改不了连接信息与密钥。部门没选、
-    或选中的名字已被超管删掉 → 回退列表第一个（与 LLM 段的 active 语义一致）。
+    模型来自**超管配的候选池**（图片解析模型 + LLM 模型，见 _resolve_entry），
+    部门只选"用哪一个"（按 name 匹配）——部门看不到也改不了连接信息与密钥。
+    部门没选、或选中的名字已被超管删掉 → 回退图片解析模型列表第一个
+    （与 LLM 段的 active 语义一致）。
 
-    任一环节缺失（没有模型列表 / 模型字段不全）→ None，调用方据此跳过生成、
+    任一环节缺失（没有模型 / 模型字段不全）→ None，调用方据此跳过生成、
     或在前端预检处提示"请管理员先配置图片解析模型"。
     """
-    models = _vision_models()
-    if not models:
+    if not _candidate_models():
         return None
 
     # 部门配置覆盖全局档案的 image_summary 段（提示词/格式/上限都走这条链）
     summary = await resolve_summary_cfg(db, dept_id)
-    model_cfg = _model_cfg(_pick_entry(models, (summary.model or "").strip()))
+    entry = _resolve_entry((summary.model or "").strip())
+    if entry is None:
+        return None
+    model_cfg = _model_cfg(entry)
     if model_cfg is None:
         return None
     return {"model": model_cfg, "summary": summary}
@@ -393,24 +435,24 @@ async def resolve_chat_vision(db, dept_id: Optional[str]
     """聊天识图用的视觉模型（三级优先）；不可用 → None
 
     1. `chat.image_model` —— 超管在「设置 → 聊天设置 → 聊天识图」指定的
-       条目名。填了就与文档入库的图片摘要**解耦**：入库要跑几十上百张图、
-       求快求省，聊天识图是用户发完图实时等着的、求准，两者要求本就不同；
+       条目名。可以来自**图片解析模型**，也可以是「LLM 模型管理」里的一个
+       多模态模型（候选池两份都认）。填了就与文档入库的图片摘要**解耦**：
+       入库要跑几十上百张图、求快求省，聊天识图是用户发完图实时等着的、
+       求准，两者要求本就不同；
     2. `image_summary.model` —— 部门「图片摘要」选的那个（部门覆盖 → 全局）。
        第 1 级为空时走这里，**保证旧档案行为逐字节不变**（升级前大家用的
        就是这一个）；
-    3. vision 段第一个 —— 前两级都没指定，或指定的名字已被超管删掉。
+    3. 图片解析模型列表第一个 —— 前两级都没指定，或指定的名字已被超管删掉。
 
     与 resolve_config 分开的原因：那条链还要带出 ImageSummaryConfig（提示词/
     格式/上限，只有入库摘要用得上），且第 1 级优先是聊天识图独有的。
     """
-    models = _vision_models()
-    if not models:
-        return None
     want = (get_active_config().chat.image_model or "").strip()
     if not want:
         summary = await resolve_summary_cfg(db, dept_id)
         want = (summary.model or "").strip()
-    return _model_cfg(_pick_entry(models, want))
+    entry = _resolve_entry(want)
+    return _model_cfg(entry) if entry is not None else None
 
 
 async def check_ready(db, dept_id: Optional[str]) -> Tuple[bool, str]:

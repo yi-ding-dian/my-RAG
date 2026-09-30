@@ -31,7 +31,7 @@ const EmbeddingPanel: React.FC = () => (
           label="API Key"
           tooltip="保存后仅显示脱敏值；不修改请留空"
         >
-          <Password placeholder="***" />
+          <Password autoComplete="new-password" placeholder="***" />
         </Form.Item>
       </Col>
     </Row>

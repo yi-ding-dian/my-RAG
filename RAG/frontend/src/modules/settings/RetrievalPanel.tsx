@@ -88,7 +88,7 @@ const RetrievalPanel: React.FC<Props> = ({ headingModelOptions }) => (
           label="API Key"
           tooltip="云端服务（如 SiliconFlow）需要，本机 vLLM 无鉴权可留空；保存后仅显示脱敏值，不修改请留空"
         >
-          <Password placeholder="***" />
+          <Password autoComplete="new-password" placeholder="***" />
         </Form.Item>
       </Col>
     </Row>

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  App as AntApp,  Card,  Button,  Typography,  Space,  Tag,  Alert,  Skeleton,
+  App as AntApp,  Card,  Button,  Typography,  Space,  Tag,  Alert,  Collapse,  Skeleton,
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import {
@@ -306,52 +306,66 @@ const SettingsPage: React.FC = () => {
       <Alert
         type="info"
         showIcon
-        style={{ marginBottom: 8 }}
-        message="服务配置档案：修改并保存后即时生效（无需重启服务），切换「当前使用」即切换整套配置。"
-        description="支持多套配置档案（例如：本地 Qwen、云端 DeepSeek），api_key 保存后仅显示脱敏值；「测试连接」可逐项验证 LLM / Embedding / MinerU / DeepDoc 是否可用。"
+        style={{ marginBottom: 8, padding: '4px 12px' }}
+        message={
+          <span style={{ fontSize: 12 }}>
+            修改并保存后即时生效（无需重启）；切换「当前使用」即切换整套配置。
+            api_key 保存后只显示脱敏值；「测试连接」按当前填写的内容逐项验证
+            LLM / Embedding / MinerU / DeepDoc 等是否可用。
+          </span>
+        }
       />
-      <Typography.Paragraph style={{ marginBottom: 16 }}>
-        {embeddingDim != null ? (
-          <Text>
-            当前模型维度（已检测）：<Text strong>{embeddingDim} 维</Text>
-            <Text type="secondary">
-              {' '}
-              —— 更换 Embedding 模型后若知识库出现「维度不匹配」，请在知识库管理页「重建向量」
-            </Text>
-          </Text>
-        ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            当前模型维度：{embeddingDimMsg || '检测中…'}
-          </Text>
-        )}
-      </Typography.Paragraph>
+      {/* 维度提示：正常情况下只是一行小字（平时没人关心）；检测中或检测失败
+          才值得占一块位置——那正是会出现「维度不匹配」的时候 */}
+      {embeddingDim != null && !embeddingDimMsg ? (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+          当前模型维度（已检测）：{embeddingDim} 维
+          {' '}—— 更换 Embedding 模型后若知识库出现「维度不匹配」，请在知识库管理页「重建向量」
+        </Text>
+      ) : (
+        <Alert
+          type={embeddingDim == null ? 'info' : 'warning'}
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={embeddingDim == null
+            ? `当前模型维度：${embeddingDimMsg || '检测中…'}`
+            : `Embedding 维度检测异常：${embeddingDimMsg}`}
+          description={embeddingDim == null ? undefined
+            : '更换 Embedding 模型后若知识库出现「维度不匹配」，请在知识库管理页「重建向量」。'}
+        />
+      )}
 
       {/* 部门配置查询（仅超管，只读）：看各部门覆盖了什么——配置收口后超管
-          不代改，修改由部门管理员在「部门配置」页自行完成 */}
-      {!isDeptAdmin && (
-        <Card
+          不代改，修改由部门管理员在「部门配置」页自行完成。
+          默认收起：这是"偶尔查一下"的参考信息，常驻展开会挤掉真正要操作的档案 */}
+      {!isDeptAdmin && departments.length > 0 && (
+        <Collapse
           size="small"
           style={{ marginBottom: 12 }}
-          title={
-            <Space>
-              <Tag color="purple">部门配置查询</Tag>
-              <Text strong>各部门覆盖的配置（只读）</Text>
-            </Space>
-          }
-        >
-          {departments.length === 0 ? (
-            <Text type="secondary">暂无部门</Text>
-          ) : (
-            <Space wrap>
-              {departments.map(d => (
-                <Button key={d.id} size="small"
-                  onClick={() => void viewDeptConfig(d.id)}>
-                  {d.name}
-                </Button>
-              ))}
-            </Space>
-          )}
-        </Card>
+          items={[{
+            key: 'dept',
+            label: (
+              <Space>
+                <Tag color="purple">部门配置查询</Tag>
+                <Text strong>各部门覆盖的配置（只读）</Text>
+                <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                  共 {departments.length} 个部门
+                </Text>
+              </Space>
+            ),
+            forceRender: true,
+            children: (
+              <Space wrap>
+                {departments.map(d => (
+                  <Button key={d.id} size="small"
+                    onClick={() => void viewDeptConfig(d.id)}>
+                    {d.name}
+                  </Button>
+                ))}
+              </Space>
+            ),
+          }]}
+        />
       )}
 
       {profiles.length === 0 ? (

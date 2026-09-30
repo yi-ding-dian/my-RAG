@@ -1,4 +1,5 @@
 import type {
+  ConnectionTestItem,
   LLMModelItem,
   ProfileTestResult,
   ServiceProfile,
@@ -25,6 +26,11 @@ export const PRE_STYLE: CSSProperties = {
     用户看到的就是实际生效的那份；与后端 chunking.common._DEFAULT_END_PUNCT_WHITELIST
     保持一致，改一处要同步另一处 */
 export const HEADING_END_PUNCT_DEFAULT = ['？', '！', '…', '?', '!'];
+
+/** 图片摘要输出格式的显示名（域卡摘要、卡片摘要共用） */
+export const IMG_FMT_LABEL: Record<string, string> = {
+  fields: '固定字段', prose: '自然段', brief: '一句话简介',
+};
 
 /** 配置域快捷导航定义（方案 A）：标题 + 当前值摘要 + 对应编辑折叠 key */
 export const DOMAIN_CARDS: Array<{
@@ -54,7 +60,6 @@ export const DOMAIN_CARDS: Array<{
       const vm = p.vision?.models ?? [];
       const cur = vm[p.vision?.active ?? 0];
       return `${p.mineru?.url || '-'}`
-        + `${p.deepdoc?.base_url ? ` / ${p.deepdoc.base_url}` : ''}`
         + `${p.gotenberg?.base_url ? ` / 转换 ${p.gotenberg.base_url}` : ''}`
         + `${cur ? ` / 图片模型 ${cur.name}` : ''}`;
     },
@@ -63,8 +68,12 @@ export const DOMAIN_CARDS: Array<{
     key: 'retrieval',
     title: '检索与切块',
     sections: ['rerank'],
-    summary: p =>
-      `top_k ${p.retrieval?.top_k ?? '-'}｜chunk ${p.chunking?.chunk_size ?? '-'}（重叠 ${p.chunking?.overlap ?? '-'}）`,
+    summary: p => {
+      const r = p.retrieval?.rerank;
+      return `top_k ${p.retrieval?.top_k ?? '-'}`
+        + `｜chunk ${p.chunking?.chunk_size ?? '-'}（重叠 ${p.chunking?.overlap ?? '-'}）`
+        + `｜rerank ${r?.enabled ? (r.model || '开') : '关'}`;
+    },
   },
   {
     key: 'ingest',
@@ -73,6 +82,31 @@ export const DOMAIN_CARDS: Array<{
     // （chat.max_query_len 属聊天输入限制，非入库限制）
     summary: p =>
       `并发 ${p.ingestion?.concurrency ?? 3}｜单库上限 ${p.ingestion?.kb_doc_limit ?? 0}｜上传 ${p.ingestion?.max_upload_mb ?? 100}MB`,
+  },
+  {
+    key: 'chat',
+    title: '聊天设置',
+    // 纯参数面板，没有可探测的连接，故不传 sections（不显示测试按钮）
+    summary: p => {
+      const c = p.chat ?? {};
+      return `输入 ${c.max_query_len ?? 2000} 字｜上下文 ${c.prompt_total_max_tokens ?? 6000} token`
+        + `｜识图${c.image_enabled === false ? '关' : '开'}`;
+    },
+  },
+  {
+    key: 'image_summary',
+    title: '图片摘要',
+    summary: p => {
+      const is = p.image_summary ?? {};
+      return `${is.model || '默认模型'}`
+        + `｜${IMG_FMT_LABEL[is.output_format ?? 'fields'] ?? '固定字段'}`
+        + `｜提示词${is.prompt ? '自定义' : '用模板'}`;
+    },
+  },
+  {
+    key: 'prompts',
+    title: '系统提示词库',
+    summary: p => `共 ${(p.prompts?.items ?? []).length} 条`,
   },
   {
     key: 'storage',
@@ -94,6 +128,8 @@ export const DOMAIN_CARDS: Array<{
 export interface TestItem {
   status: 'idle' | 'testing' | 'success' | 'failed';
   msg: string;
+  /** 逐个模型的明细（llm / vision 这类"模型列表"段才有：列表里每个模型都测） */
+  items?: ConnectionTestItem[];
 }
 
 export type SectionKey = 'llm' | 'embedding' | 'mineru' | 'deepdoc' | 'gotenberg' | 'mysql' | 'minio' | 'vector_store' | 'rerank' | 'vision';
@@ -111,18 +147,26 @@ export const emptyTest: Record<SectionKey, TestItem> = {
   vision: { status: 'idle', msg: '' },
 };
 
+// 单段结果 -> 展示项。后端可以只返回被点名的那几段（面板级测试），
+// 没返回的段记为 idle（"本次没测"），而不是"失败"
+const toItem = (r?: {
+  ok: boolean; message: string; items?: ConnectionTestItem[];
+}): TestItem => (r
+  ? { status: r.ok ? 'success' : 'failed', msg: r.message, items: r.items }
+  : { status: 'idle', msg: '' });
+
 // 测试结果 -> 展示项
-export const toTestItems = (res: ProfileTestResult): Record<SectionKey, TestItem> => ({
-  llm: { status: res.llm.ok ? 'success' : 'failed', msg: res.llm.message },
-  embedding: { status: res.embedding.ok ? 'success' : 'failed', msg: res.embedding.message },
-  mineru: { status: res.mineru.ok ? 'success' : 'failed', msg: res.mineru.message },
-  deepdoc: { status: res.deepdoc.ok ? 'success' : 'failed', msg: res.deepdoc.message },
-  gotenberg: { status: res.gotenberg?.ok ? 'success' : 'failed', msg: res.gotenberg?.message ?? '未参与探测' },
-  rerank: { status: res.rerank.ok ? 'success' : 'failed', msg: res.rerank.message },
-  mysql: { status: res.mysql.ok ? 'success' : 'failed', msg: res.mysql.message },
-  minio: { status: res.minio.ok ? 'success' : 'failed', msg: res.minio.message },
-  vector_store: { status: res.vector_store.ok ? 'success' : 'failed', msg: res.vector_store.message },
-  vision: { status: res.vision?.ok ? 'success' : 'failed', msg: res.vision?.message ?? '未参与探测' },
+export const toTestItems = (res: Partial<ProfileTestResult>): Record<SectionKey, TestItem> => ({
+  llm: toItem(res.llm),
+  embedding: toItem(res.embedding),
+  mineru: toItem(res.mineru),
+  deepdoc: toItem(res.deepdoc),
+  gotenberg: toItem(res.gotenberg),
+  rerank: toItem(res.rerank),
+  mysql: toItem(res.mysql),
+  minio: toItem(res.minio),
+  vector_store: toItem(res.vector_store),
+  vision: toItem(res.vision),
 });
 
 /** 编辑弹窗折叠面板 key → 可探测段（点击面板标题右侧"测试"按钮）；

@@ -1,6 +1,8 @@
-import React, { useEffect } from 'react';
-import { Alert, Col, Form, Input, InputNumber, Row, Select, Space, Tooltip } from 'antd';
-import { QuestionCircleOutlined } from '@ant-design/icons';
+import React, { useEffect, useState } from 'react';
+import {
+  AutoComplete, Col, Form, Input, InputNumber, Row, Select, Space, Tooltip,
+} from 'antd';
+import { DownOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import AppModal from '../../shared/components/common/AppModal';
 import type { LLMModelItem, VisionModelItem } from '../../shared/api/client';
 import type { ThinkingControl } from '../../shared/api/types';
@@ -123,7 +125,7 @@ export const LlmModelEditModal: React.FC<{
               label="API Key"
               tooltip="编辑时留空 = 保留原值；保存后仅显示脱敏值"
             >
-              <Password placeholder="sk-***" />
+              <Password autoComplete="new-password" placeholder="sk-***" />
             </Form.Item>
           </Col>
         </Row>
@@ -305,12 +307,47 @@ export const LlmModelEditModal: React.FC<{
 export const VisionModelEditModal: React.FC<{
   open: boolean;
   models: VisionModelItem[];
+  /** LLM 模型列表：「模型名」从这里选，选中后把地址与模型标识一并带出 */
+  llmModels: LLMModelItem[];
   /** 编辑第几条；null = 添加 */
   editIdx: number | null;
   onSave: (item: VisionModelItem) => void;
   onCancel: () => void;
-}> = ({ open, models, editIdx, onSave, onCancel }) => {
+}> = ({ open, models, llmModels, editIdx, onSave, onCancel }) => {
   const [form] = Form.useForm();
+  /** 用户是否正在下拉里手动输入（决定要不要按输入筛选项）
+   *
+   *  AutoComplete 打开下拉时会拿输入框里的**当前值**去过滤，编辑已有条目时就
+   *  只剩它自己一个候选，看着像"没得选"。所以默认不过滤、把候选全列出来，
+   *  只有用户真的开始打字才筛。
+   */
+  const [typing, setTyping] = useState(false);
+
+  /** 「模型名」的候选：LLM 列表里的模型标识（同名只留一条） */
+  const llmModelOptions = Array.from(
+    new Map(llmModels.filter(m => m.model).map(m => [m.model, m])).entries(),
+  ).map(([model, m]) => ({
+    value: model,
+    label: m.name && m.name !== model ? `${model}（${m.name}）` : model,
+  }));
+
+  /**
+   * 从 LLM 列表选了个模型 → 把 API 地址与显示名带过来（同一台推理服务，
+   * 没必要手打第二遍）。只填**还空着**的字段，不覆盖用户已经写好的内容。
+   *
+   * **故意不带 API Key**：LLM 列表里的 key 是脱敏值（sk-****abcd），带到
+   * 图片模型里保存时会被后端的"脱敏值 = 不修改"规则判为无效而跳过，反而
+   * 落成另一个值。本地推理服务通常不需要 Key，留空即可。
+   */
+  const applyLlmModel = (modelName: string) => {
+    const hit = llmModels.find(m => m.model === modelName);
+    if (!hit) return;
+    const cur = form.getFieldsValue();
+    const patch: Record<string, unknown> = {};
+    if (!cur.vision_base_url) patch.vision_base_url = hit.base_url;
+    if (!cur.vision_name) patch.vision_name = hit.name;
+    if (Object.keys(patch).length) form.setFieldsValue(patch);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -342,6 +379,13 @@ export const VisionModelEditModal: React.FC<{
 
   return (
     <AppModal
+      // 与 LlmModelEditModal 同款：内容固定，**锁定型**避免抽搐。
+      // 不加的话高度一直跟内容走，一旦内容超出视口出现滚动条，就进入
+      // "测高 → 出滚动条 → 换行变高 → 再测"的振荡（表现为弹窗一直抖）
+      dimension="auto"
+      autoLock
+      defaultSize={{ w: 600, h: 460 }}
+      rememberKey="settings-3"
       title={editIdx !== null
         ? `编辑图片模型${models[editIdx] ? `：${models[editIdx].name}` : ''}`
         : '添加图片解析模型'}
@@ -374,14 +418,56 @@ export const VisionModelEditModal: React.FC<{
         </Row>
         <Row gutter={12}>
           <Col span={8}>
-            <Form.Item name="vision_model" label="模型名"
-              rules={[{ required: true, message: '请输入模型名' }]}>
-              <Input placeholder="Qwen3.5-9B-GPTQ-4bit" />
+            <Form.Item
+              name="vision_model"
+              label="模型名"
+              tooltip="从「LLM 模型管理」列表里挑一个（API 地址会一并带出），也可以直接输入列表里没有的模型名"
+              rules={[{ required: true, message: '请输入模型名' }]}
+            >
+              <AutoComplete
+                options={llmModelOptions}
+                // 见 typing 的注释：打开时先不过滤，候选全列出来。
+                // 另外，输入内容跟谁都不匹配时也**不过滤**——浏览器自动填充
+                // 塞进来的值（登录名之类）就会命中这种情形，照常筛的话下拉
+                // 会空着，看着像"没得选"
+                filterOption={(input, option) => {
+                  if (!typing) return true;
+                  const key = input.toLowerCase();
+                  if (!llmModelOptions.some(o => o.value.toLowerCase().includes(key))) {
+                    return true;
+                  }
+                  return String(option?.value ?? '').toLowerCase().includes(key);
+                }}
+                onSearch={() => setTyping(true)}
+                onSelect={(v: string) => {
+                  setTyping(false);
+                  applyLlmModel(v);
+                }}
+                onDropdownVisibleChange={open => {
+                  if (!open) setTyping(false);
+                }}
+                allowClear
+                // AutoComplete 默认不带箭头，看着就是个普通输入框；
+                // 补一个下拉箭头，让人一眼知道这儿能点开选
+                suffixIcon={<DownOutlined style={{ fontSize: 10 }} />}
+                // 兜底文案：筛选没命中时别只留一片空白，告诉人怎么把候选找回来
+                notFoundContent={llmModels.length === 0
+                  ? '「LLM 模型管理」里还没有模型'
+                  : '没有匹配的模型（清空输入框即可看到全部）'}
+                placeholder="从 LLM 列表选，或直接输入"
+              />
             </Form.Item>
           </Col>
           <Col span={8}>
-            <Form.Item name="vision_api_key" label="API Key（可空）">
-              <Input.Password placeholder="本地服务通常留空" />
+            <Form.Item
+              name="vision_api_key"
+              label="API Key（可空）"
+              tooltip="不能沿用「LLM 模型管理」里那个 Key：列表里显示的是脱敏值，带过来保存会被当作无效值丢弃。需要鉴权的服务请在这里手填，本地推理服务留空即可。"
+            >
+              <Input.Password
+                autoComplete="new-password"
+                placeholder="本地服务通常留空"
+              />
             </Form.Item>
           </Col>
           <Col span={8}>
@@ -390,11 +476,6 @@ export const VisionModelEditModal: React.FC<{
             </Form.Item>
           </Col>
         </Row>
-        <Alert
-          type="info"
-          showIcon
-          message="部门管理员从这些模型里选一个用；提示词与输出格式在「部门配置 → 图片摘要」里配。"
-        />
       </Form>
     </AppModal>
   );

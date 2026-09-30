@@ -1389,10 +1389,26 @@ export interface ServiceProfile {
 /** 创建/更新/测试连接时提交的档案（部分字段可选） */
 export type ServiceProfileInput = Partial<ServiceProfile> & { name?: string };
 
+/** 单个模型的探测明细（LLM / 图片解析模型这类"模型列表"段才有） */
+export interface ConnectionTestItem {
+  name: string;
+  /** 该模型的 API 地址（base_url）——同名模型可能指向不同地址，
+   *  光看名字分不清是哪个连不上 */
+  url: string;
+  ok: boolean;
+  latency_ms: number;
+  message: string;
+}
+
 export interface ConnectionTestResult {
   ok: boolean;
   latency_ms: number;
   message: string;
+  /** 未配置的可选功能（如没加图片解析模型）：不算失败，不参与"全部就绪"判定 */
+  skipped?: boolean;
+  /** 逐个模型的明细：llm / vision 段会**把列表里每个模型都测一遍**，
+   *  这里放每条的结论；单服务的段（minio、mysql 等）没有这一项 */
+  items?: ConnectionTestItem[];
 }
 
 export interface ProfileTestResult {
