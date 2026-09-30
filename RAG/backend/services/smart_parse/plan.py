@@ -65,6 +65,9 @@ class PlanInput:
     has_headings: bool = False
     heading_count: int = 0
     numbered_headings: int = 0
+    # docx 样式标题数（仅 docx/doc 且判定规范时非 0，见 build._merge_docx_headings）：
+    # 单列不并进 heading_count——两条通道可能命中同一批标题，混在一起会重复计数
+    style_headings: int = 0
     is_normative: bool = False
     is_qa: bool = False
     qa_pairs: int = 0
@@ -75,7 +78,7 @@ class PlanInput:
 
     @property
     def heading_total(self) -> int:
-        return self.heading_count + self.numbered_headings
+        return self.heading_count + self.numbered_headings + self.style_headings
 
     @classmethod
     def from_profile(cls, *, file_type: str, engine: str,
@@ -96,6 +99,7 @@ class PlanInput:
             has_headings=bool(structure.get("has_headings")),
             heading_count=int(structure.get("heading_count") or 0),
             numbered_headings=int(structure.get("numbered_headings") or 0),
+            style_headings=int(structure.get("style_headings") or 0),
             is_normative=bool(docx_probe.get("is_normative")),
             is_qa=bool(qa.get("is_qa")),
             qa_pairs=int(qa.get("qa_pairs") or 0),

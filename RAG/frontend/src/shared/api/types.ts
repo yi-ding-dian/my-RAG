@@ -568,6 +568,9 @@ export interface AnalyzeStructure {
   has_headings: boolean;
   heading_count: number;
   numbered_headings: number;
+  /** Word 样式标题数（仅 docx/doc 且判定为规范文档时 >0）：文本正则看不见
+   *  OOXML 的样式/大纲层级，这类标题由后端探测回填，总数 = 三者之和 */
+  style_headings?: number;
   examples: string[];
   /** 检测到的标题编号体系（按命中数降序；切块层级推断用，自动启用） */
   heading_systems?: {

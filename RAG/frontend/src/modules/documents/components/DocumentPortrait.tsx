@@ -206,10 +206,20 @@ const DocumentPortrait: React.FC<DocumentPortraitProps> = ({
               <PortraitCard icon={<AlignLeftOutlined />} label="标题结构">
                 {analyze.structure.has_headings ? (
                   <Space direction="vertical" size={2}>
-                    <Tag color="green">
-                      有标题（
-                      {analyze.structure.heading_count + analyze.structure.numbered_headings} 个）
-                    </Tag>
+                    <Space size={6} wrap>
+                      <Tag color="green">
+                        有标题（
+                        {analyze.structure.heading_count + analyze.structure.numbered_headings
+                          + (analyze.structure.style_headings ?? 0)} 个）
+                      </Tag>
+                      {/* 样式标题在纯文本里看不出是标题，标出来免得用户疑惑
+                          "哪来的标题"（后端由 OOXML 样式/大纲级别探测回填） */}
+                      {(analyze.structure.style_headings ?? 0) > 0 && (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          来自 Word 样式 / 大纲级别
+                        </Text>
+                      )}
+                    </Space>
                     <div>
                       {analyze.structure.examples.slice(0, 2).map((t, i) => (
                         <Tag key={i} style={{ marginInlineEnd: 4, marginTop: 2 }}>

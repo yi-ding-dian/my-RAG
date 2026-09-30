@@ -31,6 +31,9 @@ NORMATIVE_MIN_STYLE_RATIO = 0.02
 # 编号体系命中统计的标题样本上限（探测开销封顶，样本够判断体系即可）
 _HEADING_SAMPLE_LIMIT = 200
 
+# 画像 examples 展示的样式标题数（与 analyze_structure 的 examples 口径一致）
+_HEADING_EXAMPLE_LIMIT = 5
+
 
 def extract_text(path: Path, file_type: str) -> tuple[str, bool, str | None]:
     """轻量本地文本提取：txt/md 直读；pdf/docx 复用 parsers.client._extract_plain。
@@ -96,6 +99,8 @@ def probe_docx_structure(document) -> dict:
     - style_ratio：样式标题 / 非空段落数（样式标题覆盖率）；
     - style_heading_systems：样式标题的编号体系命中（复用 heading_presets
       .detect_heading_systems，与切块层级推断同口径）；
+    - style_heading_examples：样式标题文本示例（画像 examples 展示用——这些
+      标题在纯文本里看不出是标题，得靠探测结果回填）；
     - is_normative：样式标题 >= 3 个且覆盖率 >= 2% → 有规范写作格式
       （适合结构化解析保留标题层级）。
     """
@@ -121,6 +126,7 @@ def probe_docx_structure(document) -> dict:
         "total_paragraphs": total,
         "style_ratio": round(ratio, 4),
         "style_heading_systems": detect_heading_systems(titles),
+        "style_heading_examples": titles[:_HEADING_EXAMPLE_LIMIT],
         "is_normative": (style_headings >= NORMATIVE_MIN_STYLE_HEADINGS
                          and ratio >= NORMATIVE_MIN_STYLE_RATIO),
     }

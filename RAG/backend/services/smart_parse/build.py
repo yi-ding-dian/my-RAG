@@ -16,6 +16,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional
 
+from backend.chunking import order_systems
 from backend.config import get_active_config
 from backend.services.smart_parse.engine import suggest_engine
 from backend.services.smart_parse.extract import extract_for_profile
@@ -95,6 +96,7 @@ async def build_analyze(*, doc_id: str, file_type: str, path: Path,
     if docx_probe:
         # docx 结构探测（规范性判定，引擎建议用）并入标题结构画像
         structure["docx_structure"] = docx_probe
+        _merge_docx_headings(structure, docx_probe)
     qa = safe_analyze(analyze_qa, text, warnings, "QA 格式")
     density = safe_analyze(analyze_reference_density, text, warnings, "指代密集度")
 
@@ -113,6 +115,62 @@ async def build_analyze(*, doc_id: str, file_type: str, path: Path,
         doc_id=doc_id, file_type=file_type, extracted=extracted,
         extract_warning=extract_warning, engine_suggestion=engine,
         profile=profile, plan=_safe_plan(inp, warnings), warnings=warnings)
+
+
+def _merge_docx_headings(structure: dict, docx_probe: dict) -> None:
+    """把 Word 样式标题并进标题结构画像（就地更新）
+
+    **为什么必须并**：文本正则看不见 OOXML 的样式/大纲层级——docx 提取出的纯
+    文本里标题就是一行普通字（没有 #、没有编号），于是同一份文档会出现「引擎
+    建议说检测到规范标题样式、标题结构却说无结构」的自相矛盾，并连锁推错切块
+    方式（naive 而非层级聚合）、关掉父标题拼接、误推花钱的上下文检索。
+
+    判据与引擎建议统一取 is_normative（见 engine.suggest_engine），两处口径
+    一致才不会再次打架。
+
+    计数口径：heading_count / numbered_headings 保持文本正则的原语义不动，
+    样式标题另记 style_headings（总数由 PlanInput.heading_total 汇总）——样式
+    标题与编号式标题可能指同一批标题，混进 heading_count 会重复计数。
+    """
+    if not docx_probe.get("is_normative"):
+        return
+    structure["has_headings"] = True
+    structure["style_headings"] = int(docx_probe.get("style_headings") or 0)
+    # examples 用样式标题打头：它们在纯文本里看不出是标题，探测结果才是权威
+    examples = list(docx_probe.get("style_heading_examples") or [])
+    for t in structure.get("examples") or []:
+        if t not in examples:
+            examples.append(t)
+    structure["examples"] = examples[:5]
+    systems = _merge_systems(structure.get("heading_systems") or [],
+                             docx_probe.get("style_heading_systems") or [])
+    structure["heading_systems"] = systems
+    structure["suggested_systems"] = order_systems([r["system"] for r in systems])
+
+
+def _merge_systems(base: list, extra: list) -> list:
+    """编号体系命中归并（按 system 合并，按命中数降序）
+
+    hits 取两条通道的**较大值**而非相加：样式标题与文本正则扫的是同一批标题，
+    相加会把同一批命中算两遍；examples 互补，各留最多 3 个（与检测函数同口径）。
+    """
+    merged: dict[str, dict] = {}
+    for r in list(base) + list(extra):
+        name = r.get("system")
+        if not name:
+            continue
+        cur = merged.get(name)
+        if cur is None:
+            merged[name] = {
+                "system": name, "label": r.get("label", name),
+                "hits": int(r.get("hits") or 0),
+                "examples": list(r.get("examples") or [])[:3]}
+            continue
+        cur["hits"] = max(cur["hits"], int(r.get("hits") or 0))
+        for e in r.get("examples") or []:
+            if len(cur["examples"]) < 3 and e not in cur["examples"]:
+                cur["examples"].append(e)
+    return sorted(merged.values(), key=lambda r: -r["hits"])
 
 
 def _safe_plan(inp: PlanInput, warnings: list[str]):

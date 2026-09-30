@@ -440,6 +440,48 @@ class TestDocxStructHierarchicalEndToEnd:
         assert data["engine_suggestion"]["suggested"] != "docx_struct"
         assert data["parse_plan"]["config"]["method"] != "hierarchical"
 
+    def test_normative_docx_bare_titles(self, client, admin_headers):
+        """裸标题的 docx：正则一个都抓不到，靠样式探测回填画像（回归用例）
+
+        上一用例的标题是「第N章 测试章节」——**带编号，文本正则也能抓**，所以
+        旧实现照样能推出层级聚合，把这个 bug 蒙混过去了。真实文档的标题多是
+        「业绩文件」这种裸标题：层级只活在 OOXML 样式里，转成纯文本就是一行
+        普通字。旧实现于是出现「引擎建议说检测到规范标题样式、标题结构却说
+        无结构」的自相矛盾，并连锁推成通用切块 + 关掉父标题拼接 + 误推花钱
+        的上下文检索。本用例锁死这条链路。
+        """
+        import docx as docx_mod
+        buf = io.BytesIO()
+        d = docx_mod.Document()
+        d.add_heading("专项投标文件", level=1)
+        for i in range(3):
+            d.add_heading(f"业绩文件{i}", level=2)
+            d.add_paragraph("这是章节正文内容。" * 10)
+        d.save(buf)
+        kb = create_kb(client)
+        doc = upload_doc(
+            client, kb["id"], filename="bare.docx", content=buf.getvalue(),
+            mime="application/vnd.openxmlformats-officedocument"
+                 ".wordprocessingml.document")
+
+        data = _analyze(client, kb["id"], doc["id"])
+        s = data["structure"]
+        assert s["docx_structure"]["is_normative"] is True
+        # 文本正则仍然是 0（标题既无 # 也无编号）——样式探测把它补上
+        assert s["heading_count"] == 0 and s["numbered_headings"] == 0
+        assert s["style_headings"] == 4
+        assert s["has_headings"] is True
+        assert "专项投标文件" in s["examples"]
+        # 推荐路径随之正确：层级聚合（而非旧行为的通用切块）
+        assert data["parse_plan"]["config"]["method"] == "hierarchical"
+        assert data["recommendations"]["chunk_method"]["method"] == "hierarchical"
+        assert "检测到 4 个标题" in data["recommendations"]["chunk_method"]["reason"]
+        # 层级聚合的块自带祖先标题链 → 该开关不生效，不推荐拼
+        assert data["parse_plan"]["config"]["enable_heading_in_content"] is False
+        # 有标题结构 → 不推花钱的上下文检索（旧行为反而会推）
+        assert data["parse_plan"]["config"]["contextual_retrieval"] is False
+        assert data["recommendations"]["contextual_retrieval"]["recommended"] is False
+
 
 class TestSpreadsheetPlan:
 
