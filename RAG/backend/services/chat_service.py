@@ -119,7 +119,14 @@ VISION_UNAVAILABLE_MSG = "视觉模型当前无法使用，无法识图"
 
 # 读图提示词：**不复用 image_summary 那份**——它是给"入库摘要"设计的三段式
 # 结构化输出（类型/文字/画面），回填进 chunk 文本参与检索；聊天识图的这段
-# 描述要同时喂给检索与对话回答，需要自然语言叙述 + 高密度关键信息
+# 描述要同时喂给检索与对话回答，需要自然语言叙述 + 高密度关键信息。
+#
+# 这是**内置默认**：超管可在「设置 → 聊天设置 → 聊天识图 → 读图提示词」覆盖
+# （配置档案 chat.image_prompt），部门管理员可在「部门配置 → 对话增强」再覆盖
+# 一层（schema 白名单）。配置为空时回退到本常量 → 行为与旧版逐字节一致。
+# `{max_chars}` 是占位符，运行时替换为 image_desc_max_chars；用户自定义提示词
+# 若不写它，长度约束就只剩 describe_images 的硬截断兜底（不报错，但模型更容易
+# 超发）。
 _CHAT_IMAGE_PROMPT = (
     "请描述这张图片，供知识库检索与问答使用。要求：\n"
     "1. **逐字抄录图中所有文字**：标题、编号、型号、参数、报错信息、日期、"
@@ -143,19 +150,24 @@ def _image_mime(name: str) -> str:
 
 
 async def _describe_chat_image(client, model_cfg, key: str, max_chars: int,
-                               storage) -> str:
+                               storage, prompt: str = "") -> str:
     """读一张聊天图片 → 描述文本（异常原样抛出，由 describe_images 归一）
 
     图从对象存储按 key 取，**不信任前端传的 base64**——那等于把大小/格式
     校验权全交给客户端。key 是 upload-image 阶段校验后落下的。
+
+    prompt：读图提示词（已含部门覆盖的最终值）；空 = 用内置默认
+    _CHAT_IMAGE_PROMPT。只替换 `{max_chars}` 一个占位符——用户提示词里的
+    其他花括号（如 JSON 示例）原样保留，不做 str.format（那会因未知占位符抛错）
     """
     data = await storage.read_bytes(key)
     payload = base64.b64encode(data).decode()
+    template = (prompt or "").strip() or _CHAT_IMAGE_PROMPT
     messages = [{
         "role": "user",
         "content": [
             {"type": "text",
-             "text": _CHAT_IMAGE_PROMPT.replace("{max_chars}", str(max_chars))},
+             "text": template.replace("{max_chars}", str(max_chars))},
             {"type": "image_url",
              "image_url": {"url": f"data:{_image_mime(key)};base64,{payload}"}},
         ],
@@ -174,13 +186,16 @@ async def _describe_chat_image(client, model_cfg, key: str, max_chars: int,
 
 
 async def describe_images(images: List[str], model_cfg, max_chars: int,
-                          storage) -> Tuple[str, str]:
+                          storage, prompt: str = "") -> Tuple[str, str]:
     """并发读多张图 → 合并描述。返回 (描述文本, 失败原因)
 
     **一次生成、两处用**：同一段描述既并入当轮检索词（让"这张报错截图"
     能命中对应文档），又注入 messages（让主模型知道图里有什么）。拆成两份
     描述要多一次 VLM 调用，而读图是整条链路上最慢的一环，用户发完图干等
     的正是它——先按一份做，实测检索不准再拆（见 config.image_desc_max_chars）。
+
+    prompt：读图提示词（调用方传合并后的最终值：部门覆盖 → 全局 → 空串）；
+    空 = 用内置默认 _CHAT_IMAGE_PROMPT。见 config.ChatConfig.image_prompt。
 
     失败语义（与"图片摘要是增强功能、不该有否决权"不同——这里图是用户
     **主动发的**，必须给明确交代）：
@@ -191,7 +206,7 @@ async def describe_images(images: List[str], model_cfg, max_chars: int,
         model_cfg.model_dump(),
         timeout=min(float(model_cfg.timeout or 60), _IMAGE_DESC_TIMEOUT))
     results = await asyncio.gather(
-        *[_describe_chat_image(client, model_cfg, k, max_chars, storage)
+        *[_describe_chat_image(client, model_cfg, k, max_chars, storage, prompt)
           for k in images],
         return_exceptions=True)
 
@@ -550,34 +565,10 @@ class ChatService:
         dept_llm = dept.get("llm") if isinstance(dept.get("llm"), dict) else {}
 
         try:
-            # 识图前置：读图 → 描述。**必须在检索之前**——描述要并进检索词，
-            # 晚于检索就只剩展示价值了。读图失败不下发 error 而发 vision_error：
-            # 前端据此提示"无法识图"并保留用户已选好的图，与"服务异常请稍后
-            # 重试"是两回事（后者让用户白等，前者让用户知道该修配置/删图）
-            image_desc = ""
-            if images:
-                if vision_model is None:
-                    yield sse_event("vision_error",
-                                    {"message": VISION_UNAVAILABLE_MSG})
-                    return
-                t_img = time.perf_counter()
-                image_desc, img_err = await describe_images(
-                    images, vision_model,
-                    int(get_active_config().chat.image_desc_max_chars),
-                    get_storage_service())
-                if img_err:
-                    # 单次读图失败多为这张图本身的问题（格式怪/损坏/被拒答），
-                    # 记 warning 不点红灯——视觉模型真挂了由 /vision-status
-                    # 探活和用户重试暴露，不该让一次读图失败污染系统健康度
-                    logger.warning("聊天读图失败: %s", img_err)
-                    yield sse_event("vision_error",
-                                    {"message": VISION_UNAVAILABLE_MSG})
-                    return
-                logger.info("聊天识图: %d 张 → %d 字（%.1fs）", len(images),
-                            len(image_desc), time.perf_counter() - t_img)
-
             # 0) 聊天配置字段级合并（提前计算：知识图谱增强开关/Agentic 配置
             #    在此读取；纯函数无副作用，后续步骤直接复用，避免重复合并）
+            #    **必须早于识图**：读图提示词支持部门覆盖（chat.image_prompt），
+            #    读图时就要拿到合并后的值——这是本块从识图之后上移的原因
             cfg = get_active_config()
             merged = merge_chat_config(
                 {
@@ -590,6 +581,10 @@ class ChatService:
                         "system_prompt": cfg.chat.system_prompt,
                         "kg_enhance": cfg.chat.kg_enhance,
                         "thinking_mode": cfg.chat.thinking_mode,
+                        # 识图提示词（部门可覆盖）：**必须显式带上**——merge 内部
+                        # 的 chat_payload 取不到就用 "" 兜底，漏了会让全局与部门
+                        # 设的提示词双双失效（同 citation_snippet_chars 的旧坑）
+                        "image_prompt": cfg.chat.image_prompt,
                     },
                     "retrieval": {
                         "top_k": cfg.retrieval.top_k,
@@ -610,6 +605,35 @@ class ChatService:
             # 纯函数无副作用——地址/密钥/模型/生成参数与历史一致）
             merged_llm_dict = merge_department_llm(
                 _llm_to_dict(get_active_config().llm), dept_llm)
+
+            # 识图前置：读图 → 描述。**必须在检索之前**——描述要并进检索词，
+            # 晚于检索就只剩展示价值了。读图失败不下发 error 而发 vision_error：
+            # 前端据此提示"无法识图"并保留用户已选好的图，与"服务异常请稍后
+            # 重试"是两回事（后者让用户白等，前者让用户知道该修配置/删图）
+            image_desc = ""
+            if images:
+                if vision_model is None:
+                    yield sse_event("vision_error",
+                                    {"message": VISION_UNAVAILABLE_MSG})
+                    return
+                t_img = time.perf_counter()
+                image_desc, img_err = await describe_images(
+                    images, vision_model,
+                    int(cfg.chat.image_desc_max_chars),
+                    get_storage_service(),
+                    # 提示词：部门覆盖 → 全局 → 空串（describe_images 内部
+                    # 回退内置默认 _CHAT_IMAGE_PROMPT）
+                    merged_chat.get("image_prompt") or "")
+                if img_err:
+                    # 单次读图失败多为这张图本身的问题（格式怪/损坏/被拒答），
+                    # 记 warning 不点红灯——视觉模型真挂了由 /vision-status
+                    # 探活和用户重试暴露，不该让一次读图失败污染系统健康度
+                    logger.warning("聊天读图失败: %s", img_err)
+                    yield sse_event("vision_error",
+                                    {"message": VISION_UNAVAILABLE_MSG})
+                    return
+                logger.info("聊天识图: %d 张 → %d 字（%.1fs）", len(images),
+                            len(image_desc), time.perf_counter() - t_img)
 
             # 1) 检索（P1-2：Embedding 服务不可用等 RetrievalUnavailableError
             # 直接透传"检索服务不可用：..."，其余异常统一"检索失败: ..."前缀）

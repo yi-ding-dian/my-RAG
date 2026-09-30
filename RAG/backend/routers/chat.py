@@ -118,8 +118,10 @@ async def stream_chat(body: ChatRequest, db: AsyncSession = Depends(get_db),
         # 视觉模型在**路由层**解析后传下去：部门配置解析需要 db 会话，这里
         # 正好有。解析不到 → 传 None，由 stream_chat 下发 vision_error 明确
         # 告知"无法识图"（而不是静默忽略图片，让用户以为模型看过了）
-        resolved = await image_summary.resolve_config(db, user.department_id)
-        vision_model = resolved["model"] if resolved else None
+        # resolve_chat_vision（非 resolve_config）：聊天识图可用「聊天设置」
+        # 指定的独立模型，与文档入库的图片摘要解耦，见其 docstring
+        vision_model = await image_summary.resolve_chat_vision(
+            db, user.department_id)
 
     async def event_generator():
         try:
@@ -301,11 +303,14 @@ async def vision_status(db: AsyncSession = Depends(get_db),
               "max_mb": float(cfg.image_max_mb)}
     if not cfg.image_enabled:
         return {"enabled": False, "available": False, "reason": "", **limits}
-    resolved = await image_summary.resolve_config(db, user.department_id)
-    if resolved is None:
+    # 与发送时同一解析（resolve_chat_vision）：探活与真发图必须看同一个模型，
+    # 否则会出现"探活说可用、发图说不可用"的两层口径不一致
+    vision_model = await image_summary.resolve_chat_vision(
+        db, user.department_id)
+    if vision_model is None:
         return {"enabled": True, "available": False,
                 "reason": "图片解析模型未配置，请联系系统管理员", **limits}
-    reason = await image_summary.probe_model(resolved["model"])
+    reason = await image_summary.probe_model(vision_model)
     return {"enabled": True, "available": not reason, "reason": reason,
             **limits}
 

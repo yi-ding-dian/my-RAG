@@ -79,6 +79,14 @@ const NEW_PROFILE_DEFAULTS = {
   // 进 prompt 的检索片段总量预算（token）：按当前生产模型反推
   // （Qwen3.5-9B 窗口 15000 − 输出 4096 − 历史/系统提示余量 ≈ 6000）
   chat_prompt_total_max_tokens: 6000,
+  // 聊天识图六项：与后端 config.ChatConfig 默认值对齐
+  chat_image_enabled: true,
+  chat_image_max_count: 3,
+  chat_image_max_mb: 5,
+  // 空 = 跟随「图片摘要」选的模型 / 用内置读图提示词（都是合法值）
+  chat_image_model: '',
+  chat_image_prompt: '',
+  chat_image_desc_max_chars: 800,
   // MySQL / MinIO 预填后端默认值（密码类留空，保存时后端用默认或保持原值）
   mysql_host: '127.0.0.1', mysql_port: 5455, mysql_user: 'ragflow',
   mysql_database: 'my_rag',
@@ -537,7 +545,8 @@ const ProfileEditorModal: React.FC<{
               {
                 key: 'chat',
                 label: panelLabel('chat', '聊天设置'),
-                children: <ChatPanel />,
+                // 传 visionModels：识图模型下拉的选项来自「图片解析模型」列表
+                children: <ChatPanel visionModels={visionModels} />,
               },
               {
                 key: 'prompts',

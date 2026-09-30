@@ -528,7 +528,7 @@ def fake_vision(monkeypatch):
 
     用法（工厂调用即设参，返回值可在测试中继续改）：
         st = fake_vision()                # 可用，返回固定描述
-        fake_vision(unconfigured=True)    # 未配置视觉模型（resolve_config→None）
+        fake_vision(unconfigured=True)    # 未配置视觉模型（两个解析入口均→None）
         fake_vision(available=False)      # 探活失败（/vision-status 报不可用）
         fake_vision(desc_error=True)      # 探活通过但读图失败（走发送时兜底）
         st.desc = "自定义描述文本"         # 改描述内容
@@ -547,15 +547,21 @@ def fake_vision(monkeypatch):
         state.desc = desc
         return state
 
+    def _fake_model_cfg():
+        return VisionModelConfig(
+            name="fake-vl", base_url="http://fake-vl/v1",
+            api_key="k", model="fake-vl", timeout=30.0)
+
     async def _resolve_config(db, dept_id):
         if state.unconfigured:
             return None
-        return {
-            "model": VisionModelConfig(
-                name="fake-vl", base_url="http://fake-vl/v1",
-                api_key="k", model="fake-vl", timeout=30.0),
-            "summary": None,
-        }
+        return {"model": _fake_model_cfg(), "summary": None}
+
+    async def _resolve_chat_vision(db, dept_id):
+        """聊天识图走这条（三级优先解析），与 resolve_config 同受
+        unconfigured 开关控制——两个入口必须同时 patch，只 patch 一个会导致
+        "探活不可用但发送可用"（或反之）的假象"""
+        return None if state.unconfigured else _fake_model_cfg()
 
     async def _probe_model(model_cfg):
         return "" if state.available else "连接失败"
@@ -567,6 +573,8 @@ def fake_vision(monkeypatch):
         return inst
 
     monkeypatch.setattr(image_summary, "resolve_config", _resolve_config)
+    monkeypatch.setattr(image_summary, "resolve_chat_vision",
+                        _resolve_chat_vision)
     monkeypatch.setattr(image_summary, "probe_model", _probe_model)
     # describe_images 用的是本模块级导入的 get_llm_client（引用复制），
     # 只 patch backend.services.llm_client 不会生效，必须打在 chat_service 上

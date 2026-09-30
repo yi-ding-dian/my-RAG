@@ -140,7 +140,10 @@ class TestWhitelistFromSchema:
             "history_rounds", "system_prompt", "system_prompt_ref",
             "kg_enhance",
             "query_rewrite", "query_rewrite_rounds", "thinking_mode",
-            "citation_snippet_chars", "prompt_total_max_tokens"}
+            "citation_snippet_chars", "prompt_total_max_tokens",
+            # 聊天识图的读图提示词：部门可覆盖（各部门的图差别大），
+            # 而 image_model 刻意不在其中（模型涉及密钥，超管定）
+            "image_prompt"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
         assert set(ss.LLM_FIELD_NAMES) == {
@@ -199,7 +202,7 @@ class TestCoerceBehavior:
         }
         # chat 缺段 → 只补 fill_missing 字段 system_prompt="" + system_prompt_ref=""
         # + kg_enhance=True + thinking_mode="disabled" + query_rewrite=True
-        # + query_rewrite_rounds=3 + 聊天识图四项（历史契约：不补全段）
+        # + query_rewrite_rounds=3 + 聊天识图六项（历史契约：不补全段）
         assert out["chat"] == {"system_prompt": "",
                                "system_prompt_ref": "",
                                "kg_enhance": build_default_config().chat.kg_enhance,
@@ -215,7 +218,11 @@ class TestCoerceBehavior:
                                "image_enabled": True,
                                "image_max_count": 3,
                                "image_max_mb": 5.0,
-                               "image_desc_max_chars": 800}
+                               "image_desc_max_chars": 800,
+                               # 空串：识图模型未单独指定（跟随图片摘要）、
+                               # 读图提示词未自定义（用内置默认）
+                               "image_model": "",
+                               "image_prompt": ""}
         # mysql/minio/deepdoc 缺段 → 补整段默认（fill_section）
         cfg = build_default_config()
         assert out["mysql"] == {

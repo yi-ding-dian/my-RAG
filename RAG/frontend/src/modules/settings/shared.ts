@@ -224,6 +224,19 @@ export interface ProfileFormValues {
   chat_citation_snippet_chars: number;
   /** 进 prompt 的检索片段总量预算（token，默认 6000） */
   chat_prompt_total_max_tokens: number;
+  // ---- 聊天识图（发图 → 视觉模型读图 → 描述参与检索与回答） ----
+  /** 总开关：关闭后聊天界面不出现图片入口 */
+  chat_image_enabled: boolean;
+  /** 单次最多几张图（前后端各拦一道） */
+  chat_image_max_count: number;
+  /** 单张图片大小上限（MB，同上各拦一道） */
+  chat_image_max_mb: number;
+  /** 识图用哪个模型（vision 段条目名）；空 = 跟随「图片摘要」选的模型 */
+  chat_image_model: string;
+  /** 读图提示词；空 = 用内置默认。支持 {max_chars} 占位符，部门可覆盖 */
+  chat_image_prompt: string;
+  /** 图片描述长度上限（字）：超长会被硬截断，改长提示词时要同步调大 */
+  chat_image_desc_max_chars: number;
   mysql_host: string;
   mysql_port: number;
   mysql_user: string;
@@ -363,6 +376,15 @@ export const toProfileInput = (vals: ProfileFormValues, llmSection?: {
     max_query_len: vals.chat_max_query_len,
     citation_snippet_chars: vals.chat_citation_snippet_chars,
     prompt_total_max_tokens: vals.chat_prompt_total_max_tokens,
+    // 聊天识图六项：开关/张数/大小/描述上限 + 识图模型 + 读图提示词。
+    // 后两项是新配置——模型空串=跟随图片摘要、提示词空串=用内置默认，
+    // 都是合法值（故后端 schema 用 condition=not_none 而非 truthy）
+    image_enabled: vals.chat_image_enabled,
+    image_max_count: vals.chat_image_max_count,
+    image_max_mb: vals.chat_image_max_mb,
+    image_model: vals.chat_image_model,
+    image_prompt: vals.chat_image_prompt,
+    image_desc_max_chars: vals.chat_image_desc_max_chars,
   },
   // 系统提示词库：始终提交（空数组 = 清空库）；过滤掉没填名称的半成品条目
   prompts: {
@@ -412,6 +434,13 @@ export const toFormValues = (p: ServiceProfile) => ({
   chat_max_query_len: p.chat?.max_query_len ?? 2000,
   chat_citation_snippet_chars: p.chat?.citation_snippet_chars ?? 600,
   chat_prompt_total_max_tokens: p.chat?.prompt_total_max_tokens ?? 6000,
+  // 聊天识图六项（默认值与 config.ChatConfig 对齐；旧档案缺字段时用它们兜底）
+  chat_image_enabled: p.chat?.image_enabled ?? true,
+  chat_image_max_count: p.chat?.image_max_count ?? 3,
+  chat_image_max_mb: p.chat?.image_max_mb ?? 5,
+  chat_image_model: p.chat?.image_model ?? '',
+  chat_image_prompt: p.chat?.image_prompt ?? '',
+  chat_image_desc_max_chars: p.chat?.image_desc_max_chars ?? 800,
   mysql_host: p.mysql?.host,
   mysql_port: p.mysql?.port,
   mysql_user: p.mysql?.user,

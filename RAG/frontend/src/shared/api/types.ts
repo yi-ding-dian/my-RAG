@@ -1292,6 +1292,19 @@ export interface ChatConfig {
   /** 进 prompt 的检索片段总量预算（token，默认 6000）：超出即停止追加后续
    *  片段；只设总量不设单条（总量天然隐含单条约束） */
   prompt_total_max_tokens?: number;
+  // ---- 聊天识图（发图 → 视觉模型读图 → 描述参与检索与回答） ----
+  /** 总开关（默认 true）：关闭后聊天界面不出现图片入口，后端也拒绝带图请求 */
+  image_enabled?: boolean;
+  /** 单次最多几张图（默认 3） */
+  image_max_count?: number;
+  /** 单张图片大小上限（MB，默认 5） */
+  image_max_mb?: number;
+  /** 识图用哪个多模态模型（vision 段条目名）；空 = 跟随「图片摘要」选的模型 */
+  image_model?: string;
+  /** 读图提示词（空 = 内置默认）；支持 {max_chars} 占位符，部门可覆盖 */
+  image_prompt?: string;
+  /** 图片描述长度上限（字，默认 800）：超出硬截断 */
+  image_desc_max_chars?: number;
 }
 
 export interface MySQLConfigProfile {
@@ -1466,6 +1479,9 @@ export interface ChatSettingsPayload {
     citation_snippet_chars?: number;
     /** 进 prompt 的检索片段总量预算（token，默认 6000；见配置档案「聊天设置」） */
     prompt_total_max_tokens?: number;
+    /** 聊天识图的读图提示词（空串 = 跟随全局/内置默认）。部门可覆盖：
+     *  GET 返回合并值（本部门设过就是本部门的），提交空串 = 取消本部门覆盖 */
+    image_prompt?: string;
   };
   /** Agentic 检索增强（默认关闭；分档：分数 ≥ recheck 直接答，< abstain 拒答） */
   agentic?: {

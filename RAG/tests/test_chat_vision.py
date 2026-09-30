@@ -19,7 +19,8 @@ from __future__ import annotations
 import base64
 import json
 
-from conftest import create_kb, extract_session_id
+from conftest import create_department_and_admin, create_kb, create_user, \
+    extract_session_id
 
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
@@ -307,3 +308,225 @@ class TestPersistAndCleanup:
         assert resp.status_code == 200, resp.text
         assert client.get(url, headers=admin_headers).status_code == 404, \
             "会话删除后图片应一并清理"
+
+
+# ==================== 识图配置（模型选择 + 读图提示词） ====================
+
+def _activate_profile(client, admin_headers, **sections) -> str:
+    """建一个新档案并激活（sections 透传，如 chat={"image_prompt": "..."}）
+
+    改配置走**真实接口**而非 monkeypatch 配置对象：这样连"schema 注册 →
+    保存 → 激活 → get_active_config 生效"整条链路一起验证。只 patch 的话，
+    schema 里漏注册字段（配置存不进去）这类错误测不出来。
+    """
+    resp = client.post("/api/settings/profiles",
+                       json={"name": "识图配置测试", **sections},
+                       headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    pid = resp.json()["id"]
+    resp = client.post(f"/api/settings/profiles/{pid}/activate",
+                       headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    return pid
+
+
+def _vlm_prompt(st) -> str:
+    """伪视觉客户端实际收到的提示词文本（第一张图那次调用）"""
+    sent = st.clients[0].calls[0]["messages"]
+    return sent[0]["content"][0]["text"]
+
+
+def _vision_entry(name: str, model: str = "") -> dict:
+    """构造一个 vision 段模型条目（resolve_chat_vision 按 name 匹配）"""
+    return {"name": name, "base_url": f"http://{name}/v1",
+            "api_key": "k", "model": model or name, "timeout": 30}
+
+
+class TestVisionPromptConfigurable:
+    """读图提示词可配（chat.image_prompt；空 = 内置默认）"""
+
+    def test_custom_prompt_reaches_vlm(self, client, admin_headers,
+                                       mock_embedding, mock_llm, fake_vision,
+                                       monkeypatch):
+        """★ 配了自定义提示词 → 发给 VLM 的就是它（此前硬编码改不了）"""
+        st = fake_vision()
+        _activate_profile(client, admin_headers,
+                          chat={"image_prompt": "只认报错码，不描述画面。"})
+        kb = create_kb(client)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, admin_headers)
+        resp = _ask(client, kb["id"], admin_headers, "看图", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "只认报错码" in text
+        assert "逐字抄录图中所有文字" not in text, \
+            "自定义生效后不该再叠加内置默认（否则用户改了也没用）"
+
+    def test_max_chars_placeholder_replaced(self, client, admin_headers,
+                                            mock_embedding, mock_llm,
+                                            fake_vision, monkeypatch):
+        """{max_chars} 替换为 image_desc_max_chars 的实际值"""
+        st = fake_vision()
+        _activate_profile(client, admin_headers, chat={
+            "image_prompt": "描述控制在 {max_chars} 字内。",
+            "image_desc_max_chars": 1500,
+        })
+        kb = create_kb(client)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, admin_headers)
+        resp = _ask(client, kb["id"], admin_headers, "看图", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "1500" in text, "占位符应替换为配置的描述上限"
+        assert "{max_chars}" not in text, "占位符本身不该原样发给模型"
+
+    def test_other_braces_intact(self, client, admin_headers, mock_embedding,
+                                 mock_llm, fake_vision, monkeypatch):
+        """提示词里的其他花括号原样保留（只 replace 一个占位符）
+
+        防回归：若改用 str.format，用户写的 JSON 示例 `{"型号": "..."}`
+        会因未知占位符直接抛 KeyError，整轮识图挂掉。
+        """
+        st = fake_vision()
+        _activate_profile(client, admin_headers, chat={
+            "image_prompt": '按 {"型号": "...", "报错": "..."} 的 JSON 输出。'})
+        kb = create_kb(client)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, admin_headers)
+        resp = _ask(client, kb["id"], admin_headers, "看图", [key])
+        assert resp.status_code == 200, resp.text
+        assert '{"型号"' in _vlm_prompt(st), "用户提示词里的花括号必须原样保留"
+
+    def test_default_prompt_when_unset(self, client, admin_headers,
+                                       mock_embedding, mock_llm, fake_vision,
+                                       monkeypatch):
+        """没配提示词 → 用内置默认（老档案行为逐字节不变）"""
+        st = fake_vision()
+        kb = create_kb(client)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, admin_headers)
+        resp = _ask(client, kb["id"], admin_headers, "看图", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "逐字抄录图中所有文字" in text, "空配置应回退内置默认提示词"
+        assert "800" in text, "内置默认里的 {max_chars} 同样要替换"
+
+
+class TestChatVisionModelResolve:
+    """识图模型三级优先：chat.image_model → image_summary.model → vision 第一个
+
+    直接测解析函数而非走 HTTP：`fake_vision` 会把 resolve_chat_vision 整个
+    换掉（否则每个用例都要真连 VLM），优先级逻辑就测不到了。
+    db/dept_id 传 None——本组只验"全局档案"这一层，部门层由 merge 覆盖。
+    """
+
+    def _resolve(self):
+        import asyncio
+        from backend.services.image_summary import resolve_chat_vision
+        return asyncio.run(resolve_chat_vision(None, None))
+
+    def test_specified_model_wins(self, client, admin_headers):
+        """① 指定了 image_model → 用它（与文档入库的图片摘要解耦）"""
+        _activate_profile(client, admin_headers,
+                          vision={"models": [_vision_entry("vl-a"),
+                                             _vision_entry("vl-b")],
+                                  "active": 0},
+                          chat={"image_model": "vl-b"})
+        assert self._resolve().name == "vl-b"
+
+    def test_falls_back_to_image_summary_model(self, client, admin_headers):
+        """② 没指定 → 沿用「图片摘要」选的模型（老档案行为不变）"""
+        _activate_profile(client, admin_headers,
+                          vision={"models": [_vision_entry("vl-a"),
+                                             _vision_entry("vl-b")],
+                                  "active": 0},
+                          image_summary={"model": "vl-b"})
+        assert self._resolve().name == "vl-b"
+
+    def test_falls_back_to_first(self, client, admin_headers):
+        """③ 前两级都没指定 → vision 段第一个"""
+        _activate_profile(client, admin_headers,
+                          vision={"models": [_vision_entry("vl-a"),
+                                             _vision_entry("vl-b")],
+                                  "active": 0})
+        assert self._resolve().name == "vl-a"
+
+    def test_deleted_model_falls_back(self, client, admin_headers):
+        """指定的模型名被超管删掉 → 回退默认，不让识图直接不可用"""
+        _activate_profile(client, admin_headers,
+                          vision={"models": [_vision_entry("vl-a")],
+                                  "active": 0},
+                          chat={"image_model": "已经被删掉的模型"})
+        assert self._resolve().name == "vl-a"
+
+    def test_no_models_returns_none(self, client, admin_headers):
+        """vision 段为空 → None（调用方据此下发 vision_error）"""
+        _activate_profile(client, admin_headers, vision={"models": [],
+                                                         "active": 0})
+        assert self._resolve() is None
+
+
+class TestDepartmentVisionPrompt:
+    """部门覆盖读图提示词（端到端）：白名单 → 保存 → 部门成员发图实际生效
+
+    覆盖"schema 注册 → 白名单 → chat_payload 带出 → merge 合并 → 读图用上"
+    整条链路。只测 merge 纯函数的话，chat_payload 漏字段那个坑测不出来
+    （它已经踩过两次：system_prompt_ref、citation_snippet_chars）。
+    """
+
+    def test_dept_prompt_applied_end_to_end(self, client, admin_headers,
+                                            mock_embedding, mock_llm,
+                                            fake_vision, monkeypatch):
+        """★ 部门配了提示词 → 本部门成员发图走部门的（不是全局的）"""
+        st = fake_vision()
+        # 全局也配一个：断言必须能区分"部门生效"与"恰好全局也是这个"
+        _activate_profile(client, admin_headers,
+                          chat={"image_prompt": "全局读图提示词"})
+        dept_id, dept_admin_hdrs = create_department_and_admin(
+            client, admin_headers, "识图部", "vision_dept_admin",
+            "pass123456", "识图主管")
+        user_hdrs = create_user(client, admin_headers, dept_id,
+                                "vision_member")
+        resp = client.post("/api/settings/chat",
+                           json={"chat": {"image_prompt": "部门读图提示词"}},
+                           headers=dept_admin_hdrs)
+        assert resp.status_code == 200, resp.text
+
+        kb = create_kb(client, "识图部知识库", department_id=dept_id)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, user_hdrs)
+        resp = _ask(client, kb["id"], user_hdrs, "看图", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "部门读图提示词" in text, "部门覆盖应生效"
+        assert "全局读图提示词" not in text
+
+    def test_dept_empty_prompt_follows_global(self, client, admin_headers,
+                                              mock_embedding, mock_llm,
+                                              fake_vision, monkeypatch):
+        """部门没配（留空）→ 跟随全局；部门管理员清空也回到跟随全局"""
+        st = fake_vision()
+        _activate_profile(client, admin_headers,
+                          chat={"image_prompt": "全局读图提示词"})
+        dept_id, dept_admin_hdrs = create_department_and_admin(
+            client, admin_headers, "留空部", "vision_empty_admin",
+            "pass123456", "留空主管")
+        user_hdrs = create_user(client, admin_headers, dept_id,
+                                "vision_empty_user")
+        # 先配一个再清空：验证"清空能回到跟随"（不是设过就锁死）
+        client.post("/api/settings/chat",
+                    json={"chat": {"image_prompt": "临时提示词"}},
+                    headers=dept_admin_hdrs)
+        resp = client.post("/api/settings/chat",
+                           json={"chat": {"image_prompt": ""}},
+                           headers=dept_admin_hdrs)
+        assert resp.status_code == 200, resp.text
+
+        kb = create_kb(client, "留空部知识库", department_id=dept_id)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, user_hdrs)
+        resp = _ask(client, kb["id"], user_hdrs, "看图", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "全局读图提示词" in text, "部门留空应回退全局"
+        assert "临时提示词" not in text

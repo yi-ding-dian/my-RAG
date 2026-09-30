@@ -32,7 +32,10 @@ GLOBAL = {
              "system_prompt_ref": "",
              # 引用摘要窗口大小：同一个坑（曾经漏在 chat_payload 外，
              # 导致前端读不到该配置、永远用兜底 600）
-             "citation_snippet_chars": 600},
+             "citation_snippet_chars": 600,
+             # 聊天识图的读图提示词（空 = 用内置默认）。同一个坑第三次：
+             # chat_payload 是硬编码字段表，漏了它部门覆盖就永远拿不到
+             "image_prompt": ""},
     "retrieval": {"top_k": 5, "similarity_threshold": 0.0},
 }
 
@@ -84,6 +87,25 @@ class TestMergeChatConfig:
         # 未设置（None）→ 跟随全局默认 disabled
         merged2 = merge_chat_config(GLOBAL, {"chat": {"thinking_mode": None}})
         assert merged2["chat"]["thinking_mode"] == "disabled"
+
+    def test_image_prompt_override(self):
+        """部门覆盖识图提示词（白名单字段）；清空 → 跟随全局
+
+        与 system_prompt 同语义：部门写了就用部门的，留空/清空回到全局，
+        不能"设过一次就锁死"（否则超管改全局，该部门永远不跟随）。
+        """
+        merged = merge_chat_config(GLOBAL, {
+            "chat": {"image_prompt": "部门专属读图提示词"},
+        })
+        assert merged["chat"]["image_prompt"] == "部门专属读图提示词"
+        assert merged["chat"]["system_prompt"] == "全局提示词", "其余字段仍用全局"
+
+        global_with_prompt = {**GLOBAL, "chat": {
+            **GLOBAL["chat"], "image_prompt": "全局读图提示词"}}
+        merged2 = merge_chat_config(global_with_prompt,
+                                    {"chat": {"image_prompt": ""}})
+        assert merged2["chat"]["image_prompt"] == "全局读图提示词", \
+            "部门清空 → 跟随全局"
 
     def test_null_and_empty_values_do_not_override(self):
         """部门字段值为 None/空串 → 不覆盖（跟随全局）"""

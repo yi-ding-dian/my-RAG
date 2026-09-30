@@ -69,6 +69,8 @@ interface DeptChatValues {
   chat_kg_enhance: boolean;
   chat_query_rewrite: boolean;
   chat_query_rewrite_rounds: number;
+  /** 聊天识图的读图提示词（空 = 跟随超管在配置档案里设的全局默认） */
+  chat_image_prompt: string;
 }
 
 /** 部门检索 / Agentic 表单字段 */
@@ -215,6 +217,10 @@ const DeptConfig: React.FC = () => {
         chat_kg_enhance: chat?.kg_enhance ?? true,
         chat_query_rewrite: chat?.query_rewrite ?? true,
         chat_query_rewrite_rounds: chat?.query_rewrite_rounds ?? 3,
+        // 聊天识图提示词：显示的是「本部门覆盖值或全局值」的合并值
+        //（与同页 image_summary 的 prompt 同口径：管理员看到的就是当前生效值；
+        //  清空后保存 = 取消本部门覆盖，回到跟随全局）
+        chat_image_prompt: chat?.image_prompt ?? '',
       });
       const retr = res.data.retrieval;
       const agentic = res.data.agentic;
@@ -311,6 +317,8 @@ const DeptConfig: React.FC = () => {
           kg_enhance: vals.chat_kg_enhance,
           query_rewrite: vals.chat_query_rewrite,
           query_rewrite_rounds: vals.chat_query_rewrite_rounds,
+          // 聊天识图提示词（部门可覆盖）：空串 = 取消本部门覆盖 → 跟随全局
+          image_prompt: vals.chat_image_prompt ?? '',
         },
       });
       message.success('部门对话配置已保存，对本部门成员即时生效');
@@ -599,6 +607,17 @@ const DeptConfig: React.FC = () => {
               </Form.Item>
             </Col>
           </Row>
+          {/* 聊天识图提示词（部门可覆盖，后端 whitelist chat.image_prompt）：
+              各部门的图差别大（财务报表 / 运维报错截图 / 人事证照），一份
+              全局提示词不可能都对，故允许本部门定制 */}
+          <Form.Item
+            name="chat_image_prompt"
+            label="聊天识图提示词"
+            extra="员工在聊天里发图时，用这段提示词让视觉模型读图。全部删空 = 跟随超管的全局设置；填了则本部门不再跟随全局。支持 {max_chars} 占位符（运行时替换为全局的「描述长度上限」），建议保留。"
+          >
+            <TextArea rows={5}
+              placeholder="留空 = 跟随超管的全局设置；要按本部门的图片类型定制时再填…" />
+          </Form.Item>
         </Form>
       ),
     },

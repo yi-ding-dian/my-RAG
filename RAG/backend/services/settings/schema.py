@@ -402,6 +402,18 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
             # condition 用 not_none 而非默认的 truthy：image_enabled=False 是
             # 合法配置（用户主动关闭识图），truthy 会把它当"未设置"丢掉
             "image_enabled": {"condition": "not_none", "fill_missing": True},
+            # 识图用哪个模型（值 = vision 段某条目的 name；空 = 跟随「图片摘要」
+            # 选的模型，见 config.ChatConfig.image_model）。**不给部门覆盖**：
+            # 模型涉及连接信息与密钥，与张数/大小同属资源约束，统一由超管定。
+            # on_null=restore：超管清空该字段 → 回到"跟随图片摘要"的默认行为
+            "image_model": {"condition": "not_none", "on_null": "restore",
+                            "fill_missing": True},
+            # 读图提示词（空 = 内置默认；支持 {max_chars} 占位符）。**部门可
+            # 覆盖**——各部门的图差别大（财务报表/运维报错截图/人事证照），
+            # 一份提示词不可能都对；部门留空 = 跟随全局（merge_chat_config
+            # 对空串跳过，与 system_prompt 同语义）
+            "image_prompt": {"condition": "not_none", "on_null": "restore",
+                             "whitelist": True, "fill_missing": True},
             "image_max_count": {"condition": "not_none", "fill_missing": True,
                                 "range": (1, 20)},
             "image_max_mb": {"condition": "not_none", "fill_missing": True,

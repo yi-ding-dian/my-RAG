@@ -32,7 +32,8 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
-from backend.config import ImageSummaryConfig, VisionModelConfig
+from backend.config import (ImageSummaryConfig, VisionModelConfig,
+                            get_active_config)
 from backend.services.llm_client import (LLMRequestError, LLMTimeoutError,
                                          get_llm_client, llm_completion)
 
@@ -325,6 +326,44 @@ def effective_prompt(cfg: ImageSummaryConfig,
     return default_prompt(cfg.options, want), "default"
 
 
+def _vision_models() -> List[dict]:
+    """活跃档案 vision 段的模型条目（过滤脏数据：非 dict 的一律丢弃）
+
+    **超管配的模型池**——部门只选"用哪一个"（按 name 匹配），看不到也改不了
+    连接信息与密钥。聊天识图与图片摘要共用这一个池子。
+    """
+    from backend.services.settings.service import get_settings_service
+
+    profile = get_settings_service().get_active() or {}
+    models = ((profile.get("vision") or {}).get("models")) or []
+    return [m for m in models if isinstance(m, dict)]
+
+
+def _pick_entry(models: List[dict], want: str) -> dict:
+    """按名字挑条目；没指定（空串）/ 指定的已被超管删掉 → 列表第一个
+
+    "选中的被删掉就回退第一个"与 LLM 段 active 的语义一致：管理员的删除
+    动作不该让功能直接不可用，回退比报错更符合预期。
+    """
+    entry = next((m for m in models if (m.get("name") or "") == want),
+                 None) if want else None
+    return entry if entry is not None else models[0]
+
+
+def _model_cfg(entry: dict) -> Optional[VisionModelConfig]:
+    """由 vision 段条目构造模型配置；条目残缺（缺地址/模型名）→ None"""
+    model_cfg = VisionModelConfig(
+        name=entry.get("name") or "",
+        base_url=entry.get("base_url") or "",
+        api_key=entry.get("api_key") or "",
+        model=entry.get("model") or "",
+        timeout=float(entry.get("timeout") or 60),
+    )
+    if not model_cfg.base_url or not model_cfg.model:
+        return None  # 条目残缺（地址/模型名没填）→ 视为未配置
+    return model_cfg
+
+
 async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     """解析生效的图片摘要配置（部门覆盖 → 全局）；不可用 → None
 
@@ -337,32 +376,41 @@ async def resolve_config(db, dept_id: Optional[str]) -> Optional[dict]:
     任一环节缺失（没有模型列表 / 模型字段不全）→ None，调用方据此跳过生成、
     或在前端预检处提示"请管理员先配置图片解析模型"。
     """
-    from backend.services.settings.service import get_settings_service
-
-    profile = get_settings_service().get_active() or {}
-    models = ((profile.get("vision") or {}).get("models")) or []
-    models = [m for m in models if isinstance(m, dict)]
+    models = _vision_models()
     if not models:
         return None
 
     # 部门配置覆盖全局档案的 image_summary 段（提示词/格式/上限都走这条链）
     summary = await resolve_summary_cfg(db, dept_id)
-    want = (summary.model or "").strip()
-    entry = next((m for m in models if (m.get("name") or "") == want),
-                 None) if want else None
-    if entry is None:
-        entry = models[0]  # 未选 / 选中的已不存在 → 第一个
-
-    model_cfg = VisionModelConfig(
-        name=entry.get("name") or "",
-        base_url=entry.get("base_url") or "",
-        api_key=entry.get("api_key") or "",
-        model=entry.get("model") or "",
-        timeout=float(entry.get("timeout") or 60),
-    )
-    if not model_cfg.base_url or not model_cfg.model:
-        return None  # 条目残缺（地址/模型名没填）→ 视为未配置
+    model_cfg = _model_cfg(_pick_entry(models, (summary.model or "").strip()))
+    if model_cfg is None:
+        return None
     return {"model": model_cfg, "summary": summary}
+
+
+async def resolve_chat_vision(db, dept_id: Optional[str]
+                              ) -> Optional[VisionModelConfig]:
+    """聊天识图用的视觉模型（三级优先）；不可用 → None
+
+    1. `chat.image_model` —— 超管在「设置 → 聊天设置 → 聊天识图」指定的
+       条目名。填了就与文档入库的图片摘要**解耦**：入库要跑几十上百张图、
+       求快求省，聊天识图是用户发完图实时等着的、求准，两者要求本就不同；
+    2. `image_summary.model` —— 部门「图片摘要」选的那个（部门覆盖 → 全局）。
+       第 1 级为空时走这里，**保证旧档案行为逐字节不变**（升级前大家用的
+       就是这一个）；
+    3. vision 段第一个 —— 前两级都没指定，或指定的名字已被超管删掉。
+
+    与 resolve_config 分开的原因：那条链还要带出 ImageSummaryConfig（提示词/
+    格式/上限，只有入库摘要用得上），且第 1 级优先是聊天识图独有的。
+    """
+    models = _vision_models()
+    if not models:
+        return None
+    want = (get_active_config().chat.image_model or "").strip()
+    if not want:
+        summary = await resolve_summary_cfg(db, dept_id)
+        want = (summary.model or "").strip()
+    return _model_cfg(_pick_entry(models, want))
 
 
 async def check_ready(db, dept_id: Optional[str]) -> Tuple[bool, str]:
