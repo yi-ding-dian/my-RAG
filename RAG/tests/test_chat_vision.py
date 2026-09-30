@@ -112,7 +112,8 @@ class TestVisionHappyPath:
 
         blob = _prompt_blob(resp.text)
         assert "E-1042" in blob, "描述应注入 messages"
-        assert "【用户上传的图片内容】" in blob, "注入块要有明确标识"
+        assert "【用户上传的图片内容" in blob, "注入块要有明确标识"
+        assert "不作为回答依据" in blob, "注入块要声明它不是回答依据（否则模型漏标 [n]）"
 
     def test_image_only_fills_default_question(self, client, admin_headers,
                                                mock_embedding, mock_llm,
@@ -137,7 +138,7 @@ class TestVisionHappyPath:
         resp = _ask(client, kb["id"], admin_headers, "普通问题", [])
         assert resp.status_code == 200
         assert fake.queries == ["普通问题"]
-        assert "【用户上传的图片内容】" not in _prompt_blob(resp.text)
+        assert "【用户上传的图片内容" not in _prompt_blob(resp.text)
 
     def test_long_desc_truncated(self, client, admin_headers, mock_embedding,
                                  mock_llm, fake_vision, monkeypatch):
