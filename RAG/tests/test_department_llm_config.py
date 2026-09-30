@@ -1,105 +1,146 @@
-"""部门级 LLM 配置测试：merge_department_llm 合并规则 + chat 组装部门 LLM 生效 + 接口脱敏与角色分流
+"""部门级 LLM 配置测试：按条目选 + 微调 / chat 组装生效 / 接口白名单与角色分流
+
+**部门的 llm 段存的是"条目名"**（超管在「LLM 模型管理」里配的 name），不是模型名
+——部门只"选"，连接信息与密钥不下放。原先让部门自由填 8 个字段，想换个模型就得
+整份抄一遍，抄漏一个就静默漂移（实测软件部漏了 thinking_control，用着思考模型
+apex-quality 却继承了激活条目的 'none'，思考根本没关）。改成按条目取整份配置后，
+这类漂移从根上消失——本文件用 `test_no_leak_from_active_entry` 专门锁住它。
 
 覆盖：
-- merge_department_llm 纯函数：字段覆盖 / 空串跟随全局（api_key 空串=故意
-  清空用全局）/ None 跟随全局 / 未设置=纯全局 / 非 dict 容错
+- merge_department_llm 纯函数：按名取整份条目 / 名字失效回退全局 / 温度与
+  Token 微调 / 未选=纯全局 / 脏数据容错 / 全局缺字段补 None / 条目名不进配置
 - _merge_legacy_config 纯函数：旧 chat_config 列回退（读取兼容，不搬迁数据）
-- chat 组装集成：部门 llm（base_url/model/api_key/温度）生效于部门成员；
-  部门未设置 → 全局；超管不受部门 llm 影响
-- 接口：dept_admin POST 写本部门 llm（全局 profile 不变）/ GET 合并 +
-  api_key 脱敏 / POST 传 "****" 保留原值 / 空串跟随全局 / 清除字段跟随
-  全局 / super_admin 写全局 / user 读 200、写 403
+- chat 组装集成：部门选的条目生效于部门成员；未选 → 全局；超管不受影响
+- 接口：dept_admin 选条目（全局 profile 不变）/ llm_options 下发但**不含
+  连接信息与密钥** / 白名单外字段 400 / user 读 200 写 403
 """
 from __future__ import annotations
 
+import json
+
 from backend.config import get_active_config
 from backend.services.department_service import _merge_legacy_config
-from backend.services.settings.service import mask_api_key, \
-    merge_department_llm
+from backend.services.settings.service import merge_department_llm
 from conftest import create_department_and_admin, create_kb, create_user, \
     upload_and_ingest
 
 # ==================== 合并函数纯函数单测 ====================
 
-GLOBAL_LLM = {
-    "base_url": "http://global.example/v1",
-    "api_key": "sk-global-1234567890",
-    "model": "global-model",
-    "temperature": 0.7,
-    # Top P：模型级采样参数（LLMConfig 默认 0.9），随模型走、部门可覆盖
-    "top_p": 0.9,
-    "max_tokens": 4096,
-    "timeout": 60.0,
-    # 思考控制方式跟模型走：部门覆盖模型时也要能一并覆盖它
-    "thinking_control": "api",
-}
+# 全局模型列表里的两个条目：字段刻意配得**处处不同**，任何"从激活条目继承"
+# 都会被抓出来（甲是激活的，乙是部门要选的）
+MODEL_A = {"name": "模型甲", "base_url": "http://a.example/v1",
+           "api_key": "sk-entry-a", "model": "qwen-a", "temperature": 0.7,
+           "max_tokens": 4096, "timeout": 60.0, "top_p": 0.9,
+           "thinking_control": "api"}
+MODEL_B = {"name": "模型乙", "base_url": "http://b.example/v1",
+           "api_key": "sk-entry-b", "model": "qwen-b", "temperature": 0.3,
+           "max_tokens": 8192, "timeout": 120.0, "top_p": 0.8,
+           "thinking_control": "prefill"}
+GLOBAL_MODELS = [MODEL_A, MODEL_B]
+# 全局激活条目（甲）——不带 name（它是显示名，不进 LLM 配置）
+GLOBAL_LLM = {k: v for k, v in MODEL_A.items() if k != "name"}
+
+_ENTRY_FIELDS = ("base_url", "api_key", "model", "temperature", "max_tokens",
+                 "timeout", "top_p", "thinking_control")
 
 
 class TestMergeDepartmentLlm:
-    """merge_department_llm：字段级覆盖（部门只覆盖它显式设置的字段）"""
+    """merge_department_llm：按条目名取整份配置（不再逐字段覆盖）"""
+
+    def test_picks_whole_entry_by_name(self):
+        """★ 部门选了乙 → 拿到乙的**完整**配置"""
+        merged = merge_department_llm(GLOBAL_LLM, {"model": "模型乙"},
+                                      GLOBAL_MODELS)
+        for k in _ENTRY_FIELDS:
+            assert merged[k] == MODEL_B[k], f"{k} 应来自选中的条目乙"
+
+    def test_no_leak_from_active_entry(self):
+        """★ 回归：漏配的模型级参数不再从**激活条目**继承（原漂移 bug）
+
+        曾经的情形：部门手抄了 base_url/model/温度/Token/超时，但没抄
+        thinking_control 与 top_p——这两个就被激活条目（甲，api/0.9）填了，
+        而部门用的其实是乙（prefill/0.8）。思考控制错了，模型性能直接受影响。
+        """
+        merged = merge_department_llm(GLOBAL_LLM, {"model": "模型乙"},
+                                      GLOBAL_MODELS)
+        assert merged["thinking_control"] == "prefill", \
+            "乙是思考模型要 prefill，绝不能继承激活条目的 'api'"
+        assert merged["top_p"] == 0.8, "也不能继承激活条目的 0.9"
+
+    def test_same_as_entry_even_when_dept_lists_some_fields(self):
+        """部门只写条目名时，结果就等于那条目本身（不多不少）"""
+        merged = merge_department_llm(GLOBAL_LLM, {"model": "模型乙"},
+                                      GLOBAL_MODELS)
+        assert merged == {k: v for k, v in MODEL_B.items() if k != "name"}
+
+    def test_tunable_fields_override(self):
+        """温度 / 最大 Token 可在选中条目之上微调（其余仍来自条目）"""
+        merged = merge_department_llm(
+            GLOBAL_LLM,
+            {"model": "模型乙", "temperature": 0.05, "max_tokens": 256},
+            GLOBAL_MODELS)
+        assert merged["temperature"] == 0.05
+        assert merged["max_tokens"] == 256
+        assert merged["base_url"] == MODEL_B["base_url"], "其余不跟着变"
+        assert merged["thinking_control"] == "prefill"
+
+    def test_tunable_null_follows_entry(self):
+        """微调字段传 None/空串 → 跟随条目"""
+        merged = merge_department_llm(
+            GLOBAL_LLM, {"model": "模型乙", "temperature": None,
+                         "max_tokens": ""}, GLOBAL_MODELS)
+        assert merged["temperature"] == MODEL_B["temperature"]
+        assert merged["max_tokens"] == MODEL_B["max_tokens"]
+
+    def test_entry_name_not_leaked_into_config(self):
+        """条目名（显示名）只给部门看，不进 LLM 配置"""
+        merged = merge_department_llm(GLOBAL_LLM, {"model": "模型乙"},
+                                      GLOBAL_MODELS)
+        assert "name" not in merged
+
+    def test_deleted_entry_falls_back_to_global(self):
+        """★ 选的条目被超管删掉/改名 → 回退全局激活条目（不断服务）"""
+        merged = merge_department_llm(GLOBAL_LLM, {"model": "已被删掉的条目"},
+                                      GLOBAL_MODELS)
+        assert merged == dict(GLOBAL_LLM)
 
     def test_empty_dept_is_pure_global(self):
         """部门未设置（空 dict）→ 纯全局"""
-        assert merge_department_llm(GLOBAL_LLM, {}) == dict(GLOBAL_LLM)
+        assert merge_department_llm(GLOBAL_LLM, {}, GLOBAL_MODELS) == \
+            dict(GLOBAL_LLM)
 
-    def test_partial_override(self):
-        """部门只覆盖部分字段，其余用全局"""
-        merged = merge_department_llm(GLOBAL_LLM, {
-            "base_url": "http://dept.example/v1",
-            "api_key": "sk-dept-abcdefgh",
-            "model": "dept-model",
-            "temperature": 0.3,
-        })
-        assert merged["base_url"] == "http://dept.example/v1"
-        assert merged["api_key"] == "sk-dept-abcdefgh"
-        assert merged["model"] == "dept-model"
-        assert merged["temperature"] == 0.3
-        assert merged["max_tokens"] == 4096, "未设置字段用全局"
-        assert merged["timeout"] == 60.0
+    def test_empty_or_none_model_follows_global(self):
+        """model 空串/None → 跟随全局（清空选择 = 取消本部门覆盖）"""
+        assert merge_department_llm(GLOBAL_LLM, {"model": ""},
+                                    GLOBAL_MODELS) == dict(GLOBAL_LLM)
+        assert merge_department_llm(GLOBAL_LLM, {"model": None},
+                                    GLOBAL_MODELS) == dict(GLOBAL_LLM)
 
-    def test_empty_string_follows_global(self):
-        """空串字段（含 api_key 空串=故意清空用全局）→ 跟随全局"""
-        merged = merge_department_llm(GLOBAL_LLM, {
-            "base_url": "", "api_key": "", "model": "",
-        })
-        assert merged == dict(GLOBAL_LLM)
-
-    def test_none_follows_global(self):
-        """None 字段 → 跟随全局"""
-        merged = merge_department_llm(GLOBAL_LLM, {
-            "base_url": None, "temperature": None, "max_tokens": None,
-            "timeout": None,
-        })
-        assert merged == dict(GLOBAL_LLM)
+    def test_no_models_list_falls_back(self):
+        """调用方没给模型列表 → 安全回退全局（不抛错）"""
+        assert merge_department_llm(GLOBAL_LLM, {"model": "模型乙"}) == \
+            dict(GLOBAL_LLM)
+        assert merge_department_llm(GLOBAL_LLM, {"model": "模型乙"}, []) == \
+            dict(GLOBAL_LLM)
 
     def test_non_dict_dept_tolerated(self):
         """部门配置脏数据（非 dict）→ 容错为纯全局"""
-        assert merge_department_llm(GLOBAL_LLM, "脏数据") == dict(GLOBAL_LLM)
-        assert merge_department_llm(GLOBAL_LLM, None) == dict(GLOBAL_LLM)
+        assert merge_department_llm(GLOBAL_LLM, "脏数据", GLOBAL_MODELS) == \
+            dict(GLOBAL_LLM)
+        assert merge_department_llm(GLOBAL_LLM, None, GLOBAL_MODELS) == \
+            dict(GLOBAL_LLM)
 
     def test_global_missing_field_kept_none(self):
         """全局缺字段（异常数据防御）→ 保持 None，不报错"""
-        merged = merge_department_llm({"base_url": "http://x/v1"}, {})
+        merged = merge_department_llm({"base_url": "http://x/v1"}, {},
+                                      GLOBAL_MODELS)
         assert merged["base_url"] == "http://x/v1"
         assert merged["api_key"] is None
-        assert merged["timeout"] is None
 
-    def test_dept_overrides_thinking_control(self):
-        """部门可覆盖 thinking_control（跟模型走：部门换了模型，思考控制
-        方式也要能一并换，否则会沿用全局模型的设置）"""
-        merged = merge_department_llm(GLOBAL_LLM, {
-            "model": "dept-model", "thinking_control": "prefill",
-        })
-        assert merged["model"] == "dept-model"
-        assert merged["thinking_control"] == "prefill"
-        assert merged["base_url"] == "http://global.example/v1", \
-            "未覆盖字段仍用全局"
-
-    def test_non_whitelist_global_field_passthrough(self):
-        """全局侧的非白名单字段原样透传（不被白名单过滤悄悄丢掉——
-        thinking_control 曾因只认白名单而在合并时丢失，下游退回默认行为）"""
+    def test_global_extra_field_passthrough(self):
+        """全局侧的非白名单字段原样透传（不被合并悄悄丢掉）"""
         merged = merge_department_llm(
-            {**GLOBAL_LLM, "custom_field": "keep-me"}, {})
+            {**GLOBAL_LLM, "custom_field": "keep-me"}, {}, GLOBAL_MODELS)
         assert merged["custom_field"] == "keep-me"
 
 
@@ -125,13 +166,13 @@ class TestMergeLegacyConfig:
     def test_llm_only_from_new(self):
         """llm 段只来自新列（旧列无 llm）；chat 段照常回退"""
         merged = _merge_legacy_config(
-            {"llm": {"model": "dept-model"}},
+            {"llm": {"model": "条目甲"}},
             {"chat": {"system_prompt": "旧提示词"}})
-        assert merged["llm"]["model"] == "dept-model"
+        assert merged["llm"]["model"] == "条目甲"
         assert merged["chat"]["system_prompt"] == "旧提示词"
 
 
-# ==================== chat 组装集成（部门 LLM 全链路生效） ====================
+# ==================== chat 组装集成（部门选中条目全链路生效） ====================
 
 def _dept_env(client, admin_headers):
     """建部门 + 部门管理员 + 部门普通用户 + 部门知识库（已入库）"""
@@ -144,19 +185,27 @@ def _dept_env(client, admin_headers):
     return dept_admin_hdrs, user_hdrs, kb
 
 
-class TestDeptLlmAssembly:
-    """部门成员聊天 → 用部门 LLM 配置；未设置/超管 → 全局（互不影响）"""
+def _set_global_models(client, admin_headers, models) -> None:
+    """把全局活跃档案的 llm 段设成给定条目列表（部门要从里面选）"""
+    pid = client.get("/api/settings/profiles/active",
+                     headers=admin_headers).json()["id"]
+    resp = client.put(f"/api/settings/profiles/{pid}",
+                      json={"llm": {"models": models, "active": 0}},
+                      headers=admin_headers)
+    assert resp.status_code == 200, resp.text
 
-    def test_dept_user_uses_dept_llm(self, client, admin_headers,
-                                     mock_embedding, mock_llm):
-        """部门成员流式问答：_get_client 收到合并后的部门 LLM 配置
-        （base_url/api_key/model/温度），请求参数用部门 model/温度"""
+
+class TestDeptLlmAssembly:
+    """部门成员聊天 → 用**选中条目**的配置；未选/超管 → 全局（互不影响）"""
+
+    def test_dept_user_uses_selected_entry(self, client, admin_headers,
+                                           mock_embedding, mock_llm):
+        """★ 部门成员流式问答：客户端拿到的是选中条目的完整配置"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
         dept_admin_hdrs, user_hdrs, kb = _dept_env(client, admin_headers)
         resp = client.post("/api/settings/chat", json={
-            "llm": {"base_url": "http://dept-llm.example/v1",
-                    "api_key": "sk-dept-llm-key",
-                    "model": "dept-qwen",
-                    "temperature": 0.25},
+            "llm": {"model": "模型乙"},
         }, headers=dept_admin_hdrs)
         assert resp.status_code == 200, resp.text
 
@@ -166,16 +215,31 @@ class TestDeptLlmAssembly:
         }, headers=user_hdrs)
         assert resp.status_code == 200 and "event: done" in resp.text
         inst = state.instances[0]
-        assert inst.llm_cfg["base_url"] == "http://dept-llm.example/v1", \
-            "部门 base_url 覆盖全局"
-        assert inst.llm_cfg["api_key"] == "sk-dept-llm-key", \
-            "部门 api_key 覆盖全局"
-        assert inst.llm_cfg["model"] == "dept-qwen"
-        assert inst.llm_cfg["temperature"] == 0.25
-        assert inst.last_kwargs["model"] == "dept-qwen", \
-            "请求 model 用部门值"
-        assert inst.last_kwargs["temperature"] == 0.25, \
-            "请求温度用部门 llm 值"
+        assert inst.llm_cfg["base_url"] == MODEL_B["base_url"]
+        assert inst.llm_cfg["api_key"] == MODEL_B["api_key"]
+        assert inst.llm_cfg["model"] == MODEL_B["model"]
+        assert inst.llm_cfg["thinking_control"] == "prefill", \
+            "模型级参数跟着条目走（原漂移 bug 的端到端回归）"
+        assert inst.last_kwargs["model"] == MODEL_B["model"], "请求 model 用条目值"
+        assert inst.last_kwargs["temperature"] == MODEL_B["temperature"]
+
+    def test_dept_tunable_applied(self, client, admin_headers, mock_embedding,
+                                  mock_llm):
+        """部门微调温度 → 请求参数用微调值，其余仍来自条目"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
+        dept_admin_hdrs, user_hdrs, kb = _dept_env(client, admin_headers)
+        client.post("/api/settings/chat", json={
+            "llm": {"model": "模型乙", "temperature": 0.11},
+        }, headers=dept_admin_hdrs)
+        state = mock_llm()
+        resp = client.post("/api/chat/stream", json={
+            "kb_id": kb["id"], "query": "Python 是什么？",
+        }, headers=user_hdrs)
+        assert resp.status_code == 200 and "event: done" in resp.text
+        inst = state.instances[0]
+        assert inst.last_kwargs["temperature"] == 0.11
+        assert inst.llm_cfg["model"] == MODEL_B["model"], "模型仍来自条目"
 
     def test_dept_unset_uses_global(self, client, admin_headers,
                                     mock_embedding, mock_llm):
@@ -194,112 +258,103 @@ class TestDeptLlmAssembly:
 
     def test_super_admin_still_uses_global(self, client, admin_headers,
                                            mock_embedding, mock_llm):
-        """部门 llm 存在时，超管聊天仍用全局 LLM（互不干扰）"""
+        """部门选了条目时，超管聊天仍用全局（互不干扰）"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
         dept_admin_hdrs, _, kb = _dept_env(client, admin_headers)
-        client.post("/api/settings/chat", json={
-            "llm": {"model": "dept-qwen", "base_url": "http://dept-llm/v1"},
-        }, headers=dept_admin_hdrs)
+        client.post("/api/settings/chat", json={"llm": {"model": "模型乙"}},
+                    headers=dept_admin_hdrs)
         state = mock_llm()
         resp = client.post("/api/chat/stream", json={
             "kb_id": kb["id"], "query": "Python 是什么？",
         }, headers=admin_headers)
         assert resp.status_code == 200 and "event: done" in resp.text
-        cfg = get_active_config().llm
-        assert state.instances[0].llm_cfg["model"] == cfg.model, \
-            "超管不应使用部门 model"
+        assert state.instances[0].llm_cfg["model"] == \
+            get_active_config().llm.model, "超管不应使用部门选的条目"
 
 
-# ==================== 接口角色分流 + 脱敏语义 ====================
-
-DEPT_LLM = {"base_url": "http://dept-llm.example/v1",
-            "api_key": "sk-dept-llm-key",
-            "model": "dept-qwen",
-            "temperature": 0.25}
-
+# ==================== 接口：白名单 + 角色分流 + llm_options 下发 ====================
 
 class TestDeptLlmApi:
-    """GET 返回合并 + 脱敏；POST 按角色分流"""
+    """GET 下发 llm_options；POST 按角色分流；白名单收紧到条目名 + 两项微调"""
 
-    def test_dept_admin_saves_llm_global_untouched(self, client,
-                                                   admin_headers,
-                                                   dept_admin_headers,
-                                                   user_headers):
-        """dept_admin POST llm → 写本部门（全局 profile 不变），响应/GET 合并"""
+    def test_dept_admin_selects_entry_global_untouched(
+            self, client, admin_headers, dept_admin_headers, user_headers):
+        """★ dept_admin 选条目 → 只写本部门，全局 profile 不动"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
         global_model = get_active_config().llm.model
-        resp = client.post("/api/settings/chat", json={
-            "llm": dict(DEPT_LLM),
-        }, headers=dept_admin_headers)
+        resp = client.post("/api/settings/chat", json={"llm": {"model": "模型乙"}},
+                           headers=dept_admin_headers)
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["llm"]["model"] == "dept-qwen", "响应 llm 为部门合并值"
-        assert data["llm"]["api_key"] != "sk-dept-llm-key", "绝不返回明文"
-        assert "****" in data["llm"]["api_key"], "api_key 已脱敏"
-        assert data["dept"]["llm"]["model"] == "dept-qwen"
-        assert "****" in data["dept"]["llm"]["api_key"]
-        # 全局 profile 不被部门配置触碰
-        assert get_active_config().llm.model == global_model
-        # 超管视角 GET → llm 仍全局（dept=None）
+        assert data["dept"]["llm"]["model"] == "模型乙", "部门存的是条目名"
+        assert data["llm"]["model"] == MODEL_B["model"], "合并值是条目里的模型名"
+        assert get_active_config().llm.model == global_model, "全局未被触碰"
+        # 超管视角 GET → 仍是全局（dept=None）
         gdata = client.get("/api/settings/chat", headers=admin_headers).json()
-        assert gdata["llm"]["model"] == global_model
         assert gdata["dept"] is None
-        # 同部门普通用户 GET → 部门合并值
+        # 同部门普通用户 GET → 合并值
         udata = client.get("/api/settings/chat", headers=user_headers).json()
-        assert udata["llm"]["model"] == "dept-qwen"
+        assert udata["llm"]["model"] == MODEL_B["model"]
 
-    def test_masked_api_key_keeps_original(self, client,
-                                           dept_admin_headers):
-        """POST api_key="****"（脱敏回传）→ 保留部门原值不覆盖"""
-        client.post("/api/settings/chat", json={
-            "llm": dict(DEPT_LLM),
-        }, headers=dept_admin_headers)
-        resp = client.post("/api/settings/chat", json={
-            "llm": {"api_key": "****", "model": "other-model"},
-        }, headers=dept_admin_headers)
-        assert resp.status_code == 200, resp.text
-        dept_llm = resp.json()["dept"]["llm"]
-        assert dept_llm["model"] == "other-model", "非密钥字段照常更新"
-        assert dept_llm["api_key"] == mask_api_key("sk-dept-llm-key"), \
-            "脱敏回传不覆盖原值"
-        # 明文新 key → 覆盖
-        client.post("/api/settings/chat", json={
-            "llm": {"api_key": "sk-new-key-12345"},
-        }, headers=dept_admin_headers)
+    def test_llm_options_downloaded_without_secrets(self, client,
+                                                    admin_headers,
+                                                    dept_admin_headers):
+        """★ 下发的 llm_options 只有名字与模型名——连接信息与密钥不下放"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
         data = client.get("/api/settings/chat",
                           headers=dept_admin_headers).json()
-        assert data["dept"]["llm"]["api_key"] == mask_api_key(
-            "sk-new-key-12345"), "明文新 key 已覆盖"
+        opts = data["llm_options"]
+        assert [o["name"] for o in opts] == ["模型甲", "模型乙"]
+        assert opts[0]["model"] == "qwen-a"
+        blob = json.dumps(opts, ensure_ascii=False)
+        assert "sk-entry-a" not in blob, "密钥绝不下放"
+        assert "http://a.example" not in blob, "连接地址不下放"
 
-    def test_empty_api_key_follows_global(self, client,
-                                          dept_admin_headers):
-        """api_key 空串 = 故意清空 → 移除部门 key，合并用全局"""
-        client.post("/api/settings/chat", json={
-            "llm": dict(DEPT_LLM),
-        }, headers=dept_admin_headers)
+    def test_connection_fields_rejected(self, client, admin_headers,
+                                        dept_admin_headers):
+        """★ 白名单已收紧：部门再提交 base_url/api_key/timeout → 400"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
+        for bad in ({"base_url": "http://evil.example/v1"},
+                    {"api_key": "sk-evil"},
+                    {"timeout": 5},
+                    {"thinking_control": "none"},
+                    {"top_p": 0.1}):
+            resp = client.post("/api/settings/chat",
+                               json={"llm": {**bad, "model": "模型乙"}},
+                               headers=dept_admin_headers)
+            assert resp.status_code == 400, \
+                f"{list(bad)} 应被白名单拒绝，实际 {resp.status_code}"
+
+    def test_clear_selection_follows_global(self, client, admin_headers,
+                                            dept_admin_headers, user_headers):
+        """清空选择 → 部门 llm 段移除（dept=None）→ 跟随全局"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
+        client.post("/api/settings/chat", json={"llm": {"model": "模型乙"}},
+                    headers=dept_admin_headers)
         resp = client.post("/api/settings/chat", json={
-            "llm": {"api_key": ""},
+            "llm": {"model": "", "temperature": None, "max_tokens": None},
         }, headers=dept_admin_headers)
         assert resp.status_code == 200, resp.text
-        assert resp.json()["dept"]["llm"].get("api_key") is None
-        assert resp.json()["llm"]["api_key"] == mask_api_key(
-            get_active_config().llm.api_key), "清空后跟随全局 key"
-
-    def test_clear_llm_fields_follows_global(self, client,
-                                             dept_admin_headers,
-                                             user_headers):
-        """llm 段全部字段清除 → 部门配置无 llm 段（dept=None，纯全局）"""
-        client.post("/api/settings/chat", json={
-            "llm": dict(DEPT_LLM),
-        }, headers=dept_admin_headers)
-        resp = client.post("/api/settings/chat", json={
-            "llm": {"base_url": "", "api_key": "", "model": "",
-                    "temperature": None, "max_tokens": None,
-                    "timeout": None},
-        }, headers=dept_admin_headers)
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["dept"] is None, "全部字段清除 → 部门配置置空"
-        cfg = get_active_config().llm
+        assert resp.json()["dept"] is None, "全部清空 → 部门配置置空"
         merged = client.get("/api/settings/chat", headers=user_headers).json()
-        assert merged["llm"]["model"] == cfg.model, "清除后跟随全局"
+        assert merged["llm"]["model"] == get_active_config().llm.model
+
+    def test_deleted_entry_falls_back_end_to_end(self, client, admin_headers,
+                                                 dept_admin_headers,
+                                                 user_headers):
+        """★ 部门选完条目后，超管把该条目删掉 → 该部门回退全局（不断服务）"""
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
+        client.post("/api/settings/chat", json={"llm": {"model": "模型乙"}},
+                    headers=dept_admin_headers)
+        _set_global_models(client, admin_headers, [dict(MODEL_A)])  # 删掉乙
+        merged = client.get("/api/settings/chat", headers=user_headers).json()
+        assert merged["llm"]["model"] == MODEL_A["model"], "回退到全局激活条目"
 
     def test_super_admin_saves_global_llm(self, client, admin_headers):
         """super_admin POST llm → 写全局活跃档案并即时生效"""
@@ -315,14 +370,15 @@ class TestDeptLlmApi:
     def test_user_read_merged_post_403(self, client, admin_headers,
                                        dept_admin_headers, user_headers):
         """user GET 读合并值；user POST llm → 404 伪装（配置仍为原值）"""
-        client.post("/api/settings/chat", json={
-            "llm": dict(DEPT_LLM),
-        }, headers=dept_admin_headers)
+        _set_global_models(client, admin_headers,
+                           [dict(MODEL_A), dict(MODEL_B)])
+        client.post("/api/settings/chat", json={"llm": {"model": "模型乙"}},
+                    headers=dept_admin_headers)
         data = client.get("/api/settings/chat", headers=user_headers).json()
-        assert data["llm"]["model"] == "dept-qwen", "普通成员读部门合并值"
+        assert data["llm"]["model"] == MODEL_B["model"], "普通成员读合并值"
         global_model = get_active_config().llm.model
-        resp = client.post("/api/settings/chat", json={
-            "llm": {"model": "evil-model"},
-        }, headers=user_headers)
+        resp = client.post("/api/settings/chat",
+                           json={"llm": {"model": "模型甲"}},
+                           headers=user_headers)
         assert resp.status_code == 404
         assert get_active_config().llm.model == global_model

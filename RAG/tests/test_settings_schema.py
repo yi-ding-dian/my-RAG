@@ -146,9 +146,10 @@ class TestWhitelistFromSchema:
             "image_prompt"}
         assert set(ss.CHAT_RETRIEVAL_FIELD_NAMES) == {
             "top_k", "similarity_threshold"}
+        # llm 段只开「条目名 + 温度/Token」：部门按条目**选**，不再逐字段抄
+        # 连接信息与密钥——抄漏一个就静默漂移（software 部漏过 thinking_control）
         assert set(ss.LLM_FIELD_NAMES) == {
-            "base_url", "api_key", "model", "temperature", "top_p",
-            "max_tokens", "timeout", "thinking_control"}
+            "model", "temperature", "max_tokens"}
         # 白名单字段必在 schema 且 whitelist=True（无手写漂移）
         for fname in ss.CHAT_FIELD_NAMES:
             assert SECTION_SCHEMA["chat"].fields[fname].whitelist
@@ -218,7 +219,7 @@ class TestCoerceBehavior:
                                "image_enabled": True,
                                "image_max_count": 3,
                                "image_max_mb": 5.0,
-                               "image_desc_max_chars": 800,
+                               "image_desc_max_chars": 200,
                                # 空串：识图模型未单独指定（跟随图片摘要）、
                                # 读图提示词未自定义（用内置默认）
                                "image_model": "",

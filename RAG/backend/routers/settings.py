@@ -69,6 +69,15 @@ CHAT_SECTIONS = frozenset(
     if any(f.whitelist for f in spec.fields.values()))
 
 
+def _model_options(models) -> list:
+    """模型条目列表 → 下发给部门的可选列表（**只有名字与模型名**）
+
+    连接信息与密钥不下放：部门只"选"用哪个，配置本身由超管维护。
+    """
+    return [{"name": m.get("name") or "", "model": m.get("model") or ""}
+            for m in (models or []) if isinstance(m, dict)]
+
+
 def _global_llm_dict() -> dict:
     """全局活跃 LLM 实际配置 → dict（含 timeout 等生效值，供合并展示）"""
     llm = get_active_config().llm
@@ -132,7 +141,9 @@ def _effective_chat_payload(profile: dict,
     dept_llm = dept_config.get("llm") if isinstance(dept_config, dict) else None
     if not isinstance(dept_llm, dict):
         dept_llm = {}
-    llm = _mask_llm(merge_department_llm(_global_llm_dict(), dept_llm))
+    llm = _mask_llm(merge_department_llm(
+        _global_llm_dict(), dept_llm,
+        (profile.get("llm") or {}).get("models") or []))
     if mask_base_url and llm.get("base_url"):
         # 普通用户视角：LLM 地址主机部分打码（保留协议与端口）
         llm = dict(llm)
@@ -162,15 +173,15 @@ def _effective_chat_payload(profile: dict,
         if v is None or v == "":
             continue
         img_summary[k] = v
-    # 图片解析模型可选列表：**只给名字与模型名**——部门只"选"用哪个，
-    # 连接信息与密钥不下放（脱敏边界与 llm 段一致）
-    vmodels = ((profile.get("vision") or {}).get("models")) or []
-    vision_options = [
-        {"name": m.get("name") or "", "model": m.get("model") or ""}
-        for m in vmodels if isinstance(m, dict)
-    ]
+    # 模型可选列表（llm / 图片解析）：**只给名字与模型名**——部门只"选"用哪个，
+    # 连接信息与密钥不下放。llm 段自本次起同此语义：原先部门自由填 8 个字段，
+    # 想换个模型就得整份抄一遍，抄漏一个就静默漂移（实测软件部漏了
+    # thinking_control，用着思考模型 apex-quality 却继承了激活条目的 'none'）
+    llm_options = _model_options((profile.get("llm") or {}).get("models"))
+    vision_options = _model_options((profile.get("vision") or {}).get("models"))
     return {**merged, "llm": llm, "dept": dept,
-            "image_summary": img_summary, "vision_options": vision_options,
+            "image_summary": img_summary,
+            "llm_options": llm_options, "vision_options": vision_options,
             # 提示词库条目：部门管理员可读（与 vision_options 同理，只给
             # 名称与正文，供部门配置里选一条给自己部门用）
             "prompt_options": list_prompt_items(),

@@ -223,9 +223,16 @@ class TestChatThinkingMode:
 
     @staticmethod
     def _set_llm(client, admin_headers, **llm_fields):
-        """设置全局激活模型的字段（base_url / thinking_control 等）"""
-        resp = client.post("/api/settings/chat", json={"llm": llm_fields},
-                           headers=admin_headers)
+        """设置全局激活模型的字段（base_url / thinking_control 等）
+
+        走**档案更新**接口，不走 `POST /api/settings/chat`：后者 llm 段的
+        白名单已收紧到「部门可提交」的 3 个字段（条目名 + 温度/Token），
+        超管改全局模型参数本来就是「系统配置」页（档案更新）的职责。
+        """
+        pid = client.get("/api/settings/profiles/active",
+                         headers=admin_headers).json()["id"]
+        resp = client.put(f"/api/settings/profiles/{pid}",
+                          json={"llm": llm_fields}, headers=admin_headers)
         assert resp.status_code == 200, resp.text
 
     def test_prefill_disabled_injects(self, client, mock_embedding,

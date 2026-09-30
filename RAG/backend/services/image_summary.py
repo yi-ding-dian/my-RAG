@@ -73,10 +73,17 @@ _IMG_REF_RE = re.compile(
 # 回填块的起始标记（chunking 保护区据此识别整块）
 SUMMARY_PREFIX = "> 图片说明："
 
-# 固定字段的输出顺序与白名单（模型多吐的行按白名单丢弃，缺的补"无"）
-_FIELD_ORDER: Tuple[str, ...] = ("类型", "文字", "画面", "版式")
+# 固定字段的输出顺序与白名单（模型多吐的行按白名单丢弃，缺的补"无"）。
+# 「简介」恒在首位且**不受内容选项控制**：它是整段的语义锚点（一句话概括），
+# 向量检索靠它聚焦；后面的类型/文字/画面补实体词，供关键词命中。两者在同一个
+# chunk 里，混合检索的两路才都吃得到。要改简介行，`_BRIEF_LINE` 与
+# `_FIELD_ORDER` 两处必须同步——只改提示词会被 `_normalize` 的白名单丢掉。
+_FIELD_ORDER: Tuple[str, ...] = ("简介", "类型", "文字", "画面", "版式")
 # 字段行正则：`类型：xxx`（中英文冒号都收）
 _FIELD_LINE_RE = re.compile(r"^\s*([^：:]{1,8})\s*[：:]\s*(.*)$")
+
+# 「简介」行的提示词片段（恒有，不随选项开关）
+_BRIEF_LINE = "简介：用一句话说明这是什么（文件类型或场景），30 字以内"
 
 # 结构化选项 → 提示词片段（顺序即默认输出顺序）
 _OPTION_ORDER: Tuple[str, ...] = ("label_type", "read_text",
@@ -120,8 +127,9 @@ def default_prompt(options: Optional[Dict[str, bool]] = None,
     """内置默认模板（部门未配提示词时使用）
 
     三种输出格式：
-    - fields：固定字段（类型/文字/画面/…），检索命中率最高（默认）
-    - prose：自然段，读起来自然
+    - fields：**一句话简介 + 固定字段**（类型/文字/画面/…），检索命中率最高
+      （默认）。简介是语义锚点（短文本向量聚焦），字段补实体词供关键词命中
+    - prose：自然段，读起来自然（首句仍要求先概括这是什么）
     - brief：一句话简介，**不读图中文字** —— 适合"整页全是文字但不需要
       理解含义"的图（如合同条款扫描件）；代价是图里的字检索不到，
       故不适合证照类
@@ -142,11 +150,13 @@ def default_prompt(options: Optional[Dict[str, bool]] = None,
         fields = [_OPTION_LINES["read_text"]]
     if output_format == "prose":
         head = ("请查看这张图片，用中文写一段 2~4 句的客观描述，用于文档检索。\n\n"
+                "**首句先用一句话概括这是什么（文件类型或场景）**，再展开细节。\n\n"
                 "要点：\n")
         return head + "\n".join(f"- {f}" for f in fields) + "\n" + _FIXED_TAIL
     head = ("请查看这张图片，按下面的字段输出中文描述，用于文档检索。\n\n"
             "每行一个字段，只输出这几行，不要加其他说明：\n")
-    return head + "\n".join(fields) + "\n" + _FIXED_TAIL
+    # 「简介」恒排在首位（字段本身不在 _OPTION_LINES 里，不受选项开关影响）
+    return head + "\n".join([_BRIEF_LINE] + fields) + "\n" + _FIXED_TAIL
 
 
 def build_prompt(cfg: ImageSummaryConfig) -> str:
@@ -194,6 +204,10 @@ def _normalize(raw: str, cfg: ImageSummaryConfig) -> str:
         value = found[name]
         if name == "文字":
             value = _truncate(value, cfg.text_max_chars or 200)
+        elif name == "简介":
+            # 「一句话」的语义上限，与 brief 模式同口径——提示词里写了 30 字，
+            # 但模型常不守（实测同类问题反复出现），这里兜一道
+            value = _truncate(value, 50)
         lines.append(f"{name}：{value}")
     return "\n".join(lines)
 
@@ -207,12 +221,25 @@ def _truncate(text: str, limit: int) -> str:
 def _render_block(text: str, output_format: str) -> str:
     """摘要文本 → 回填用的引用块（首行带「图片说明」标记）
 
-    brief / prose 都是一行文字，直接跟在标记后；fields 逐行加引用前缀。
+    brief / prose 都是一行文字，直接跟在标记后；fields 逐行加引用前缀——
+    但首行的「简介：xxx」要**接到标记后**（`> 图片说明：xxx`）：它是整段的
+    一句话概括，另起一行等于把标记和内容割开（且 `> 图片说明：` 独占一行
+    看起来像内容缺失）。首行不是简介时退回原行为，标记独占一行——老数据、
+    部门自定义提示词都可能没有简介行。
     """
     if (output_format or "fields") in ("prose", "brief"):
         return f"{SUMMARY_PREFIX}{text}"
-    lines = [SUMMARY_PREFIX] + [f"> {l}" for l in text.split("\n") if l.strip()]
-    return "\n".join(lines)
+    lines = [l.strip() for l in (text or "").split("\n") if l.strip()]
+    if not lines:
+        return SUMMARY_PREFIX
+    m = _FIELD_LINE_RE.match(lines[0])
+    if m and m.group(1).strip() == "简介":
+        block = [f"{SUMMARY_PREFIX}{m.group(2).strip()}"]
+        lines = lines[1:]
+    else:
+        block = [SUMMARY_PREFIX]
+    block += [f"> {l}" for l in lines]
+    return "\n".join(block)
 
 
 # ---- 图片尺寸 / MIME ----

@@ -1,6 +1,6 @@
 """聊天识图测试：读图 → 描述 → 并入检索与回答；视觉模型不可用降级
 
-覆盖（`chat_service.describe_images` + `routers/chat.py` 的识图分支）：
+覆盖（`chat_vision.describe_images` + `routers/chat.py` 的识图分支）：
 
 - 成功链路：VLM 描述**同时**并入检索词（B）与注入 messages（A）——一次生成两处用
 - 只发图不写字：自动补中性提问词（否则检索词/会话标题/图谱抽实体全是空串）
@@ -400,7 +400,7 @@ class TestVisionPromptConfigurable:
     def test_default_prompt_when_unset(self, client, admin_headers,
                                        mock_embedding, mock_llm, fake_vision,
                                        monkeypatch):
-        """没配提示词 → 用内置默认（老档案行为逐字节不变）"""
+        """没配提示词 → 用内置默认提示词，占位符照常替换"""
         st = fake_vision()
         kb = create_kb(client)
         _patch_retrieval(monkeypatch)
@@ -409,7 +409,8 @@ class TestVisionPromptConfigurable:
         assert resp.status_code == 200, resp.text
         text = _vlm_prompt(st)
         assert "逐字抄录图中所有文字" in text, "空配置应回退内置默认提示词"
-        assert "800" in text, "内置默认里的 {max_chars} 同样要替换"
+        assert "200" in text, "内置默认里的 {max_chars} 同样要替换"
+        assert "{max_chars}" not in text, "占位符本身不该原样发给模型"
 
 
 class TestChatVisionModelResolve:
@@ -530,3 +531,100 @@ class TestDepartmentVisionPrompt:
         text = _vlm_prompt(st)
         assert "全局读图提示词" in text, "部门留空应回退全局"
         assert "临时提示词" not in text
+
+
+# ==================== 带问题读图（{question} 占位符） ====================
+
+class TestVisionQuestionAware:
+    """用户问题传进视觉模型：盲读会把整页界面当查询词，用户问的却常是
+    箭头指的那一个字段——问题传进去，模型才知道往哪儿看。
+
+    实测（同一张界面截图 + 「这个怎么配置」）：不传问题时模型会去描述
+    「卡通头像」「11:55」这类无关元素；传了问题并明确要求"箭头指向的元素
+    报出准确名称"，才认得出红色箭头所指的输入框。
+    """
+
+    def test_question_reaches_vlm(self, client, admin_headers, mock_embedding,
+                                  mock_llm, fake_vision, monkeypatch):
+        """★ 用户问题应出现在发给 VLM 的提示词里（内置默认提示词）"""
+        st = fake_vision()
+        kb = create_kb(client)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, admin_headers)
+        resp = _ask(client, kb["id"], admin_headers, "这个怎么配置", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "这个怎么配置" in text, "用户问题要传给视觉模型（带问题读图）"
+        assert "{question}" not in text, "占位符本身不该原样发给模型"
+
+    def test_custom_prompt_question_placeholder(self, client, admin_headers,
+                                                mock_embedding, mock_llm,
+                                                fake_vision, monkeypatch):
+        """自定义提示词里写了 {question} → 同样替换"""
+        st = fake_vision()
+        _activate_profile(client, admin_headers, chat={
+            "image_prompt": "用户问的是：{question}。只描述与它相关的部分。"})
+        kb = create_kb(client)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, admin_headers)
+        resp = _ask(client, kb["id"], admin_headers, "报错码是多少", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "报错码是多少" in text
+        assert "{question}" not in text
+
+    def test_custom_prompt_without_placeholder_stays_blind(
+            self, client, admin_headers, mock_embedding, mock_llm, fake_vision,
+            monkeypatch):
+        """自定义提示词没写 {question} → 盲读（老档案行为逐字节不变）
+
+        兼容性保证：既有档案的提示词一个字不改，读图行为也不变——强行把
+        问题拼进去会破坏用户自己写的输出格式约束（如"只输出 JSON"）。
+        """
+        st = fake_vision()
+        _activate_profile(client, admin_headers, chat={
+            "image_prompt": "只认报错码，不描述画面。"})
+        kb = create_kb(client)
+        _patch_retrieval(monkeypatch)
+        key = _upload(client, admin_headers)
+        resp = _ask(client, kb["id"], admin_headers, "这个怎么配置", [key])
+        assert resp.status_code == 200, resp.text
+        text = _vlm_prompt(st)
+        assert "只认报错码" in text
+        assert "这个怎么配置" not in text, \
+            "没写 {question} 就不该带问题（老档案行为不变）"
+
+
+class TestBuildMessages:
+    """`_build_messages` 单元测试——它是 chat_vision 里「给视觉模型看什么」
+    的唯一出口，改读图行为都从这儿下手，所以要单独锁住它的契约。"""
+
+    def _text(self, **kw) -> str:
+        from backend.services.chat_vision import _build_messages
+        msg = _build_messages(data_url="data:image/png;base64,AAA", **kw)
+        return msg[0]["content"][0]["text"]
+
+    def test_empty_question_uses_placeholder(self):
+        """只发图不打字 → 用中性占位，而不是在占位符处留一对空引号"""
+        text = self._text(prompt="", max_chars=200, question="")
+        assert "用户未提问" in text
+        assert "「」" not in text, "空引号会让模型以为用户问了个空问题"
+
+    def test_both_placeholders_replaced(self):
+        text = self._text(prompt="问题：{question}，限 {max_chars} 字",
+                          max_chars=333, question="怎么配")
+        assert "怎么配" in text and "333" in text
+
+    def test_other_braces_intact(self):
+        """其他花括号原样保留（用 replace 而非 format，防 KeyError 挂掉整轮）"""
+        text = self._text(prompt='按 {"型号": "..."} 输出', max_chars=200,
+                          question="q")
+        assert '{"型号"' in text
+
+    def test_image_part_untouched(self):
+        """图片部分不受占位符替换影响"""
+        from backend.services.chat_vision import _build_messages
+        url = "data:image/png;base64,ZZZ"
+        msg = _build_messages(data_url=url, prompt="", max_chars=200,
+                              question="q")
+        assert msg[0]["content"][1]["image_url"]["url"] == url

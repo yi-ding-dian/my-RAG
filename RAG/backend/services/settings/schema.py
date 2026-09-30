@@ -209,7 +209,9 @@ def _reflect_model_list_section(name: str, model_cls, *,
       fill_missing=True：旧数据/部分提交时条目缺失字段自动补默认，
       保证条目始终完整（to_service_config 取激活条目不悬空）
     - whitelist 标记作用于条目字段：/api/settings/chat 的 llm 段白名单
-      = 部门可覆盖的**激活模型**字段（与旧 6 字段语义一致）；
+      = 部门**能提交**的字段。llm 段现只开 model（**条目名**）、temperature、
+      max_tokens——部门"选条目 + 微调温度/Token"，不再逐字段抄配置（抄漏
+      一个就静默漂移，见 merge_department_llm 的模块说明）；
       name 为显示名（const="默认"，apply_to_config=False 不写全局配置）
     - pass_null：/api/settings/chat 校验时段内 null 原样传给保存层
       （llm=True，与旧段语义一致：null=不覆盖全局）
@@ -236,25 +238,30 @@ SECTION_SCHEMA: Dict[str, SectionSpec] = {
     #   全局配置 → get_active_config().llm 对外语义不变（=激活模型），
     #   所有 LLM 使用方（问答/摘要/评估 Judge 等）零改动；
     # - 旧单对象档案在 coerce 自动迁移为 models[0]+active=0；
-    # - 条目字段 whitelist = 部门可覆盖的激活模型字段（旧 6 字段语义），
-    #   name 仅显示名不写全局配置；条目 timeout 生效（多模型是完整配置）
+    # - 条目字段 whitelist = 部门**能提交**的字段（现只 model 条目名 /
+    #   temperature / max_tokens：选条目 + 微调），name 仅显示名不写全局
+    #   配置；条目 timeout 生效（多模型是完整配置）
     "llm": _reflect_model_list_section(
         "llm", LLMConfig,
         item_overrides={
             "name": {"const": "默认", "cast": "str", "strip": True,
                      "apply_to_config": False},
-            "base_url": {"strip": True, "whitelist": True},
-            "api_key": {"strip": True, "condition": "secret_truthy",
-                        "whitelist": True},
+            "base_url": {"strip": True},
+            "api_key": {"strip": True, "condition": "secret_truthy"},
+            # 部门的 llm 段存的是**选中的条目名**（超管在「LLM 模型管理」里配的
+            # name），不是模型名——部门只"选"，连接信息与密钥不下放
+            # （与 image_summary.model 同语义）
             "model": {"strip": True, "whitelist": True},
             "temperature": {"condition": "not_none", "whitelist": True},
-            "top_p": {"condition": "not_none", "whitelist": True},
+            "top_p": {"condition": "not_none"},
             "max_tokens": {"condition": "truthy", "whitelist": True},
-            "timeout": {"condition": "not_none", "whitelist": True},
-            # 思考控制方式（none/prefill/api）：跟模型走——部门覆盖了模型，
-            # 也要能一并覆盖它，否则部门换模型后会沿用全局的控制方式
-            "thinking_control": {"strip": True, "condition": "not_none",
-                                 "whitelist": True},
+            "timeout": {"condition": "not_none"},
+            # 思考控制方式（none/prefill/api）：**不再开放给部门**——它跟模型
+            # 走，部门按条目选整份配置时自然带过来。原先开在这儿是想让"部门换
+            # 模型时顺手改掉"，可部门压根不知道该配（实测软件部就漏了它，用着
+            # 思考模型 apex-quality 却继承了激活条目的 'none'）。按条目取整份，
+            # 这类遗漏从根上消失
+            "thinking_control": {"strip": True, "condition": "not_none"},
         },
         pass_null=True),
     # Embedding：档案含 dimension（固定 1024，非 dataclass 字段），

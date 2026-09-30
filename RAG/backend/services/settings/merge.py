@@ -10,12 +10,11 @@ LLM_FIELD_NAMES）；不依赖 SettingsService 单例（避免循环依赖）。
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from backend.services.settings.schema import (CHAT_AGENTIC_FIELD_NAMES,
                                               CHAT_FIELD_NAMES,
-                                              CHAT_RETRIEVAL_FIELD_NAMES,
-                                              LLM_FIELD_NAMES)
+                                              CHAT_RETRIEVAL_FIELD_NAMES)
 
 
 def chat_payload(profile: dict) -> dict:
@@ -116,28 +115,59 @@ def active_llm_item(llm: dict) -> dict:
     return item if isinstance(item, dict) else {}
 
 
-def merge_department_llm(global_llm: dict, dept_llm: dict) -> dict:
-    """LLM 配置字段级合并（部门只覆盖它显式设置的字段，其余用全局）
+# 部门在**选中的条目**之上还允许微调的字段；其余一律跟着条目走
+DEPT_LLM_TUNABLE: Tuple[str, ...] = ("temperature", "max_tokens")
 
-    - global_llm：全局 LLM 配置（dict 或 model_dump 结果，含
-      base_url/api_key/model/temperature/max_tokens/timeout）
-    - dept_llm：部门级 LLM 配置（空 dict/None = 未设置，返回纯全局）
-    - 合并规则：部门字段非 None 且非空串 → 覆盖全局；None/空串 =
-      跟随全局（api_key 空串即"故意清空用全局"，与白名单清除语义一致）
-    - 返回 dict 含完整 6 字段（响应结构与 /api/settings/chat 的 llm 段同构）
-      **外加全局侧的其余字段**（如 thinking_control 这类模型级、不参与
-      部门覆盖的字段）——只认白名单会让它们在合并时被悄悄丢掉，下游
-      拿到 None 后行为退回默认值
+
+def _llm_result_fields() -> Tuple[str, ...]:
+    """合并结果要保证存在的字段名
+
+    与 schema 的「部门可提交白名单」是两回事：那个管**输入**（现只有条目名 +
+    温度/Token），这里管**输出结构**——下游拿合并结果构造 LLM 客户端、判定
+    思考策略，字段缺了会读到 None 而退回默认行为。曾经两者共用
+    `LLM_FIELD_NAMES`，白名单一收紧输出结构就跟着塌了。
     """
-    base = dict(global_llm or {})
-    for k in LLM_FIELD_NAMES:  # 白名单字段保证存在（缺失补 None，原语义）
+    from backend.config import LLMConfig
+
+    return tuple(LLMConfig.model_fields)
+
+
+def merge_department_llm(global_llm: dict, dept_llm: dict,
+                         global_models: Optional[list] = None) -> dict:
+    """部门**选中的模型条目** → 取该条目完整配置（再叠加本部门的微调）
+
+    - `dept_llm["model"]` 存的是**条目名**（超管在「LLM 模型管理」里配的
+      `name`），不是模型名——部门只"选"，看不到也改不了连接信息与密钥
+    - 名字被超管删掉/改名 → 回退 `global_llm`（全局激活条目），不断服务
+    - `temperature` / `max_tokens`：部门可在选中条目之上再覆盖（微调）
+    - `global_models`：全局模型条目列表；不传 → 直接回退全局（安全降级）
+
+    为什么不再逐字段覆盖：部门想"换一个模型"就得把 base_url/api_key/model/
+    temperature/max_tokens/timeout/thinking_control/top_p **全抄一遍**，抄漏
+    一个就静默漂移——实测软件部漏了 thinking_control，用着思考模型
+    qwen3.6-35b-a3b-apex-quality 却继承了激活条目 Qwen3.5-9B 的 `'none'`，
+    思考根本没关掉；top_p 同理继承了个 None。改成按条目取整份配置，这类
+    漂移从根上消失。
+    """
+    if not isinstance(dept_llm, dict):
+        return dict(global_llm or {})  # 脏数据容错：非 dict 视为未设置
+    base: dict = {}
+    want = str(dept_llm.get("model") or "").strip()
+    if want and global_models:
+        hit = next((m for m in global_models
+                    if isinstance(m, dict)
+                    and str(m.get("name") or "").strip() == want), None)
+        if hit is not None:
+            # 整份条目直接用。**刻意不走 llm_to_dict**：它的 _LLM_KEYS 只有
+            # 6 个字段，会把 top_p 这类模型级参数悄悄丢掉——正是要修的病。
+            base = {k: v for k, v in hit.items() if k != "name"}
+    if not base:
+        base = dict(global_llm or {})
+    for k in _llm_result_fields():  # 输出字段保证存在（缺失补 None，原语义）
         base.setdefault(k, None)
-    dept = dept_llm or {}
-    if not isinstance(dept, dict):
-        return base  # 脏数据容错：非 dict 视为未设置
-    for k in LLM_FIELD_NAMES:
-        v = dept.get(k)
+    for k in DEPT_LLM_TUNABLE:
+        v = dept_llm.get(k)
         if v is None or v == "":
-            continue  # 未设置/空串 → 用全局
+            continue  # 未设置/空串 → 跟随选中条目
         base[k] = v
     return base

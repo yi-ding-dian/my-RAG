@@ -381,9 +381,12 @@ class ChatConfig(BaseModel):
     # 聊天识图是用户发完图实时等着的、求准，两者对模型的要求本就不同。
     # 指定的名字被超管删掉 → 回退默认（见 chat_service.resolve_chat_vision）
     image_model: str = ""
-    # 读图提示词（空 = 用 chat_service._CHAT_IMAGE_PROMPT 内置默认）。
-    # 支持 {max_chars} 占位符，运行时替换为 image_desc_max_chars——**必须保留
-    # 占位符**，否则长度约束就只剩 describe_images 的硬截断兜底。
+    # 读图提示词（空 = 用 chat_vision._CHAT_IMAGE_PROMPT 内置默认）。
+    # 支持两个占位符：{max_chars} 替换为 image_desc_max_chars、{question}
+    # 替换为用户当前问题——**带问题读图**，模型据此知道该看图中哪一块
+    # （盲读会把整页界面当查询词，用户问的却常是箭头指的那一个字段）。
+    # 不写 {question} 即盲读，行为与旧版一致。必须保留 {max_chars} 占位符，
+    # 否则长度约束就只剩 describe_images 的硬截断兜底。
     # 部门可覆盖（白名单）：各部门的图差别大（财务报表 / 运维报错截图 /
     # 人事证照），一份提示词不可能都对；部门留空 = 跟随此处的全局默认。
     # 注意：提示词要求"抄更多内容"时要同步调大 image_desc_max_chars，
@@ -394,10 +397,14 @@ class ChatConfig(BaseModel):
     # 单张图片大小上限（MB）：同上，前后端各校验一次
     image_max_mb: float = 5.0
     # 图片描述长度上限（字）：**一次生成、两处用**——同一段描述既并入检索
-    # 查询（B）又注入 messages（A）。限长是防长描述把检索词淹没（检索模型
-    # 对超长 query 效果会下降）；若实测发现"检索用的描述该短、回答用的该全"，
-    # 再拆成两份描述（多一次 VLM 调用，见 chat_service._describe_images）
-    image_desc_max_chars: int = 800
+    # 查询（B）又注入 messages（A）。限长是防长描述把检索词淹没：用户问题
+    # 通常十几个字，描述若写到 800 字，向量化后完全由描述主导，原问题等于
+    # 没说（实测"图一发、召回全跑偏"的主因）。
+    # 默认 200：实测该模型输出常超 500 字（复读所致，见 chat_vision 的
+    # frequency_penalty），压到 200 后问题与描述才在同一量级。
+    # 若实测发现"检索用的描述该短、回答用的该全"，再拆成两份描述
+    # （多一次 VLM 调用，见 chat_vision.describe_images）
+    image_desc_max_chars: int = 200
 
 
 class PromptItem(BaseModel):

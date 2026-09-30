@@ -23,6 +23,13 @@ export const IMG_OPTION_ORDER = [
   'label_type', 'read_text', 'describe_scene', 'describe_layout',
 ];
 
+/** 「简介」行：**恒排在首位，不受内容选项控制**（与后端 `_BRIEF_LINE` 同措辞）
+ *
+ *  它是整段的语义锚点（一句话概括），向量检索靠它聚焦；后面的字段补实体词，
+ *  供关键词命中。两者在同一个 chunk 里，混合检索的两路才都吃得到。
+ */
+export const IMG_BRIEF_LINE = '简介：用一句话说明这是什么（文件类型或场景），30 字以内';
+
 const IMG_FIXED_TAIL = `
 要求：
 - 只描述你确实看到的内容，不要推测、不要评价、不要补充常识
@@ -49,9 +56,10 @@ export function buildDefaultImgPrompt(
   const use = lines.length ? lines : [IMG_OPTION_LINES.read_text];
   if (fmt === 'prose') {
     return '请查看这张图片，用中文写一段 2~4 句的客观描述，用于文档检索。\n\n'
+      + '**首句先用一句话概括这是什么（文件类型或场景）**，再展开细节。\n\n'
       + '要点：\n' + use.map(l => `- ${l}`).join('\n') + '\n' + IMG_FIXED_TAIL;
   }
   return '请查看这张图片，按下面的字段输出中文描述，用于文档检索。\n\n'
     + '每行一个字段，只输出这几行，不要加其他说明：\n'
-    + use.join('\n') + '\n' + IMG_FIXED_TAIL;
+    + [IMG_BRIEF_LINE, ...use].join('\n') + '\n' + IMG_FIXED_TAIL;
 }

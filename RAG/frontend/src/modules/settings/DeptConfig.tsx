@@ -45,14 +45,16 @@ const { Text } = Typography;
 /** 系统提示词下拉里的"自定义"标记（取不可能撞上条目名的串） */
 const CUSTOM_PROMPT = '__custom__';
 
-/** 部门 LLM 表单字段 */
+/** 部门 LLM 表单字段
+ *
+ *  部门只**选**超管配好的模型条目，再按需微调温度/Token——连接信息与密钥
+ *  不下放。原先让部门自由填 8 个字段，想换个模型就得整份抄一遍，抄漏一个
+ *  就静默漂移。 */
 interface DeptLlmValues {
-  llm_base_url?: string;
-  llm_api_key?: string;
+  /** **条目名**（超管在「LLM 模型管理」里配的 name），不是模型名 */
   llm_model?: string;
   llm_temperature?: number | null;
   llm_max_tokens?: number | null;
-  llm_timeout?: number | null;
 }
 
 /** 部门对话/检索增强表单字段（前 6 项对应后端 chat 段必填字段） */
@@ -112,6 +114,8 @@ const DeptConfig: React.FC = () => {
   const [savingRetr, setSavingRetr] = useState(false);
   const [savingImg, setSavingImg] = useState(false);
   /** 超管配的图片解析模型（只有名字，不含连接信息与密钥） */
+  const [llmOptions, setLlmOptions] =
+    useState<Array<{ name: string; model: string }>>([]);
   const [visionOptions, setVisionOptions] = useState<Array<{ name: string; model: string }>>([]);
   /** 超管配的系统提示词库条目（部门只"选"用哪条，不能编辑库本身） */
   const [promptOptions, setPromptOptions] = useState<Array<{ name: string; content: string }>>([]);
@@ -158,14 +162,17 @@ const DeptConfig: React.FC = () => {
     setLoading(true);
     try {
       const res = await getChatSettings();
-      const llm = res.data.llm;
+      // LLM 段：model 存的是**部门选中的条目名**（不是模型名），所以回填
+      // 部门覆盖值而非合并值——合并后的 llm.model 取自条目本身，两者不一定
+      // 同名（超管可以把显示名起成任意值），混用会让部门"看到 A 却提交了 B"
+      const deptLlm = (res.data as {
+        dept?: { llm?: { model?: string; temperature?: number | null;
+                         max_tokens?: number | null } } | null;
+      }).dept?.llm;
       llmForm.setFieldsValue({
-        llm_base_url: llm?.base_url ?? '',
-        llm_api_key: llm?.api_key ?? '',
-        llm_model: llm?.model ?? '',
-        llm_temperature: llm?.temperature ?? undefined,
-        llm_max_tokens: llm?.max_tokens ?? undefined,
-        llm_timeout: llm?.timeout ?? undefined,
+        llm_model: deptLlm?.model ?? undefined,
+        llm_temperature: deptLlm?.temperature ?? undefined,
+        llm_max_tokens: deptLlm?.max_tokens ?? undefined,
       });
       const chat = res.data.chat;
       chatForm.setFieldsValue({
@@ -201,6 +208,9 @@ const DeptConfig: React.FC = () => {
         image_summary?: ImageSummaryConfig;
         vision_options?: Array<{ name: string; model: string }>;
       });
+      setLlmOptions((res.data as {
+        llm_options?: Array<{ name: string; model: string }>;
+      }).llm_options ?? []);
       setVisionOptions(img.vision_options ?? []);
       setPromptOptions((res.data as { prompt_options?: Array<{ name: string; content: string }> })
         .prompt_options ?? []);
@@ -236,16 +246,13 @@ const DeptConfig: React.FC = () => {
     const vals = await llmForm.validateFields();
     setSavingLlm(true);
     try {
-      // 只提交 llm 段（后端白名单 6 字段）：空串/null = 跟随全局；
-      // api_key 脱敏值原样回传 = 保留部门原值
+      // 只提交 llm 段白名单字段（条目名 + 温度/Token 微调）：
+      // 空串/null = 不覆盖 → 跟随选中条目（没选则跟随全局激活模型）
       await updateChatSettings({
         llm: {
-          base_url: vals.llm_base_url ?? '',
-          api_key: vals.llm_api_key ?? '',
           model: vals.llm_model ?? '',
           temperature: vals.llm_temperature ?? null,
           max_tokens: vals.llm_max_tokens ?? null,
-          timeout: vals.llm_timeout ?? null,
         },
       });
       message.success('部门 LLM 配置已保存，对本部门成员即时生效');
@@ -383,43 +390,32 @@ const DeptConfig: React.FC = () => {
       extra: saveBtn(savingLlm, () => void saveLlm()),
       children: (
         <Form form={llmForm} layout="vertical">
-          {/* 栅格分配按内容长短：长字段（地址/模型名）占得多，短字段（数字/开关）
-              占得少——开关曾经 span=8（1/3 屏放一个开关）；也不用 flex 弹性，
-              否则余量全被最后一个元素吃掉，拉出一条超长输入框 */}
+          {/* 部门只**选**超管配好的模型条目（连接信息与密钥不下放），再按需
+              微调温度/Token。原先让部门自由填 6 个字段，想换个模型就得整份
+              抄一遍，抄漏一个就静默漂移——实测软件部漏了 thinking_control，
+              用着思考模型 apex-quality 却继承了激活条目的 'none' */}
           <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="llm_base_url" label="服务地址（base_url）"
-                extra="OpenAI 兼容端点，如 http://192.168.0.74:1234/v1">
-                <Input placeholder="留空 = 跟随全局" allowClear />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="llm_api_key" label="API Key"
-                extra="脱敏值原样保留；填写新值即覆盖">
-                <Input.Password placeholder="留空 = 跟随全局" autoComplete="new-password" />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="llm_model" label="模型名">
-                <Input placeholder="留空 = 跟随全局" allowClear />
+            <Col span={16}>
+              <Form.Item name="llm_model" label="模型"
+                extra="从超管配置的「LLM 模型管理」里选一个；留空 = 跟随全局激活模型">
+                <Select allowClear showSearch placeholder="留空 = 跟随全局"
+                  optionFilterProp="label"
+                  options={llmOptions.map(m => ({
+                    value: m.name,
+                    label: m.model ? `${m.name}（${m.model}）` : m.name,
+                  }))} />
               </Form.Item>
             </Col>
             <Col span={4}>
-              <Form.Item name="llm_temperature" label="温度">
+              <Form.Item name="llm_temperature" label="温度" extra="覆盖选中条目">
                 <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }}
-                  placeholder="跟随全局" />
+                  placeholder="跟随条目" />
               </Form.Item>
             </Col>
             <Col span={4}>
-              <Form.Item name="llm_max_tokens" label="最大 Token">
-                <InputNumber min={1} style={{ width: '100%' }} placeholder="跟随全局" />
-              </Form.Item>
-            </Col>
-            <Col span={4}>
-              <Form.Item name="llm_timeout" label="超时（秒）">
-                <InputNumber min={1} style={{ width: '100%' }} placeholder="跟随全局" />
+              <Form.Item name="llm_max_tokens" label="最大 Token" extra="覆盖选中条目">
+                <InputNumber min={1} style={{ width: '100%' }}
+                  placeholder="跟随条目" />
               </Form.Item>
             </Col>
           </Row>
@@ -577,7 +573,7 @@ const DeptConfig: React.FC = () => {
           <Form.Item
             name="chat_image_prompt"
             label="聊天识图提示词"
-            extra="员工在聊天里发图时，用这段提示词让视觉模型读图。全部删空 = 跟随超管的全局设置；填了则本部门不再跟随全局。支持 {max_chars} 占位符（运行时替换为全局的「描述长度上限」），建议保留。"
+            extra="员工在聊天里发图时，用这段提示词让视觉模型读图。全部删空 = 跟随超管的全局设置；填了则本部门不再跟随全局。两个占位符都建议保留：{max_chars} 替换为描述字数上限；{question} 替换为员工当前的问题——写上它才会带着问题读图（图里有箭头/红框/圈注时能定位到具体元素、报出准确名称），不写就是盲读，读图效果会明显变差。"
           >
             <TextArea rows={5}
               placeholder="留空 = 跟随超管的全局设置；要按本部门的图片类型定制时再填…" />

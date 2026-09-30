@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import threading
@@ -37,9 +36,12 @@ from backend.config import (CHAT_DELETED_DIR, CHAT_DIR, LLMConfig,
                             get_active_config)
 from backend.models.rag_models import (ChatHistoryItem, ChatMessage,
                                        ChatSession, Source)
-from backend.services.llm_client import (get_llm_client, llm_completion,
-                                         llm_to_dict)
+from backend.services.llm_client import get_llm_client, llm_to_dict
 from backend.services.agentic_service import get_agentic_service
+# 聊天识图整条链路（提示词/消息组装/调用参数/并发/错误归一）都在
+# chat_vision 里——**调读图行为改那个文件**，这里只留文案与入口
+from backend.services.chat_vision import (VISION_UNAVAILABLE_MSG,
+                                          describe_images)
 from backend.services.query_rewriter import rewrite_query
 from backend.services.retrieval_service import (RetrievalUnavailableError,
                                                 get_retrieval_service,
@@ -111,123 +113,17 @@ def sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-# ==================== 聊天识图（发图 → 视觉模型读图 → 描述两处用） ====================
+def _global_llm_models() -> list:
+    """全局档案的 LLM 模型条目列表（部门按名选条目时要用）
 
-# 视觉模型不可用时的**统一文案**：探活（/api/chat/vision-status）与发送时
-# 兜底（vision_error 事件）共用同一句，避免两个入口说法不一致让用户困惑
-VISION_UNAVAILABLE_MSG = "视觉模型当前无法使用，无法识图"
-
-# 读图提示词：**不复用 image_summary 那份**——它是给"入库摘要"设计的三段式
-# 结构化输出（类型/文字/画面），回填进 chunk 文本参与检索；聊天识图的这段
-# 描述要同时喂给检索与对话回答，需要自然语言叙述 + 高密度关键信息。
-#
-# 这是**内置默认**：超管可在「设置 → 聊天设置 → 聊天识图 → 读图提示词」覆盖
-# （配置档案 chat.image_prompt），部门管理员可在「部门配置 → 对话增强」再覆盖
-# 一层（schema 白名单）。配置为空时回退到本常量 → 行为与旧版逐字节一致。
-# `{max_chars}` 是占位符，运行时替换为 image_desc_max_chars；用户自定义提示词
-# 若不写它，长度约束就只剩 describe_images 的硬截断兜底（不报错，但模型更容易
-# 超发）。
-_CHAT_IMAGE_PROMPT = (
-    "请描述这张图片，供知识库检索与问答使用。要求：\n"
-    "1. **逐字抄录图中所有文字**：标题、编号、型号、参数、报错信息、日期、"
-    "人名、地名、单位。这些是检索命中的关键，不得概括或改写；\n"
-    "2. 描述画面主体、版式布局、图表走势、界面元素等可见信息；\n"
-    "3. 若是界面或报错截图，说明是什么系统、什么操作、什么提示；\n"
-    "4. **只描述真实看到的内容**：不推测、不补充常识、不回答图片之外的问题；\n"
-    "5. 简洁中文，不超过 {max_chars} 字。"
-)
-
-# 读图超时（秒）：比 LLM 对话超时（默认 120s）短——用户发完图正在干等，
-# 读图不该独占整个超时窗口；到点即判失败，前端提示"无法识图"让用户重试
-_IMAGE_DESC_TIMEOUT = 60.0
-
-
-def _image_mime(name: str) -> str:
-    """按扩展名猜 MIME（未知回退 image/jpeg，与 image_summary 同口径）"""
-    ext = (name.rsplit(".", 1)[-1] or "").lower()
-    return {"png": "image/png", "gif": "image/gif",
-            "webp": "image/webp", "bmp": "image/bmp"}.get(ext, "image/jpeg")
-
-
-async def _describe_chat_image(client, model_cfg, key: str, max_chars: int,
-                               storage, prompt: str = "") -> str:
-    """读一张聊天图片 → 描述文本（异常原样抛出，由 describe_images 归一）
-
-    图从对象存储按 key 取，**不信任前端传的 base64**——那等于把大小/格式
-    校验权全交给客户端。key 是 upload-image 阶段校验后落下的。
-
-    prompt：读图提示词（已含部门覆盖的最终值）；空 = 用内置默认
-    _CHAT_IMAGE_PROMPT。只替换 `{max_chars}` 一个占位符——用户提示词里的
-    其他花括号（如 JSON 示例）原样保留，不做 str.format（那会因未知占位符抛错）
+    与 `image_summary._candidate_models` 同款做法——直接读 settings service，
+    因为 `get_active_config().llm` 只暴露**激活**的那一条，拿不到部门要按名
+    去匹配的完整列表。get_active() 是内存读（带锁），每次问答一次的开销可忽略。
     """
-    data = await storage.read_bytes(key)
-    payload = base64.b64encode(data).decode()
-    template = (prompt or "").strip() or _CHAT_IMAGE_PROMPT
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text",
-             "text": template.replace("{max_chars}", str(max_chars))},
-            {"type": "image_url",
-             "image_url": {"url": f"data:{_image_mime(key)};base64,{payload}"}},
-        ],
-    }]
-    timeout = min(float(model_cfg.timeout or 60), _IMAGE_DESC_TIMEOUT)
-    resp = await llm_completion(
-        client, model=model_cfg.model, messages=messages,
-        # 中文按 1 字 ≈ 1.6 token 留余量；超长由提示词的 max_chars 约束
-        max_tokens=max(512, int(max_chars * 1.6)),
-        temperature=0.1,  # 读图要稳定可复现，不吃创造性
-        timeout=timeout)
-    try:
-        return (resp.choices[0].message.content or "").strip()
-    except (AttributeError, IndexError, TypeError):
-        return ""
+    from backend.services.settings.service import get_settings_service
 
-
-async def describe_images(images: List[str], model_cfg, max_chars: int,
-                          storage, prompt: str = "") -> Tuple[str, str]:
-    """并发读多张图 → 合并描述。返回 (描述文本, 失败原因)
-
-    **一次生成、两处用**：同一段描述既并入当轮检索词（让"这张报错截图"
-    能命中对应文档），又注入 messages（让主模型知道图里有什么）。拆成两份
-    描述要多一次 VLM 调用，而读图是整条链路上最慢的一环，用户发完图干等
-    的正是它——先按一份做，实测检索不准再拆（见 config.image_desc_max_chars）。
-
-    prompt：读图提示词（调用方传合并后的最终值：部门覆盖 → 全局 → 空串）；
-    空 = 用内置默认 _CHAT_IMAGE_PROMPT。见 config.ChatConfig.image_prompt。
-
-    失败语义（与"图片摘要是增强功能、不该有否决权"不同——这里图是用户
-    **主动发的**，必须给明确交代）：
-    - 全部失败 → 返回非空失败原因，调用方下发 vision_error 且**不发消息**
-    - 部分失败 → 描述里标注哪几张没读出来，其余照常走（不为一张图废掉整轮）
-    """
-    client = get_llm_client(
-        model_cfg.model_dump(),
-        timeout=min(float(model_cfg.timeout or 60), _IMAGE_DESC_TIMEOUT))
-    results = await asyncio.gather(
-        *[_describe_chat_image(client, model_cfg, k, max_chars, storage, prompt)
-          for k in images],
-        return_exceptions=True)
-
-    parts: List[str] = []
-    ok = 0
-    last_err = ""
-    for i, r in enumerate(results, 1):
-        if isinstance(r, BaseException) or not r:
-            if isinstance(r, BaseException):
-                last_err = str(r)[:200]
-            parts.append(f"（第 {i} 张图片未能识别）")
-        else:
-            ok += 1
-            # **硬截断**到 max_chars：提示词里那句"不超过 N 字"只是软约束，
-            # 实测模型会超（配置 800 字，真机输出 1498 字）——而这段描述是要
-            # 并进检索词的，超长会把原问题淹没（检索模型对超长 query 效果下降）
-            text = r if len(r) <= max_chars else r[:max_chars] + "…"
-            parts.append(f"【图片{i}】{text}" if len(images) > 1 else text)
-    if ok == 0:
-        return "", (last_err or "视觉模型未返回内容")
-    return "\n".join(parts), ""
+    profile = get_settings_service().get_active() or {}
+    return ((profile.get("llm") or {}).get("models")) or []
 
 
 async def delete_session_images(session: ChatSession) -> int:
@@ -602,9 +498,11 @@ class ChatService:
             merged_chat = merged["chat"]
             merged_agentic = merged.get("agentic", {})
             # LLM 合并配置提前计算（Agentic 查询改写需要；第 5 步直接复用，
-            # 纯函数无副作用——地址/密钥/模型/生成参数与历史一致）
+            # 纯函数无副作用——地址/密钥/模型/生成参数与历史一致）。
+            # 部门只**选条目名**，整份配置按名取（见 merge_department_llm）
             merged_llm_dict = merge_department_llm(
-                _llm_to_dict(get_active_config().llm), dept_llm)
+                _llm_to_dict(get_active_config().llm), dept_llm,
+                _global_llm_models())
 
             # 识图前置：读图 → 描述。**必须在检索之前**——描述要并进检索词，
             # 晚于检索就只剩展示价值了。读图失败不下发 error 而发 vision_error：
@@ -622,8 +520,13 @@ class ChatService:
                     int(cfg.chat.image_desc_max_chars),
                     get_storage_service(),
                     # 提示词：部门覆盖 → 全局 → 空串（describe_images 内部
-                    # 回退内置默认 _CHAT_IMAGE_PROMPT）
-                    merged_chat.get("image_prompt") or "")
+                    # 回退内置默认，见 chat_vision）
+                    merged_chat.get("image_prompt") or "",
+                    # 用户问题一并喂给视觉模型（带问题读图）：盲读会把整页
+                    # 界面当查询词，用户问的却是箭头指的那一个字段——问题
+                    # 传进去，模型才知道往哪儿看。只发图不打字时路由层已补
+                    # 中性提问词，真为空时 chat_vision 内还有占位兜底
+                    question=message)
                 if img_err:
                     # 单次读图失败多为这张图本身的问题（格式怪/损坏/被拒答），
                     # 记 warning 不点红灯——视觉模型真挂了由 /vision-status

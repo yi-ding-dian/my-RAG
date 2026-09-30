@@ -29,7 +29,7 @@ export const HEADING_END_PUNCT_DEFAULT = ['？', '！', '…', '?', '!'];
 
 /** 图片摘要输出格式的显示名（域卡摘要、卡片摘要共用） */
 export const IMG_FMT_LABEL: Record<string, string> = {
-  fields: '固定字段', prose: '自然段', brief: '一句话简介',
+  fields: '简介 + 固定字段', prose: '自然段', brief: '一句话简介',
 };
 
 /** 配置域快捷导航定义（方案 A）：标题 + 当前值摘要 + 对应编辑折叠 key */

@@ -215,7 +215,7 @@ async def retrieve(body: RetrieveRequest, db: AsyncSession = Depends(get_db),
 
 
 # ========== 聊天识图（发图 → 视觉模型读图 → 描述参与检索与回答） ==========
-# 链路的完整设计见 services/chat_service._describe_images 的模块注释。
+# 链路的完整设计见 services/chat_vision 的模块注释。
 
 # 允许的图片扩展名（与 image_summary._guess_mime 支持的集合一致）
 _CHAT_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}

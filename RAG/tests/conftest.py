@@ -492,7 +492,7 @@ def mock_llm(monkeypatch):
 class FakeVisionClient:
     """伪视觉客户端（非流式）：返回固定描述；mode=error 时抛异常
 
-    `chat_service.describe_images` 走 `llm_completion`（stream=False），
+    `chat_vision.describe_images` 走 `llm_completion`（stream=False），
     形态与 FakeLLMClient 的非流式分支一致。
     """
 
@@ -535,7 +535,7 @@ def fake_vision(monkeypatch):
         st.clients[0].calls[0]            # 断言实际发给 VLM 的 messages
     """
     from backend.config import VisionModelConfig
-    from backend.services import chat_service, image_summary
+    from backend.services import chat_vision, image_summary
 
     state = _VisionMockState()
 
@@ -576,9 +576,10 @@ def fake_vision(monkeypatch):
     monkeypatch.setattr(image_summary, "resolve_chat_vision",
                         _resolve_chat_vision)
     monkeypatch.setattr(image_summary, "probe_model", _probe_model)
-    # describe_images 用的是本模块级导入的 get_llm_client（引用复制），
-    # 只 patch backend.services.llm_client 不会生效，必须打在 chat_service 上
-    monkeypatch.setattr(chat_service, "get_llm_client", _get_llm_client)
+    # describe_images 用的是 chat_vision 模块级导入的 get_llm_client（引用
+    # 复制），只 patch backend.services.llm_client 不会生效，必须打在
+    # chat_vision 上（识图实现已从 chat_service 迁出）
+    monkeypatch.setattr(chat_vision, "get_llm_client", _get_llm_client)
     return _factory
 
 

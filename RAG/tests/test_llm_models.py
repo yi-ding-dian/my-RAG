@@ -425,9 +425,14 @@ class TestLlmConnectionTest:
                            json=_item("A"), headers=user_headers)
         assert resp.status_code == 404
 
-    def test_profile_test_uses_active_item(self, client, admin_headers,
-                                           monkeypatch):
-        """档案级连接测试：测的是激活模型条目（非激活模型坏连接不影响）"""
+    def test_profile_test_probes_all_models(self, client, admin_headers,
+                                            monkeypatch):
+        """★ 连接测试探测 llm 段**全部**模型（不再只测激活那条）
+
+        只测激活条目会漏掉坏模型——用户把激活切过去才发现连不上，那时已经
+        在生产上踩坑了。段级 ok = 全部通过；逐条成败在 items 明细里，前端
+        据此展开显示"哪个模型连不上"。
+        """
         from backend.services.settings.service import OpenAI
 
         class _FakeOpenAI:
@@ -459,14 +464,20 @@ class TestLlmConnectionTest:
         resp = client.post(f"/api/settings/profiles/{p['id']}/test",
                            headers=admin_headers)
         assert resp.status_code == 200, resp.text
-        assert resp.json()["llm"]["ok"] is True, \
-            "连接测试取激活条目（models[1] 好模型），坏模型不影响"
-        # 切回激活 0（坏模型）→ 失败
+        body = resp.json()["llm"]
+        assert body["ok"] is False, "有坏模型 → 段级不通过"
+        by_name = {it["name"]: it for it in body["items"]}
+        assert by_name["好"]["ok"] is True, "好模型自身应通过"
+        assert by_name["坏"]["ok"] is False, "坏模型自身应失败"
+        assert "bad" in by_name["坏"]["url"], "明细要带地址，好分清是哪个连不上"
+        # 切激活条目**不影响**探测范围（与旧行为的关键差异）
         client.put(f"/api/settings/profiles/{p['id']}",
                    json={"llm": {"active": 0}}, headers=admin_headers)
-        resp = client.post(f"/api/settings/profiles/{p['id']}/test",
-                           headers=admin_headers)
-        assert resp.json()["llm"]["ok"] is False
+        body2 = client.post(f"/api/settings/profiles/{p['id']}/test",
+                            headers=admin_headers).json()["llm"]
+        assert {it["name"]: it["ok"] for it in body2["items"]} == \
+            {it["name"]: it["ok"] for it in body["items"]}, \
+            "激活条目变了，探测结果不变（探测范围与激活条目无关）"
 
 
 # ==================== 5. 部门兼容（字段覆盖基于全局激活模型） ====================
@@ -499,26 +510,38 @@ class TestDeptCompatibility:
         assert data["llm"]["model"] == "m-b", "部门跟随激活模型 B"
         assert data["dept"] is None
 
-    def test_dept_override_active_model_fields(self, client, admin_headers,
-                                               dept_admin_headers,
-                                               user_headers):
-        """部门字段覆盖基于激活模型：base_url 覆盖、model 仍为激活模型 B"""
+    def test_dept_selects_entry(self, client, admin_headers,
+                                dept_admin_headers, user_headers):
+        """★ 部门**选条目** A → 用 A 的完整配置（不再逐字段覆盖激活模型 B）
+
+        旧行为是"部门填 base_url/api_key 覆盖激活条目的同名字段"——想换个
+        模型就得整份抄一遍，抄漏一个（如 thinking_control）就静默漂移。
+        现改为按条目名取整份配置，见 merge_department_llm。
+        """
         dept_admin_hdrs, user_hdrs = self._setup(client, admin_headers)
-        resp = client.post("/api/settings/chat", json={
-            "llm": {"base_url": "http://dept-llm.example/v1",
-                    "api_key": "sk-dept-key-12345"},
-        }, headers=dept_admin_hdrs)
+        resp = client.post("/api/settings/chat", json={"llm": {"model": "A"}},
+                           headers=dept_admin_hdrs)
         assert resp.status_code == 200, resp.text
         merged = client.get("/api/settings/chat", headers=user_hdrs).json()
-        # 普通用户视角：base_url 主机部分打码（保留协议与端口，防内网地址泄露）
-        assert merged["llm"]["base_url"] == "http://***/v1"
-        assert "dept-llm.example" not in merged["llm"]["base_url"]
-        assert merged["llm"]["model"] == "m-b", "未覆盖字段=激活模型"
-        assert merged["llm"]["api_key"] != "sk-dept-key-12345", "绝不返回明文"
-        # 部门管理员视角看全量地址
+        assert merged["llm"]["model"] == "m-a", "用选中条目 A 的模型"
+        assert merged["llm"]["api_key"] != "sk-abc1234567890", "绝不返回明文"
+        # 部门管理员视角：拿到的是 A 的连接信息（条目里的，不是激活条目 B 的）
         admin_view = client.get("/api/settings/chat",
                                 headers=dept_admin_hdrs).json()
-        assert admin_view["llm"]["base_url"] == "http://dept-llm.example/v1"
+        assert admin_view["llm"]["base_url"] == "http://m.example/v1"
+
+    def test_dept_connection_fields_rejected(self, client, admin_headers,
+                                             dept_admin_headers):
+        """★ 连接信息与密钥不再接受部门提交（白名单已收紧到条目名 + 微调）"""
+        dept_admin_hdrs, _ = self._setup(client, admin_headers)
+        for bad in ({"base_url": "http://dept-llm.example/v1"},
+                    {"api_key": "sk-dept-key-12345"},
+                    {"thinking_control": "none"}):
+            resp = client.post("/api/settings/chat",
+                               json={"llm": dict(bad)},
+                               headers=dept_admin_hdrs)
+            assert resp.status_code == 400, \
+                f"{list(bad)} 应被白名单拒绝，实际 {resp.status_code}"
 
     def test_super_admin_chat_llm_edits_active_item(self, client,
                                                     admin_headers):

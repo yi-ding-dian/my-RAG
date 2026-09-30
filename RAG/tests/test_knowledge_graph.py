@@ -743,9 +743,13 @@ class TestIngestGraph:
         reasoning_effort=max，且持久化（模型需配 thinking_control=api 才会
         透传 extra_body——none 表示部署端已关思考，系统不改请求）"""
         _patch_rec_embedding(monkeypatch)
-        resp = client.post("/api/settings/chat",
-                           json={"llm": {"thinking_control": "api"}},
-                           headers=admin_headers)
+        # 改全局模型参数走档案更新接口（/api/settings/chat 的 llm 段白名单
+        # 已收紧到部门可提交的 3 个字段，见 merge_department_llm 的说明）
+        pid = client.get("/api/settings/profiles/active",
+                         headers=admin_headers).json()["id"]
+        resp = client.put(f"/api/settings/profiles/{pid}",
+                          json={"llm": {"thinking_control": "api"}},
+                          headers=admin_headers)
         assert resp.status_code == 200, resp.text
         fake = _patch_kg_client(monkeypatch, _FakeExtractionClient())
         kb = create_kb(client)
