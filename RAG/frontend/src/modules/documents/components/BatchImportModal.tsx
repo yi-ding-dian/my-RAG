@@ -218,7 +218,18 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
         });
         continue;
       }
-      // 2) 解析配置：智能=后端给的入库方案（失败回退最小配置，不中断批量）；
+      // 2) 重名新版本：后端已放行并自动解析比对内容，等用户在列表里选定
+      //    「更新原文档 / 保留为新文档」。本批**不为它配参数、也不触发入库**
+      //    （后端 is_ingestable 不接受 pending_update，硬触发只会报错打断批次）
+      if (doc.pending_update_of) {
+        out.push({
+          name: file.name,
+          ok: true,
+          note: '检测到同名文档的新版本，已自动比对内容，请在列表中确认是否更新',
+        });
+        continue;
+      }
+      // 3) 解析配置：智能=后端给的入库方案（失败回退最小配置，不中断批量）；
       //    统一=默认值查表 + 用户开关
       let config: IngestConfig;
       let note = '';
@@ -264,7 +275,7 @@ const BatchImportModal: React.FC<BatchImportModalProps> = ({
           effort: (mineruEffort || 'high') as MinerUEffort,
         });
       }
-      // 3) 触发入库（后台任务：parsing → ingested，列表轮询刷新）
+      // 4) 触发入库（后台任务：parsing → ingested，列表轮询刷新）
       try {
         await ingestDocument(kbId, doc.id, config);
         out.push({ name: file.name, ok: true, note });

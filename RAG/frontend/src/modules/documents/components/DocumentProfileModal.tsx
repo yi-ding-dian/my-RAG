@@ -14,6 +14,7 @@ const statusMeta: Record<string, { color: string; text: string }> = {
   ingested: { color: 'success', text: '已入库' },
   failed: { color: 'error', text: '失败' },
   pending_confirm: { color: 'orange', text: '待确认' },
+  pending_update: { color: 'purple', text: '待确认更新' },
 };
 
 const formatSize = (bytes: number) => {

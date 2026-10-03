@@ -40,7 +40,7 @@ const UploadArea: React.FC<UploadAreaProps> = ({
   onOpenUrlImport,
   onUploaded,
 }) => {
-  const { message, modal } = AntApp.useApp();
+  const { message } = AntApp.useApp();
   const { token } = theme.useToken();
   /** 待确认转换的 ppt/pptx（统一弹窗确认后才入队上传） */
   const [pendingConvert, setPendingConvert] = useState<File | null>(null);
@@ -93,34 +93,13 @@ const UploadArea: React.FC<UploadAreaProps> = ({
       try {
         await uploadDocument(kbId, file);
       } catch (e: unknown) {
-        // 同名文档检测：409 + detail 含"同名" → 确认后带 force=true 重传
+        // 409 = 重复检测拦下（两种情形，后端的 detail 已说清原因与命中文档）：
+        //   1. 字节完全相同的重复上传——无需再传一份
+        //   2. 同名文档正在转换/解析中——等它结束再传更新版
+        // 注意：**同名但内容不同不再是错误**——后端放行、自动解析并比对内容，
+        // 之后在文档列表里以「待确认更新」呈现，由用户选定更新还是另存
+        // （见 DocumentTable 的操作列与 backend/services/fingerprint.py）
         const detail = asApiError(e).response?.data?.detail;
-        if (asApiError(e).response?.status === 409 && typeof detail === 'string' && detail.includes('同名')) {
-          await new Promise<void>(resolve => {
-            modal.confirm({
-              title: '知识库中已存在同名文档',
-              content: `知识库中已存在同名文档「${file.name}」，是否继续上传？`,
-              okText: '继续上传',
-              cancelText: '取消',
-              onOk: async () => {
-                try {
-                  await uploadDocument(kbId, file, true);
-                  message.success(`已继续上传「${file.name}」`);
-                } catch (e2: unknown) {
-                  failed.push(`${file.name}（${asApiError(e2).response?.data?.detail || '重传失败'}）`);
-                  message.error(`继续上传「${file.name}」失败`);
-                }
-              },
-              onCancel: () => {
-                failed.push(`${file.name}（已取消：知识库已存在同名文档）`);
-                message.info(`已取消上传「${file.name}」`);
-              },
-              afterClose: resolve,
-            });
-          });
-          setUploadState(s => ({ ...s, done: s.done + 1 }));
-          return;
-        }
         failed.push(`${file.name}（${detail || '上传失败'}）`);
       }
       setUploadState(s => ({ ...s, done: s.done + 1 }));

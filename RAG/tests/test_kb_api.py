@@ -102,29 +102,39 @@ class TestUpload:
         )
         assert resp.status_code == 404
 
-    def test_upload_duplicate_name_409(self, client, admin_headers):
-        """同知识库同名文档（未删）→ 第二次上传 409 + detail 提示"""
+    def test_upload_duplicate_name_goes_pending(self, client, admin_headers):
+        """同知识库同名文档（内容不同）→ 放行并进入待确认更新（不再 409）
+
+        **行为变更（2026-10-03）**：旧行为是同名一律 409、用户确认后带
+        force=true 重传新增一份；现在改为放行 + 后台自动解析比对内容，停在
+        pending_update 等用户选定「更新原文档 / 保留为新文档」
+        （见 backend/services/fingerprint.py）。
+        """
         kb = create_kb(client)
-        upload_doc(client, kb["id"], filename="同名.txt")
+        old = upload_doc(client, kb["id"], filename="同名.txt")
         resp = client.post(
             f"/api/kbs/{kb['id']}/documents/upload",
             files={"file": ("同名.txt", b"other", "text/plain")},
             headers=admin_headers,
         )
-        assert resp.status_code == 409, resp.text
-        assert "同名" in resp.json()["detail"]
-        # 列表仍只有 1 份（409 未创建元数据）
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["pending_update_of"] == old["id"]
+        # 列表两份：原文档（仍在检索中）+ 待确认的新版本（无向量不参与检索）
         docs = client.get(f"/api/kbs/{kb['id']}/documents",
                           headers=admin_headers).json()
-        assert len(docs) == 1
+        assert len(docs) == 2
 
     def test_upload_duplicate_name_force_ok(self, client, admin_headers):
-        """force=true 跳过同名检测 → 200，允许同名共存（列表两份）"""
+        """force=true 可强制上传"字节完全相同的重复文件"（同名同内容）
+
+        force 语义收窄后只对这个分支有效：同名但字节不同的走待确认流程、
+        不需要也没有 force 入口（见 services/fingerprint.py 的判定顺序）。
+        """
         kb = create_kb(client)
-        upload_doc(client, kb["id"], filename="同名.txt")
+        upload_doc(client, kb["id"], filename="同名.txt", content="同样的内容")
         resp = client.post(
             f"/api/kbs/{kb['id']}/documents/upload?force=true",
-            files={"file": ("同名.txt", b"other", "text/plain")},
+            files={"file": ("同名.txt", "同样的内容".encode("utf-8"), "text/plain")},
             headers=admin_headers,
         )
         assert resp.status_code == 200, resp.text

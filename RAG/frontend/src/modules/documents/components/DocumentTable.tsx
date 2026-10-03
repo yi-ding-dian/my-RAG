@@ -63,11 +63,16 @@ export const statusMeta: Record<DocumentStatus, { color: string; text: string }>
   failed: { color: 'error', text: '失败' },
   // Agentic 分块超限待确认：不算失败，橙色 Tag + 操作列"确认继续"按钮
   pending_confirm: { color: 'orange', text: '待确认' },
+  // 同名新版本待确认更新：系统已解析并比对完内容，等用户选"更新原文档"
+  // 或"保留为新文档"（紫色区别于上面的 Agentic 待确认，两者处置方式不同）
+  pending_update: { color: 'purple', text: '待确认更新' },
 };
 
 // 可触发解析的状态：待解析/已解析/失败/已入库（已入库=重新解析）/
 // 待确认（Agentic 超限，可"确认继续"或换方式重新解析）
 // 页面主组件批量解析同样使用（判定勾选行是否可解析）
+// 注：pending_update（待确认更新）**不在其中**——它必须先在前端选定
+// 「更新原文档/保留为新文档」，后端 is_ingestable 也不接受该状态
 export const parseableStatuses: DocumentStatus[] = [
   'uploaded',
   'parsed',
@@ -75,6 +80,25 @@ export const parseableStatuses: DocumentStatus[] = [
   'ingested',
   'pending_confirm',
 ];
+
+/**
+ * 「待确认更新」按钮的悬浮说明：按后端的内容比对结果给不同文案。
+ *
+ * 三种结果的含义见 backend/services/fingerprint.py ——
+ * same=内容其实没变（仅存储格式差异，多是用 Office 重新保存过一遍）、
+ * changed=内容确有变化、unknown=原文档没有内容指纹（本功能上线前入库的）
+ * 导致无法比对。给用户看的差别在于"值不值得点更新"。
+ */
+export const pendingUpdateTip = (doc: DocumentItem): string => {
+  switch (doc.pending_update_verdict) {
+    case 'same':
+      return '与已入库的原文档内容完全相同（只是存储格式有差异，如被 Office 重新保存过）——更新会重跑切块与向量化，通常没有必要';
+    case 'changed':
+      return '检测到内容已变化：用新版本替换原文档并重新入库（切块配置沿用原文档，旧内容将从检索中移除）';
+    default:
+      return '无法比对内容（原文档没有内容指纹，可能是在本功能上线前入库的）：请自行确认内容是否有变化';
+  }
+};
 
 const formatSize = (bytes: number) => {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
@@ -247,6 +271,9 @@ export interface DocumentRowCallbacks {
   onSmartParse: (doc: DocumentItem) => void;
   /** Agentic 超限待确认 → 直接带确认标记重提入库 */
   onConfirmAgentic: (doc: DocumentItem) => void;
+  /** 待确认更新（同名新版本，系统已解析并比对完内容）：
+   *  action=update 用新版本替换原文档 / action=keep 保留为独立文档 */
+  onResolvePendingUpdate: (doc: DocumentItem, action: 'update' | 'keep') => void;
   /** 取消解析（parsing 状态） */
   onCancelIngestion: (doc: DocumentItem) => void;
   /** 切块详情弹窗 */
@@ -302,6 +329,7 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
   onStartParse,
   onSmartParse,
   onConfirmAgentic,
+  onResolvePendingUpdate,
   onCancelIngestion,
   onDetail,
   onDelete,
@@ -613,6 +641,30 @@ const DocumentTable: React.FC<DocumentTableProps> = ({
       width: 380,
       render: (_, row) => (
         <Space size="small">
+          {canManage && row.status === 'pending_update' && (
+            <>
+              <Tooltip title={pendingUpdateTip(row)}>
+                <Button
+                  key="apply-update"
+                  size="small"
+                  type="primary"
+                  icon={<CheckOutlined />}
+                  onClick={() => onResolvePendingUpdate(row, 'update')}
+                >
+                  更新原文档
+                </Button>
+              </Tooltip>
+              <Tooltip title="不更新原文档，把这份新版本保留为独立文档（之后可自行解析入库）">
+                <Button
+                  key="keep-update"
+                  size="small"
+                  onClick={() => onResolvePendingUpdate(row, 'keep')}
+                >
+                  保留为新文档
+                </Button>
+              </Tooltip>
+            </>
+          )}
           {canManage && row.status === 'pending_confirm' && (
             <Tooltip title="Agentic 分块超限（1 万~5 万字）待确认：点击确认后直接带确认标记重新入库">
               <Button

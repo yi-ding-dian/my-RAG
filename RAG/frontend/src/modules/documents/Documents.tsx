@@ -24,6 +24,7 @@ import {
   ingestDocument,
   listDocuments,
   listKbs,
+  resolvePendingUpdate,
 } from '../../shared/api/client';
 import PageHeader from '../../shared/components/layout/PageHeader';
 import { useAuth } from '../../shared/auth/AuthContext';
@@ -552,6 +553,48 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
+  /**
+   * 处理「待确认更新」：同名新版本上传后系统已自动解析并比对完内容，
+   * 停在 pending_update 等用户在此选定处置方式（判定见 backend/services/fingerprint.py）。
+   *
+   * - update：用新版本替换原文档并重新入库——**不可撤销**（旧切块与向量被
+   *   重建、旧内容从检索中移除），故走二次确认；若比对结果是"内容其实没变"
+   *   （verdict=same，多为 Office 重新保存导致字节变），确认框直接说明
+   *   "通常没有必要"，把判断依据摆给用户。
+   * - keep：保留为独立文档，原文档不受影响——非破坏性，不拦截。
+   */
+  const doResolvePendingUpdate = async (
+    doc: DocumentItem, action: 'update' | 'keep',
+  ) => {
+    try {
+      const res = await resolvePendingUpdate(kbId!, doc.id, action);
+      message.success(res.data.message);
+      void reloadFirstPage();
+    } catch (e: unknown) {
+      message.error(asApiError(e).response?.data?.detail || '处理失败');
+    }
+  };
+
+  const handleResolvePendingUpdate = (
+    doc: DocumentItem, action: 'update' | 'keep',
+  ) => {
+    if (action === 'keep') {
+      void doResolvePendingUpdate(doc, action);
+      return;
+    }
+    const unchanged = doc.pending_update_verdict === 'same';
+    modal.confirm({
+      title: `用新版本替换「${doc.original_name}」？`,
+      content: unchanged
+        ? '经比对，这份文件与已入库的内容完全相同（只是存储格式有差异，如被 Office 重新保存过）。更新会重跑切块与向量化，结果与现在一致——通常没有必要。'
+        : '原文档的内容与切块将被新版本覆盖并重新入库，旧内容从检索中移除。此操作不可撤销（如需保留旧版本，请先下载备份）。',
+      okText: '确认更新',
+      okButtonProps: { danger: !unchanged },
+      cancelText: '取消',
+      onOk: () => doResolvePendingUpdate(doc, 'update'),
+    });
+  };
+
   /** 下载文档原始文件（GET /documents/{id}/download，can_access_kb）：
    *  fetch blob + 鉴权头 + Content-Disposition 文件名触发浏览器下载 */
   const handleDownload = async (doc: DocumentItem) => {
@@ -724,6 +767,7 @@ const DocumentsPage: React.FC = () => {
               onStartParse={startParse}
               onSmartParse={setSmartDoc}
               onConfirmAgentic={handleConfirmAgentic}
+              onResolvePendingUpdate={handleResolvePendingUpdate}
               onCancelIngestion={handleCancelIngestion}
               onDetail={doc => void detailModal.openDetail(doc)}
               onDelete={handleDelete}

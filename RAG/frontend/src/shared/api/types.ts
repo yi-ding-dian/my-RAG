@@ -59,7 +59,11 @@ export type DocumentStatus =
   | 'parsed'
   | 'ingested'
   | 'failed'
-  | 'pending_confirm';
+  | 'pending_confirm'
+  /** 待确认更新：同名新版本上传后系统自动解析并比对完内容，等用户决定
+   *  「更新原文档」还是「保留为新文档」。此时文档没有向量，不参与检索，
+   *  原文档内容保持不变（见 services/fingerprint.py） */
+  | 'pending_update';
 
 export type ParseMethod = 'naive' | 'title' | 'regex' | 'parent_child' | 'qa' | 'agentic' | 'hierarchical';
 
@@ -206,6 +210,19 @@ export interface DocumentItem {
   ingest_started_at?: string | null;
   /** 入库结束时间（HH:mm:ss；完成/失败/取消时刻） */
   ingest_finished_at?: string | null;
+  /** 源文件字节 sha256（上传时算）：用于识别"字节完全相同的重复上传"。
+   *  不能用于判断内容是否变化——Office 重新保存会让字节全变（详见
+   *  backend/services/fingerprint.py 的说明） */
+  file_hash?: string | null;
+  /** 解析产物文本 sha256（解析完成后算）：判断"实质内容是否变化"的可靠口径 */
+  content_hash?: string | null;
+  /** 待确认更新：本文件是**该 ID 文档**的新版本（同知识库同名、字节不同），
+   *  等用户在前端选定处置方式 */
+  pending_update_of?: string | null;
+  /** 待确认更新的比对结果：same=与旧文档内容完全相同（仅存储格式差异，
+   *  如被 Office 重新保存过）/ changed=内容确有变化 / unknown=旧文档无
+   *  内容指纹，无法比对 */
+  pending_update_verdict?: 'same' | 'changed' | 'unknown' | null;
 }
 
 /** 解析方式友好名（契约：naive→通用切块 / title→按标题切块 / regex→正则切块 / parent_child→父子分块 / qa→QA 问答 / agentic→Agentic 智能分块 / hierarchical→层级聚合切块） */

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # 支持的文档状态
 VALID_STATUS = {"uploaded", "converting", "parsing", "parsed", "ingested",
-                "failed", "pending_confirm"}
+                "failed", "pending_confirm", "pending_update"}
 
 # 支持的文件扩展名（xlsx/xls/csv 走 spreadsheet.reader 直读表格；
 # doc 为老二进制 Word，走本地结构化解析，见 parsers.client.convert_doc_to_docx）
@@ -43,7 +43,8 @@ _TRANSITIONS = {
     # 列表里显示"转换中 + 耗时"）；转换成功 → uploaded（待解析），失败 → failed
     "converting": {"uploaded", "failed"},
     "uploaded": {"parsing"},
-    "parsing": {"parsed", "ingested", "failed", "pending_confirm"},
+    "parsing": {"parsed", "ingested", "failed", "pending_confirm",
+                "pending_update"},
     # ingested: 新流程解析+入库一步完成（parsed 保留兼容历史数据）；
     # pending_confirm: Agentic 分块超限（1 万~5 万字）未确认 → 待确认
     "parsed": {"ingested", "failed"},
@@ -52,6 +53,15 @@ _TRANSITIONS = {
     "pending_confirm": {"parsing", "ingested"},
     # 待确认后允许重新解析（确认继续带 agentic_confirm=true 重提走
     # parsing 正常流转；ingested 保留兼容直接迁移）
+    # pending_update: 同名新版本上传 → 解析完成、内容已比对，停在**不入库**
+    # 等用户确认（见 services/fingerprint.py）。此状态**不参与检索**（没有向量），
+    # 确认前新版绝不会与旧版同时被召回。
+    #   → uploaded: 用户选"保留为独立文档"（清标记，回到可解析状态）
+    #   → parsing : 用户对该文档重新解析（换解析方式再看结果）
+    #   → failed  : 解析/比对环节异常
+    # 注：用户选"更新旧文档"时**本状态不迁移**——临时文档被删除，由旧文档
+    # 走 ingested → parsing 重新入库（复用文档 ID，向量天然清理干净）
+    "pending_update": {"uploaded", "parsing", "failed"},
 }
 
 
@@ -88,7 +98,9 @@ class DocumentService:
     def create(self, kb_id: str, original_name: str, size: int,
                file_type: Optional[str] = None,
                converted_from: Optional[str] = None,
-               status: str = "uploaded") -> DocumentItem:
+               status: str = "uploaded",
+               file_hash: Optional[str] = None,
+               pending_update_of: Optional[str] = None) -> DocumentItem:
         """创建文档元数据（文件本身由路由层写入 uploads/）
 
         file_type 缺省由 original_name 扩展名推导；URL 导入等场景可显式
@@ -97,6 +109,10 @@ class DocumentService:
         仅用于列表标注"(原为 ppt)"，不影响任何解析逻辑。
         status：初始状态，缺省 uploaded；ppt/pptx 走后台转换时为 converting
         （上传即返回，列表显示"转换中"，转换完成后由调用方迁到 uploaded）。
+        file_hash：源文件字节 sha256（上传时算，用于重复上传识别，见
+        services/fingerprint.py）；URL 导入等无源文件的场景可留空。
+        pending_update_of：待确认更新——本文件是文档 X（同知识库同名、字节
+        不同）的新版本，解析完成后停在 pending_update 等用户确认。
         """
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ext = Path(original_name).suffix.lower() or ""
@@ -109,6 +125,8 @@ class DocumentService:
             converted_from=converted_from,
             size=size,
             status=status,
+            file_hash=file_hash,
+            pending_update_of=pending_update_of,
             created_at=now,
             updated_at=now,
         )

@@ -28,6 +28,8 @@ const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   ingested: { color: 'success', text: '已入库' },
   failed: { color: 'error', text: '失败' },
   pending_confirm: { color: 'orange', text: '待确认' },
+  // 同名新版本待确认更新（系统已比对完内容，等用户选定处置方式）
+  pending_update: { color: 'purple', text: '待确认更新' },
 };
 
 /** 触发解析的状态（与表格 parseableStatuses 一致；页面主组件批量解析用） */

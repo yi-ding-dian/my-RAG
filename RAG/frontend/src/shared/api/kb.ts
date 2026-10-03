@@ -93,6 +93,20 @@ export const uploadDocument = (kbId: string, file: File, force = false) => {
 export const ingestDocument = (kbId: string, docId: string, config?: IngestConfig) =>
   api.post<IngestResult>(`/kbs/${kbId}/documents/${docId}/ingest`, config);
 
+/**
+ * 处理「待确认更新」（同名新版本上传后，系统已自动解析并比对完内容）。
+ *
+ * - action='update'：用新版本替换原文档（后端复用原文档 ID 重新入库，
+ *   向量/BM25/图谱自动清理），本临时文档被删除
+ * - action='keep'：保留为独立文档（清待确认标记，回到待解析状态），
+ *   原文档不受影响
+ */
+export const resolvePendingUpdate = (
+  kbId: string, docId: string, action: 'update' | 'keep',
+) => api.post<{ message: string; doc_id: string; status: string }>(
+  `/kbs/${kbId}/documents/${docId}/pending-update`, { action },
+);
+
 // ========== 解析器可用性探测（解析前检测，解析弹窗状态徽标） ==========
 
 export const getParserStatus = () => api.get<ParserStatus>('/kbs/parsers/status');

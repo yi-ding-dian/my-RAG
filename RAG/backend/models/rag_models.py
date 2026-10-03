@@ -100,11 +100,45 @@ class DocumentItem(BaseModel):
     ingest_total_ms: Optional[int] = Field(None, description="入库总耗时（ms，成功=完成fallback一次；失败=失败时刻）")
     ingest_started_at: Optional[str] = Field(None, description="入库开始时间（YYYY-MM-DD HH:mm:ss；任务启动时刻）")
     ingest_finished_at: Optional[str] = Field(None, description="入库结束时间（完成/失败/取消时刻；进度展示用）")
+    # ---- 内容指纹：两级各司其职（实测结论见 record.md 2026-10-03 17:15）----
+    # file_hash 只负责抓"字节完全相同的重复上传"（强判断：字节相同 → 内容必然
+    # 相同，命中即可确定重复，无需解析）。它**判断不了"内容是否变化"**——Office
+    # 文档重新保存会让字节全变（实测：连 word/document.xml 的 hash 都会变，
+    # 差异只是 XML 引号风格），故"是否真的改了内容"一律看 content_hash。
+    file_hash: Optional[str] = Field(
+        None,
+        description="源文件字节 sha256（上传时算）：同知识库内识别\"字节完全相同的"
+                    "重复上传\"；不能用于判断内容是否变化；缺失=本功能上线前入库的老文档")
+    content_hash: Optional[str] = Field(
+        None,
+        description="解析产物文本 sha256（解析完成后算）：判断\"实质内容是否变化\"的"
+                    "可靠口径（对重新保存/换解析引擎均稳定）；仅解析过的文档有值")
+    # ---- 待确认更新 ----
+    # 同名但字节不同 → 当场无法区分"真改了"和"只是被重新保存过"，故不弹窗，
+    # 先上传并自动解析，解析完比对 content_hash 后**停在 parsed 等用户确认**
+    # （parsed 无向量 → 不参与检索，确认前新版本绝不会与旧版本同时被召回）
+    pending_update_of: Optional[str] = Field(
+        None,
+        description="待确认更新：本文件是文档 X 的新版本（同知识库同名、字节不同），"
+                    "解析完成后停在 parsed 等待用户确认；值=被更新的旧文档 id")
+    pending_update_verdict: Optional[str] = Field(
+        None,
+        description="待确认更新的比对结果：same=与旧文档内容完全相同（仅存储格式差异，"
+                    "如 Office 重新保存）/changed=内容确有变化；解析完成后写入，供前端提示")
 
 
 class RenameDocumentRequest(BaseModel):
     """文档重命名请求（只改展示名 original_name，内部名/向量/chunk 不变）"""
     name: str = Field(..., description="新文件名（1~255 字符，扩展名须与原文件一致，无扩展名自动补）")
+
+
+class ResolvePendingUpdateRequest(BaseModel):
+    """待确认更新的处置（同名新版本上传后，系统解析并比对完内容，等用户选择）"""
+    action: str = Field(
+        ...,
+        description="update=用新版本替换旧文档（复用旧文档 ID 重新入库，"
+                    "向量/BM25/图谱自动清理）/ keep=保留为独立文档（清除待确认"
+                    "标记，回到待解析状态，旧文档不受影响）")
 
 
 class UrlImportRequest(BaseModel):

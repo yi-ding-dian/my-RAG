@@ -41,20 +41,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/documents", tags=["超管文档管理"])
 
 # 状态筛选合法值（与 documents.py 的 _VALID_LIST_STATUS 语义完全一致：
-# parsed 为历史中间态归入「待解析」；unparsed 映射 uploaded+parsed 两态；
-# pending_confirm=Agentic 超限待确认，归入「失败」筛选组）
+# parsed 为历史中间态归入「待解析」；unparsed 映射 uploaded+parsed+
+# pending_update 三态；pending_confirm=Agentic 超限待确认，归入「失败」筛选组）
 _VALID_LIST_STATUS = {"uploaded", "converting", "parsing", "parsed", "ingested",
-                      "failed", "pending_confirm", "unparsed", "all"}
+                      "failed", "pending_confirm", "pending_update",
+                      "unparsed", "all"}
 
 # 未分配部门的分组标识（department_id 为 null 的知识库）
 UNASSIGNED_DEPT_KEY = "__unassigned__"
 
 
 def _match_status(doc_status: str, status: str) -> bool:
-    """状态筛选匹配（unparsed = uploaded + parsed，failed 组含
-    pending_confirm 待确认，与部门内文档列表语义一致）"""
+    """状态筛选匹配（unparsed = uploaded + parsed + pending_update，
+    failed 组含 pending_confirm 待确认，与部门内文档列表语义一致）"""
     if status in ("uploaded", "unparsed"):
-        return doc_status in ("uploaded", "parsed")
+        return doc_status in ("uploaded", "parsed", "pending_update")
     if status == "failed":
         return doc_status in ("failed", "pending_confirm")
     return doc_status == status

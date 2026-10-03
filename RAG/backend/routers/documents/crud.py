@@ -34,13 +34,17 @@ from backend.models.rag_models import (ChunkInfo, DocumentDetail,
                                        DocumentItem, DocxOutlineItem,
                                        DocxOutlineResponse, GraphBuildRequest,
                                        IngestRequest, ParsedHeading,
-                                       RenameDocumentRequest, UrlImportRequest)
+                                       RenameDocumentRequest,
+                                       ResolvePendingUpdateRequest,
+                                       UrlImportRequest)
 from backend.models.task_models import (TASK_CANCELLED, TASK_DONE, TASK_FAILED,
                                         TASK_TYPE_GRAPH)
 from backend.models.user_models import UserPublic
 from backend.services import audit_service
+from backend.services import fingerprint
 from backend.services.document_service import (SUPPORTED_EXTS,
                                                get_document_service)
+from backend.services.fingerprint import check_upload
 from backend.services.ingestion.params import (resolve_parser_config,
                                                resolve_parser_engine)
 from backend.services.ingestion.service import get_ingestion_service
@@ -67,9 +71,13 @@ _MAX_PREVIEW_PDF_BYTES = 50 * 1024 * 1024  # PDF 在线预览上限 50MB
 
 # 文档列表状态筛选合法值（空/缺省 = 全部；parsed 为历史中间态，归入
 # 「待解析」；unparsed 为前端「未入库」筛选 value，映射 uploaded+parsed 两态；
-# pending_confirm=Agentic 超限待确认，归入「失败」筛选组（同为异常/挂起态））
+# pending_confirm=Agentic 超限待确认，归入「失败」筛选组（同为异常/挂起态）；
+# pending_update=同名新版本待确认更新，归入「未入库」组——它确实没有向量、
+# 不参与检索，且是用户的**正常操作**（改完文档重新上传），归到「失败」组会
+# 让人以为出错了。该组文档不能直接触发解析，需先在前端选定更新方式）
 _VALID_LIST_STATUS = {"uploaded", "converting", "parsing", "parsed", "ingested",
-                      "failed", "pending_confirm", "unparsed", "all"}
+                      "failed", "pending_confirm", "pending_update",
+                      "unparsed", "all"}
 
 # Word 文档（结构化解析目标格式）：只有这两种类型支持提取标题结构
 _WORD_FILE_TYPES = ("docx", "doc")
@@ -97,9 +105,17 @@ async def upload_document(request: Request, kb_id: str,
                           user: UserPublic = Depends(get_current_user)):
     """上传文档（txt/md/pdf/docx/doc/xlsx/xls/csv），初始状态 uploaded（can_manage_kb）
 
-    force: 默认 False——同知识库存在同名（未软删）文档时返回 409 提示；
-    用户确认后带 force=true 重传可跳过同名检测（允许同名共存）。
-    软删除（回收站）中的同名文档不算（可恢复，未删除外）。
+    重复检测（见 services/fingerprint.py，与将来的外部入库接口共用同一套判断）：
+    - 字节完全相同的重复上传 → 409 拦下（强判断，无需解析即可确定）
+    - 同名且既有文档正在转换/解析 → 409 拦下（并发安全，force 也不放行）
+    - 同名但字节不同 → **放行**并打 pending_update_of 标记：此刻无法区分
+      "内容真改了"和"只是被 Office 重新保存过"（后者字节全变、内容一字不差，
+      实测见 record.md 2026-10-03），故随后自动解析、比对文本指纹后再问用户
+      （见 ingestion/service.py 的 2.2 步暂停）
+    - 无同名无同内容 → 正常上传
+
+    force: 仅对"字节完全相同的重复上传"有效（跳过拦截强制入库，向后兼容
+    老前端的"确认后重传"调用）；同名待确认流程不需要 force。
     """
     await kb_or_404(db, kb_id, user, manage=True)
     original_name = file.filename or "unnamed"
@@ -141,21 +157,36 @@ async def upload_document(request: Request, kb_id: str,
     if conv_ext:
         original_name = f"{Path(original_name).stem}.pdf"
 
-    # 同名检测（放在改名之后：ppt 转出来是 .pdf，要按**最终名字**查重；
-    # list_by_kb 默认 include_deleted=False，回收站中的同名不算，跨库互不影响）
-    if not force and any(
-            d.original_name == original_name
-            for d in get_document_service().list_by_kb(kb_id)):
-        raise HTTPException(
-            status_code=409,
-            detail=f"知识库中已存在同名文档：{original_name}，如需覆盖请确认后重传")
+    # 重复检测（放在改名之后：ppt 转出来是 .pdf，要按**最终名字**查重；
+    # 比对范围仅本知识库，回收站文档不参与——见 services/fingerprint.py）
+    dup = await asyncio.to_thread(check_upload, kb_id, original_name, content)
+    if dup.kind == fingerprint.SAME_NAME_BUSY:
+        # 并发安全：后台任务正在跑，force 也不放行（等它结束再传更新版）
+        await _audit_rejected_upload(user, original_name, dup, len(content),
+                                     request)
+        raise HTTPException(status_code=409, detail=dup.message)
+    if dup.kind == fingerprint.EXACT_DUP and not force:
+        await _audit_rejected_upload(user, original_name, dup, len(content),
+                                     request)
+        raise HTTPException(status_code=409, detail=dup.message)
+    pending_of = dup.existing.id if dup.kind == fingerprint.SAME_NAME else None
 
     # 创建元数据（UUID 内部文件名），原文件写对象存储 + 本地副本（ingest 解析 / 存储不可用 fallback）
     doc_svc = get_document_service()
     doc = doc_svc.create(
         kb_id=kb_id, original_name=original_name, size=len(content),
         converted_from=converted_from,
+        file_hash=dup.file_hash,
+        pending_update_of=pending_of,
         status="converting" if conv_ext else "uploaded")
+    # 待确认更新：沿用旧文档的解析配置。两个理由——(1) 内容指纹可比：不同
+    # 解析引擎产出的文本天然不同，两边引擎不一致会把"没改"误判成"改了"；
+    # (2) 用户确认更新后，这份配置正是新版本要用的（见 _stage_pending_update）
+    if pending_of:
+        old = doc_svc.get(pending_of)
+        if old:
+            doc_svc.update_doc(doc.id, parser_id=old.parser_id,
+                               parser_config=dict(old.parser_config or {}))
     storage = get_storage_service()
     try:
         await storage.upload_bytes(
@@ -168,8 +199,18 @@ async def upload_document(request: Request, kb_id: str,
     await asyncio.to_thread(upload_path.write_bytes, content)
     # ppt/pptx：后台转换 → 覆盖存储与本地副本 → 迁到 uploaded（待解析）
     if conv_ext:
+        # 转换完成后若带待确认标记，转换任务内部会接着自动解析（见
+        # _convert_uploaded_office 末尾）——此时文档还不是 uploaded，触发会被挡
         asyncio.create_task(
             _convert_uploaded_office(doc.id, content, original_name))
+    elif pending_of:
+        # 待确认更新：立即自动解析（**只为比对内容**）。显式关掉一切产生费用
+        # 的增强——图片摘要/知识图谱/上下文增强都烧 token，必须等用户确认
+        # 之后才跑（2.2 步的暂停点本就在图片摘要之前，这里再传 False 是双保险，
+        # 防旧文档配置里的开关被沿用后仍被消费）
+        asyncio.create_task(get_ingestion_service().run_ingestion(
+            doc.id, image_summary=False, knowledge_graph=False,
+            contextual_retrieval=False))
     await _refresh_kb_stats(db, kb_id)
     await audit_service.record_action(
         user, action="doc.upload", target_type="doc",
@@ -177,6 +218,27 @@ async def upload_document(request: Request, kb_id: str,
         detail={"size": len(content), "file_type": f".{ext}"}, request=request)
     logger.info("文档上传: %s (%s) %d 字节", original_name, doc.id, len(content))
     return doc
+
+
+async def _audit_rejected_upload(user, original_name: str, dup, size: int,
+                                 request) -> None:
+    """被重复检测拦下的上传也记审计日志
+
+    **唯一**记录"未成功的写操作"的地方（格式不支持 400、参数非法 400 都不记）：
+    区别在于它是**系统主动发现并阻止了一次无意义操作**，而不是用户参数没填对。
+    留痕的价值：能看出"某用户反复上传同一文件"这类情况（多半是没意识到该文档
+    已在库），排查时是有效线索。
+
+    target 指向**命中的既有文档**——本次上传根本没创建文档，没有自己的 id。
+    detail.reason 与 backend/services/fingerprint.py 的判定常量同源：
+    exact_dup=内容完全相同 / same_name_busy=该文档正在转换或解析中。
+    """
+    await audit_service.record_action(
+        user, action="doc.upload.rejected", target_type="doc",
+        target_id=dup.existing.id if dup.existing else None,
+        target_name=original_name,
+        detail={"reason": dup.kind, "size": size},
+        status="failed", request=request)
 
 
 async def _convert_uploaded_office(doc_id: str, content: bytes,
@@ -224,10 +286,102 @@ async def _convert_uploaded_office(doc_id: str, content: bytes,
             pass
         return
     try:
-        doc_svc.transition(doc_id, "uploaded", size=len(pdf))  # → 待解析
+        doc = doc_svc.transition(doc_id, "uploaded", size=len(pdf))  # → 待解析
     except ValueError:
-        pass
+        doc = None
     logger.info("PPT 转换完成: %s（%.1f KB）", doc_id, len(pdf) / 1024)
+    # 待确认更新：转换完成才有 uploaded 状态可触发解析（upload 接口对 ppt
+    # 不直接触发，等的就是这一刻）。增强开关同样显式关掉，见 upload 接口注释
+    if doc and doc.pending_update_of:
+        asyncio.create_task(get_ingestion_service().run_ingestion(
+            doc_id, image_summary=False, knowledge_graph=False,
+            contextual_retrieval=False))
+
+
+@router.post("/{doc_id}/pending-update")
+async def resolve_pending_update(request: Request, kb_id: str, doc_id: str,
+                                 req: ResolvePendingUpdateRequest,
+                                 db: AsyncSession = Depends(get_db),
+                                 user: UserPublic = Depends(get_current_user)):
+    """处理"待确认更新"（can_manage_kb）
+
+    同名新版本上传 → 系统自动解析并比对文本指纹 → 停在 pending_update 等用户
+    决定（判定逻辑见 services/fingerprint.py）。本接口就是那个决定：
+
+    - action=update：用新版本替换旧文档。新内容写进**旧文档**（复用旧文档 ID：
+      重新入库时向量先删后建、BM25/图谱引用一并清理，检索不会残留旧版本内容），
+      删除本临时文档，随后触发旧文档重新入库。
+    - action=keep：保留为独立文档。清待确认标记、状态回到 uploaded（用户可
+      自行解析入库），旧文档及其检索内容不受影响。
+
+    冲突（409）：文档不在待确认状态 / 旧文档已被删除 / 旧文档正在解析中。
+    """
+    await kb_or_404(db, kb_id, user, manage=True)
+    doc = _get_doc_or_404(kb_id, doc_id)
+    if doc.status != "pending_update" or not doc.pending_update_of:
+        raise HTTPException(
+            status_code=409,
+            detail=f"文档不在待确认更新状态（当前: {doc.status}）")
+    if req.action not in ("update", "keep"):
+        raise HTTPException(status_code=400,
+                            detail="action 仅支持 update / keep")
+
+    doc_svc = get_document_service()
+    old = doc_svc.get(doc.pending_update_of)
+
+    if req.action == "keep":
+        doc_svc.transition(doc_id, "uploaded",
+                           pending_update_of=None, pending_update_verdict=None)
+        await audit_service.record_action(
+            user, action="doc.update.keep", target_type="doc",
+            target_id=doc_id, target_name=doc.original_name, request=request)
+        logger.info("待确认更新: 保留为独立文档 %s（原文档 %s 未变）",
+                    doc_id, doc.pending_update_of)
+        return {"message": "已保留为独立文档，原文档未改动",
+                "doc_id": doc_id, "status": "uploaded"}
+
+    # ---- action == "update" ----
+    if not old or old.deleted:
+        raise HTTPException(
+            status_code=409,
+            detail="原文档已不存在（可能已被删除），无法更新；"
+                   "可改用 keep 把它保留为独立文档")
+    if get_ingestion_service().is_running(old.id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"文档「{old.original_name}」正在解析中，"
+                   "请等待完成后再更新")
+
+    # 1) 新内容写进旧文档：对象存储与本地副本都要换（解析取数走本地副本，
+    #    存储不可用时回退也是它——两处不一致会导致重新入库又解析回旧内容）
+    content = await asyncio.to_thread(doc_svc.get_upload_path(doc).read_bytes)
+    storage = get_storage_service()
+    try:
+        await storage.upload_bytes(f"uploads/{old.name}", content)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"文件存储失败: {e}")
+    await asyncio.to_thread(doc_svc.get_upload_path(old).write_bytes, content)
+
+    # 2) 旧文档元数据换新指纹；图谱作废——内容变了，基于旧内容的实体/关系对
+    #    新内容不再成立（重新入库若开着 knowledge_graph 会自动重建）
+    doc_svc.update_doc(old.id, file_hash=doc.file_hash,
+                       content_hash=doc.content_hash,
+                       size=len(content),
+                       graph_status="none", graph_error=None)
+
+    # 3) 删除临时文档（存储对象 + 图片 + 元数据；它从未入库，无向量）
+    await _purge_document(kb_id, doc_id)
+
+    # 4) 触发旧文档重新入库（ingested → parsing，向量先删后建）
+    asyncio.create_task(get_ingestion_service().run_ingestion(old.id))
+    await audit_service.record_action(
+        user, action="doc.update.apply", target_type="doc",
+        target_id=old.id, target_name=old.original_name,
+        detail={"replaced_by_upload": doc_id}, request=request)
+    logger.info("应用文档更新: %s (%s) ← 临时上传 %s，已触发重新入库",
+                old.original_name, old.id, doc_id)
+    return {"message": f"已用新版本替换「{old.original_name}」，正在重新入库",
+            "doc_id": old.id, "status": "parsing"}
 
 
 @router.post("/{doc_id}/ingest")
@@ -500,9 +654,10 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
                        f"pending_confirm/unparsed/all）")
         if status != "all":
             if status in ("uploaded", "unparsed"):
-                # 「待解析/未入库」= uploaded + 历史「已解析」中间态，
-                # 两者均可触发入库解析（前端筛选 value 用 unparsed）
-                docs = [d for d in docs if d.status in ("uploaded", "parsed")]
+                # 「待解析/未入库」= uploaded + 历史「已解析」中间态 +
+                # pending_update（待确认更新的新版本，同样尚未入库）
+                docs = [d for d in docs
+                        if d.status in ("uploaded", "parsed", "pending_update")]
             elif status == "failed":
                 # 「失败」筛选组 = failed + pending_confirm（Agentic 超限
                 # 待确认：异常/挂起态一组，前端「失败」标签下可见待确认文档）
@@ -525,17 +680,18 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
 
 def _aggregate_status_counts(docs: List) -> dict:
     """按状态筛选语义聚合计数（Segmented 徽标数据源，与 _VALID_LIST_STATUS
-    分组完全一致）：unparsed=uploaded+parsed（待解析/已解析均未入库）；
-    failed=failed+pending_confirm（Agentic 超限待确认归失败组）；
-    parsing/ingested 单值；total=全部。纯静态统计，无 DB/向量开销。"""
+    分组完全一致）：unparsed=uploaded+parsed+pending_update（待解析/已解析/
+    待确认更新均未入库）；failed=failed+pending_confirm（Agentic 超限待确认
+    归失败组）；parsing/ingested 单值；total=全部。纯静态统计，无 DB/向量开销。"""
     per_status = {s: 0 for s in
                   ("uploaded", "parsing", "parsed", "ingested",
-                   "failed", "pending_confirm")}
+                   "failed", "pending_confirm", "pending_update")}
     for d in docs:
         per_status[d.status] = per_status.get(d.status, 0) + 1
     return {
         "total": len(docs),
-        "unparsed": per_status["uploaded"] + per_status["parsed"],
+        "unparsed": (per_status["uploaded"] + per_status["parsed"]
+                     + per_status["pending_update"]),
         "parsing": per_status["parsing"],
         "ingested": per_status["ingested"],
         "failed": per_status["failed"] + per_status["pending_confirm"],

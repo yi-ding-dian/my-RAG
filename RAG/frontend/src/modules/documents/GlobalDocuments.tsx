@@ -69,6 +69,8 @@ const statusMeta: Record<DocumentStatus, { color: string; text: string }> = {
   ingested: { color: 'success', text: '已入库' },
   failed: { color: 'error', text: '失败' },
   pending_confirm: { color: 'orange', text: '待确认' },
+  // 同名新版本待确认更新（系统已比对完内容，等用户在知识库内页面处置）
+  pending_update: { color: 'purple', text: '待确认更新' },
 };
 
 /** 入库流程轨迹渲染（同 DocumentTable.renderIngestTrace —— 两处保持同步：

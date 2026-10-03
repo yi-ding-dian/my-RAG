@@ -89,6 +89,7 @@ from backend.services.document_service import get_document_service
 from backend.services.dim_check import VectorDimensionError
 from backend.services.embedding_service import (EmbeddingError,
                                                 get_embedding_service)
+from backend.services.fingerprint import compute_content_hash
 from backend.services.ingestion.images import _ImageMixin
 from backend.services.ingestion.params import (_MAX_AGENTIC_TEXT_CHARS,
                                                _MAX_AGENTIC_TEXT_CHARS_HARD,
@@ -407,6 +408,15 @@ class IngestionService(_TraceMixin, _ImageMixin):
             self._set_stage(doc_id, "解析文档")
             text, images, parse_method = await self._stage_parse(
                 doc, doc_id, parser_config, probe)
+            # 2.2) 待确认更新：同名新版本 → 解析完比对内容后**停在这里**，
+            #      等用户确认"是否用新版本替换旧文档"（见 services/fingerprint.py）
+            #      **暂停点必须在图片摘要之前**：图片摘要、上下文增强、知识图谱、
+            #      embedding 都产生费用（token/算力），而"同名新版本"里有相当
+            #      比例只是被 Office 重新保存过、内容其实没变（实测见 record.md
+            #      2026-10-03）——先花 2 秒比对内容，再决定要不要烧这些钱。
+            if (doc_svc.get(doc_id) or doc).pending_update_of:
+                await self._stage_pending_update(doc_id, text)
+                return
             # 2.5) 图片摘要（可选；**必须在切块前**——摘要要进 markdown 才能
             #      被切进 chunk、才检索得到。未开启/未配置/单图失败都不阻塞
             #      入库，见 services/image_summary.py）
@@ -423,6 +433,12 @@ class IngestionService(_TraceMixin, _ImageMixin):
             # 见 record.md 2026-09-14 17:25）。新增任何改 text 的步骤，
             # 只能加在本行之上
             doc_svc.get_parsed_path(doc).write_text(text, encoding="utf-8")
+            # 内容指纹：**最终定稿文本**的 sha256，供"同名新版本"内容比对用
+            # （见 services/fingerprint.py）。必须算在这份定稿文本上——它是
+            # 切块与检索的输入、也是前端右栏原文，是全链路唯一的"文档内容"
+            # 权威表示；算在切块产物上会随切块参数变化而漂移，算在源文件字节上
+            # 则会被 Office 重新保存打乱（实测见 record.md 2026-10-03）
+            content_hash = compute_content_hash(text)
             # 3) 切块阶段（QA 规范性检测 → 切块 → 父标题前缀）
             self._set_stage(doc_id, "切块")
             stage = await self._stage_chunk(
@@ -447,7 +463,7 @@ class IngestionService(_TraceMixin, _ImageMixin):
             self._set_stage(doc_id, "完成落库")
             await self._stage_finalize(
                 doc, doc_id, parser_id, parser_config, parse_method,
-                contexts, stage, kg_status, kg_error)
+                contexts, stage, kg_status, kg_error, content_hash)
             # 7) 成功：入库轨迹落文档（5 阶段耗时 + 总耗时 + 启止时间）
             trace, total_ms, _, started_at, finished_at = self._finalize_trace(doc_id)
             if trace:
@@ -491,6 +507,48 @@ class IngestionService(_TraceMixin, _ImageMixin):
             # 兜底（未知异常）：不记堆栈，信息保留
             logger.error("入库失败: %s (%s)", doc_id, e)
             doc_svc.mark_failed(doc_id, str(e))
+
+    async def _stage_pending_update(self, doc_id: str, text: str) -> None:
+        """待确认更新：比对内容后停在 pending_update，等用户决定是否替换旧文档
+
+        调用点在 _ingest 2.2 步（解析完成、图片摘要之前）。同名新版本刚上传时
+        **当场无法区分**"内容真改了"和"只是被 Office 重新保存过"——后者字节
+        全变而内容一字不差（实测见 record.md 2026-10-03）。故此处先花毫秒级
+        代价比对文本指纹，把结论交给用户，而不是直接烧 embedding/token。
+
+        比对结果写进 pending_update_verdict（前端据此给不同提示）：
+        - same    与旧文档 content_hash 相同 → "内容未变，仅存储格式差异"
+        - changed 不同 → "内容已变化，是否用新版本替换？"
+        - unknown 旧文档无 content_hash（本功能上线前入库且未重跑过）→ 无法比对
+
+        产物不落盘（与 _stage_parse 一致）：确认更新时旧文档会**正常走完整
+        入库**（含重新解析），本处的解析只服务于比对。省一次落盘 I/O，也避免
+        留下与最终入库结果可能不一致的 parsed 文件。
+        """
+        doc_svc = get_document_service()
+        doc = doc_svc.get(doc_id)
+        if not doc:
+            return
+        old = doc_svc.get(doc.pending_update_of) if doc.pending_update_of else None
+        content_hash = compute_content_hash(text)
+        if old and old.content_hash:
+            verdict = "same" if old.content_hash == content_hash else "changed"
+        else:
+            verdict = "unknown"
+        doc_svc.transition(doc_id, "pending_update",
+                           content_hash=content_hash,
+                           pending_update_verdict=verdict)
+        logger.info("待确认更新: %s (%s) 对比旧文档 %s → %s",
+                    doc.original_name, doc_id, doc.pending_update_of, verdict)
+        # 轨迹收尾：本流程是**正常暂停**而非失败，故与成功路径同样 finalize
+        # 但不打 failed 标记（_finalize_trace 已 pop，_run_ingestion_locked 的
+        # finally 不会再把它标成失败）
+        trace, total_ms, _, started_at, finished_at = self._finalize_trace(doc_id)
+        if trace:
+            doc_svc.update_doc(doc_id, ingest_trace=trace,
+                               ingest_total_ms=total_ms,
+                               ingest_started_at=started_at,
+                               ingest_finished_at=finished_at)
 
     async def _stage_parse(self, doc, doc_id: str, parser_config: dict,
                            probe) -> Tuple[str, str]:
@@ -1144,11 +1202,12 @@ class IngestionService(_TraceMixin, _ImageMixin):
                               contexts: Dict[int, str],
                               stage: _IngestChunkStage,
                               kg_status: Optional[str],
-                              kg_error: Optional[str]) -> None:
+                              kg_error: Optional[str],
+                              content_hash: str) -> None:
         """完成阶段：解析配置持久化到文档元数据（重跑沿用）；
         chunks_meta 存完整列表（text+偏移，详情接口读），chunk_preview
         兼容保留；图谱状态随入库写回（kg_status=None 即开关关，保持文档
-        原值不清空）。"""
+        原值不清空）；content_hash=定稿文本指纹（同名新版本比对用）。"""
         doc_svc = get_document_service()
         chunk_objects = stage.chunk_objects
         chunks: List[str] = [c.text for c in chunk_objects]
@@ -1176,6 +1235,9 @@ class IngestionService(_TraceMixin, _ImageMixin):
                 for c in stage.parent_chunks],
             "parser_id": parser_id,
             "parser_config": parser_config,
+            # 定稿文本指纹：下次同名上传时用来判断"内容到底变没变"
+            # （见 services/fingerprint.py）
+            "content_hash": content_hash,
         }
         if kg_status is not None:
             transition_kwargs["graph_status"] = kg_status
