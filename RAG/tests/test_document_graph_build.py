@@ -18,7 +18,7 @@ import time
 from types import SimpleNamespace
 
 from conftest import create_kb, upload_doc, wait_for_status
-from backend.services.knowledge_graph_service import graph_path, load_graph
+from backend.services.knowledge_graph.service import graph_path, load_graph
 
 # 固定抽取结果（与 test_knowledge_graph 同款语义：Python + Guido van Rossum）
 _FIXED_EXTRACTION = {
@@ -79,7 +79,7 @@ def _patch_kg_client(monkeypatch, fake: _FakeExtractionClient) -> _FakeExtractio
     """替换 knowledge_graph_service 的客户端工厂（抽取调用经它取；
     注入的 LLM 配置记到 fake.last_llm_cfg 供模型覆盖断言）"""
     monkeypatch.setattr(
-        "backend.services.knowledge_graph_service._get_client",
+        "backend.services.knowledge_graph.service._get_client",
         lambda llm_cfg=None: fake.set_cfg(llm_cfg))
     return fake
 

@@ -23,7 +23,7 @@ import pytest
 
 from conftest import char_vector, create_kb, upload_doc, wait_for_status
 from backend.chunking import Chunk
-from backend.services.contextual_retriever import enrich_chunks
+from backend.services.ingestion.contextual_retriever import enrich_chunks
 
 
 # ==================== 伪摘要 LLM 客户端 ====================
@@ -70,7 +70,7 @@ class _FakeContextClient:
 def _patch_ctx_client(monkeypatch, fake: _FakeContextClient):
     """替换 contextual_retriever 的客户端工厂（enrich_chunks 内部经它取客户端）"""
     monkeypatch.setattr(
-        "backend.services.contextual_retriever._get_client",
+        "backend.services.ingestion.contextual_retriever._get_client",
         lambda llm_cfg=None: fake)
     return fake
 
@@ -91,7 +91,7 @@ def _patch_active_llm_online(monkeypatch):
         # 完整文档阈值段（enrich_chunks 每次调用实时读取）
         contextual_retrieval=SimpleNamespace(max_full_doc_chars=20000))
     monkeypatch.setattr(
-        "backend.services.contextual_retriever.get_active_config",
+        "backend.services.ingestion.contextual_retriever.get_active_config",
         lambda: online)
 
 
@@ -415,7 +415,7 @@ class TestRetrieveContext:
     def test_build_refs_with_context(self):
         """引用构建：有 context 拼前缀 / parent_text 场景补摘要 / 已含前缀不重复 / 无 context 不变"""
         from backend.models.rag_models import Source
-        from backend.services.chat_service import ChatService
+        from backend.services.chat.service import ChatService
         # 无摘要：保持现状（不出现前缀）
         refs = asyncio.run(ChatService._build_refs([
             Source(id="d_0", text="原文内容", document_name="doc")]))

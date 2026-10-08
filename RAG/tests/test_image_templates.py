@@ -9,7 +9,7 @@ messages 且带用户问题），输出形态不同，但"看什么"完全一样
 """
 from __future__ import annotations
 
-from backend.services.chat_vision import _build_messages
+from backend.services.chat.chat_vision import _build_messages
 from backend.services.image_summary import default_prompt
 from backend.services.image_templates import (BUILTIN_IMAGE_TEMPLATES,
                                               DEFAULT_TEMPLATE_NAME,

@@ -49,7 +49,7 @@ from backend.services.ingestion.params import (resolve_parser_config,
                                                resolve_parser_engine)
 from backend.services.ingestion.service import get_ingestion_service
 from backend.services.kb_service import get_kb_service
-from backend.services.knowledge_graph_service import (build_graph_for_doc,
+from backend.services.knowledge_graph.service import (build_graph_for_doc,
                                                       load_graph,
                                                       remove_doc_refs,
                                                       save_graph)

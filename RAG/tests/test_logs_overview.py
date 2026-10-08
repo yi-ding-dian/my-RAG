@@ -54,7 +54,7 @@ def _now_ts(offset_seconds: int = 0) -> str:
 
 
 # SystemFaultFilter 注入前缀后的 logger 名（系统级）
-SYS = "system.backend.services.chat_service"
+SYS = "system.backend.services.chat.service"
 # 普通 logger 名（用户级）
 USER = "backend.services.ingestion.service"
 
@@ -447,8 +447,8 @@ class TestSystemFaultFilter:
         return record.name
 
     def test_adds_prefix_when_marked(self):
-        assert self._run("backend.services.chat_service", True) == \
-            "system.backend.services.chat_service"
+        assert self._run("backend.services.chat.service", True) == \
+            "system.backend.services.chat.service"
 
     def test_keeps_name_when_not_marked(self):
         assert self._run("backend.services.ingestion.service", False) == \
@@ -515,7 +515,7 @@ class TestHttpNoiseFilter:
 
     def test_business_logs_untouched(self):
         """业务日志一律保留（INFO 与 ERROR）"""
-        assert self._keep("backend.services.chat_service",
+        assert self._keep("backend.services.chat.service",
                           logging.INFO, "检索完成")
-        assert self._keep("backend.services.chat_service",
+        assert self._keep("backend.services.chat.service",
                           logging.ERROR, "LLM 调用失败")

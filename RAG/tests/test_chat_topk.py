@@ -31,7 +31,7 @@ class FakeRetrieval:
 def _patch_retrieval(monkeypatch) -> FakeRetrieval:
     fake = FakeRetrieval()
     monkeypatch.setattr(
-        "backend.services.chat_service.get_retrieval_service",
+        "backend.services.chat.service.get_retrieval_service",
         lambda: fake)
     return fake
 

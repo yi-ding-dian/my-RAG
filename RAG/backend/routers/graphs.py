@@ -19,7 +19,7 @@ from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
 from backend.models.rag_models import KnowledgeGraph
 from backend.models.user_models import UserPublic
-from backend.services.knowledge_graph_service import (graph_path, load_graph)
+from backend.services.knowledge_graph.service import (graph_path, load_graph)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/kbs/{kb_id}/graph", tags=["知识图谱"])

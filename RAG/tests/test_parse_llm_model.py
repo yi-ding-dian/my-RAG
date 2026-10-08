@@ -22,8 +22,8 @@ import pytest
 
 from backend.chunking import Chunk
 from backend.services.settings import service as ss
-from backend.services.contextual_retriever import enrich_chunks
-from backend.services.knowledge_graph_service import build_graph_for_doc
+from backend.services.ingestion.contextual_retriever import enrich_chunks
+from backend.services.knowledge_graph.service import build_graph_for_doc
 from backend.services.settings.service import (find_llm_item,
                                                llm_cfg_for_parser)
 
@@ -172,7 +172,7 @@ class TestEnrichChunksSpecifiedModel:
         """parse_llm_model=模型B → 摘要客户端配置全来自模型B条目"""
         _setup_multi_models(active=0)
         fake = _patch_recorder(monkeypatch,
-                               "backend.services.contextual_retriever",
+                               "backend.services.ingestion.contextual_retriever",
                                "该片段位于文档第二章")
         result = asyncio.run(enrich_chunks(
             _mk_chunks(["片段一", "片段二"]), "文档背景文本",
@@ -188,7 +188,7 @@ class TestEnrichChunksSpecifiedModel:
         """未指定 parse_llm_model → 激活模型（active=0 → 模型A）"""
         _setup_multi_models(active=0)
         fake = _patch_recorder(monkeypatch,
-                               "backend.services.contextual_retriever",
+                               "backend.services.ingestion.contextual_retriever",
                                "该片段位于文档第二章")
         asyncio.run(enrich_chunks(
             _mk_chunks(["片段一"]), "文档背景文本",
@@ -201,7 +201,7 @@ class TestEnrichChunksSpecifiedModel:
         """查不到指定模型 → 回退激活模型（active=1 → 模型B），不抛"""
         _setup_multi_models(active=1)
         fake = _patch_recorder(monkeypatch,
-                               "backend.services.contextual_retriever",
+                               "backend.services.ingestion.contextual_retriever",
                                "该片段位于文档第二章")
         result = asyncio.run(enrich_chunks(
             _mk_chunks(["片段一"]), "文档背景文本",
@@ -214,7 +214,7 @@ class TestEnrichChunksSpecifiedModel:
         """空串指定（=未指定）→ 激活模型"""
         _setup_multi_models(active=0)
         fake = _patch_recorder(monkeypatch,
-                               "backend.services.contextual_retriever",
+                               "backend.services.ingestion.contextual_retriever",
                                "该片段位于文档第二章")
         asyncio.run(enrich_chunks(
             _mk_chunks(["片段一"]), "文档背景文本",
@@ -229,7 +229,7 @@ class TestBuildGraphSpecifiedModel:
         """parse_llm_model=模型B → 图谱抽取客户端用模型B配置"""
         _setup_multi_models(active=0)
         fake = _patch_recorder(monkeypatch,
-                               "backend.services.knowledge_graph_service",
+                               "backend.services.knowledge_graph.service",
                                _FIXED_EXTRACTION_JSON)
         stats = asyncio.run(build_graph_for_doc(
             "kb-test-model", "doc-1", "测试文档",
@@ -245,7 +245,7 @@ class TestBuildGraphSpecifiedModel:
         """未指定 → 激活模型（active=0 → 模型A）"""
         _setup_multi_models(active=0)
         fake = _patch_recorder(monkeypatch,
-                               "backend.services.knowledge_graph_service",
+                               "backend.services.knowledge_graph.service",
                                _FIXED_EXTRACTION_JSON)
         stats = asyncio.run(build_graph_for_doc(
             "kb-test-model-2", "doc-1", "测试文档",
@@ -259,7 +259,7 @@ class TestBuildGraphSpecifiedModel:
         """查不到 → 回退激活模型，不抛"""
         _setup_multi_models(active=1)
         fake = _patch_recorder(monkeypatch,
-                               "backend.services.knowledge_graph_service",
+                               "backend.services.knowledge_graph.service",
                                _FIXED_EXTRACTION_JSON)
         stats = asyncio.run(build_graph_for_doc(
             "kb-test-model-3", "doc-1", "测试文档",

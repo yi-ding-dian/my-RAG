@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 
 from backend.models.rag_models import ChatMessage, ChatSession, Source
-from backend.services.chat_service import ChatService
+from backend.services.chat.service import ChatService
 
 
 def _src(i: int, name: str = "文档A", score: float | None = None) -> Source:

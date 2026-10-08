@@ -19,7 +19,7 @@ import pytest
 
 from conftest import char_vector, create_kb, upload_doc
 from backend.models.rag_models import DocumentItem
-from backend.services.agentic_chunker import (
+from backend.services.ingestion.agentic_chunker import (
     AgenticChunkError, _parse_response, agentic_chunk, align_chunks,
     normalize_label, restore_heading_prefix)
 from backend.services.ingestion.params import resolve_parser_config
@@ -91,7 +91,7 @@ class _FakeAgenticClient:
 def _patch_agentic_client(monkeypatch, fake: _FakeAgenticClient):
     """替换 agentic_chunker 的客户端工厂（agentic_chunk 内部经它取客户端）"""
     monkeypatch.setattr(
-        "backend.services.agentic_chunker._get_client",
+        "backend.services.ingestion.agentic_chunker._get_client",
         lambda llm_cfg=None: fake)
     return fake
 
@@ -108,7 +108,7 @@ def _patch_active_llm_online(monkeypatch):
                       temperature=0.3, max_tokens=8192, timeout=60.0,
                       thinking_control="api"))
     monkeypatch.setattr(
-        "backend.services.agentic_chunker.get_active_config",
+        "backend.services.ingestion.agentic_chunker.get_active_config",
         lambda: online)
 
 
@@ -124,7 +124,7 @@ def _patch_active_llm_prefill(monkeypatch):
                       temperature=0.3, max_tokens=8192, timeout=60.0,
                       thinking_control="prefill"))
     monkeypatch.setattr(
-        "backend.services.agentic_chunker.get_active_config",
+        "backend.services.ingestion.agentic_chunker.get_active_config",
         lambda: local)
 
 
@@ -297,7 +297,7 @@ class TestRestoreHeadingPrefix:
 
     def test_heading_path_chain_capped(self):
         """连续标题行链最多并入 _MAX_HEADING_PATH_LINES 行（防过度扩展）"""
-        from backend.services.agentic_chunker import _MAX_HEADING_PATH_LINES
+        from backend.services.ingestion.agentic_chunker import _MAX_HEADING_PATH_LINES
         text = "# 一级\n## 二级\n### 三级\n#### 四级\n第一段内容。"
         aligned = self._restored(text, ["第一段内容。"])
         s, e, _ = aligned[0]
@@ -324,7 +324,7 @@ class TestAgenticPrompt:
     """prompt 约束：块开头必须含所属章节标题行"""
 
     def test_prompt_requires_heading_line(self):
-        from backend.services.agentic_chunker import _AGENTIC_PROMPT
+        from backend.services.ingestion.agentic_chunker import _AGENTIC_PROMPT
         assert "章节标题行" in _AGENTIC_PROMPT
         assert "标题行是段落的一部分" in _AGENTIC_PROMPT
         assert "逐字拷贝" in _AGENTIC_PROMPT
@@ -460,7 +460,7 @@ class TestAgenticChunk:
                           temperature=0.3, max_tokens=8192, timeout=60.0,
                           thinking_control="none"))
         monkeypatch.setattr(
-            "backend.services.agentic_chunker.get_active_config",
+            "backend.services.ingestion.agentic_chunker.get_active_config",
             lambda: none_cfg)
         fake = _patch_agentic_client(monkeypatch, _FakeAgenticClient())
         asyncio.run(agentic_chunk(_AGENTIC_DOC, {"thinking_mode": "disabled"}))

@@ -20,9 +20,10 @@ from datetime import datetime, timedelta
 import pytest
 
 from backend.services import user_memory_service as ums
-from backend.services.chat_service import (ChatService, _CITATION_RULE,
-                                           _wrap_data_boundary,
-                                           _SYSTEM_PROMPT_TEMPLATE)
+from backend.services.chat.refs import (_CITATION_RULE,
+                                        _SYSTEM_PROMPT_TEMPLATE,
+                                        _wrap_data_boundary)
+from backend.services.chat.service import ChatService
 from conftest import FakeLLMClient, create_kb, upload_and_ingest
 
 svc = lambda: ums.get_user_memory_service()  # noqa: E731

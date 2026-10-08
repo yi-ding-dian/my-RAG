@@ -35,12 +35,12 @@ from backend.models.rag_models import (BatchDeleteSessionRequest,
                                        RetrieveResponse)
 from backend.models.user_models import UserPublic
 from backend.services import audit_service, department_service, image_summary
-from backend.services.chat_service import (delete_session_images,
+from backend.services.chat.service import (delete_session_images,
                                            get_chat_service, sse_event)
 from backend.services.feedback_service import (create_feedback,
                                                get_feedback_msg_idxs,
                                                get_feedback_msg_idxs_bulk)
-from backend.services.knowledge_graph_service import (build_kg_source,
+from backend.services.knowledge_graph.service import (build_kg_source,
                                                       extract_query_entities,
                                                       has_any_graph)
 from backend.services.retrieval_service import get_retrieval_service

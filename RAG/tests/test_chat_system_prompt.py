@@ -13,9 +13,10 @@ from types import SimpleNamespace
 
 from backend.config import get_active_config
 from backend.models.rag_models import Source
-from backend.services.chat_service import (ChatService, _CITATION_RULE,
-                                           _SYSTEM_PROMPT_TEMPLATE,
-                                           _wrap_data_boundary)
+from backend.services.chat.refs import (_CITATION_RULE,
+                                        _SYSTEM_PROMPT_TEMPLATE,
+                                        _wrap_data_boundary)
+from backend.services.chat.service import ChatService
 from conftest import _FakeStream, create_kb, upload_and_ingest
 
 REFS = "[引用 1]（来源：文档A）\n内容一\n\n[引用 2]（来源：文档B）\n内容二"

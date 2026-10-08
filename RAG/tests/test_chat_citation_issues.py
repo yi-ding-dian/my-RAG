@@ -23,7 +23,7 @@ import asyncio
 import json
 
 from backend.models.rag_models import Source
-from backend.services.chat_service import ChatService
+from backend.services.chat.service import ChatService
 from conftest import create_kb, upload_and_ingest
 
 # parent_child 大章文档：6 段各约 100 字（chunk_size=80 时每段独立成块，

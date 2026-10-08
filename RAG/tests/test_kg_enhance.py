@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from backend.services.knowledge_graph_service import save_graph
+from backend.services.knowledge_graph.service import save_graph
 from conftest import _find_dept_id, create_kb, upload_and_ingest
 
 
@@ -79,7 +79,7 @@ def _patch_query_client(monkeypatch, mode: str = "ok",
     """替换 knowledge_graph_service 的模块级 _get_client 为伪客户端"""
     fake = _FakeQueryEntitiesClient(mode=mode, payload=payload)
     monkeypatch.setattr(
-        "backend.services.knowledge_graph_service._get_client",
+        "backend.services.knowledge_graph.service._get_client",
         lambda llm_cfg=None: fake)
     return fake
 

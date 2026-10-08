@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 from types import SimpleNamespace
 
-from backend.services import query_rewriter
-from backend.services.query_rewriter import (_needs_rewrite, _normalize,
+from backend.services.chat import query_rewriter
+from backend.services.chat.query_rewriter import (_needs_rewrite, _normalize,
                                               rewrite_query)
 
 
@@ -181,7 +181,7 @@ class TestChatRewriteIntegration:
     def _patch(monkeypatch, rewritten: str) -> _RecordingRetrieval:
         fake = _RecordingRetrieval()
         monkeypatch.setattr(
-            "backend.services.chat_service.get_retrieval_service",
+            "backend.services.chat.service.get_retrieval_service",
             lambda: fake)
         monkeypatch.setattr(query_rewriter, "_get_client",
                             lambda llm_cfg=None: _FakeRewriteClient(rewritten))
@@ -239,7 +239,7 @@ class TestChatRewriteIntegration:
         kb = create_kb(client)
         retr = _RecordingRetrieval()
         monkeypatch.setattr(
-            "backend.services.chat_service.get_retrieval_service",
+            "backend.services.chat.service.get_retrieval_service",
             lambda: retr)
         mock_llm()
         resp = client.post("/api/chat/stream", json={

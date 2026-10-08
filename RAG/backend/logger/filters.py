@@ -3,7 +3,7 @@
 `AppLog.system_error()` 会给记录带上 `extra={"fault": True}`，`SystemFaultFilter`
 据此把 logger 名加上 `system.` 前缀，落成：
 
-    2026-09-15 11:47:48,884 [ERROR] system.backend.services.chat_service: LLM 流式调用失败
+    2026-09-15 11:47:48,884 [ERROR] system.backend.services.chat.service: LLM 流式调用失败
 
 `routers/logs.py` 的统计接口按这个前缀区分「系统级 / 用户级」，决定要不要点红灯。
 不改日志格式（格式串里的 %(name)s 本来就带模块名），所以行解析正则、前端解析、

@@ -48,7 +48,7 @@ parsed 为历史中间态，仅兼容保留）
   其他方式 metadata 仅 document_id/document_name/chunk_index/char_start/char_end
 - agentic（Agentic 智能分块，第六种方式）：LLM 读全文自主判断
   完整逻辑段落切割，每块附类型标签（论述类/事实类/操作类/数据类/其他，
-  实现见 backend/services/agentic_chunker.py）。文本长度两档校验（解析出
+  实现见 backend/services/ingestion/agentic_chunker.py）。文本长度两档校验（解析出
   文本后、切块前）：>5 万字直接拒绝（不支持 Agentic 分块）；1 万~5 万字
   且未带 agentic_confirm → ValueError（错误信息带"约 X.X 万字"提示，任务
   失败，前端弹确认框，确认后带 agentic_confirm=true 重新提交）；带确认
@@ -82,9 +82,9 @@ from backend.chunking import (Chunk, QaStats, add_heading_paths,
                               trusted_headings, ParentChildChunkResult)
 from backend.chunking.common import _iter_headings
 from backend.config import get_active_config
-from backend.services.agentic_chunker import (AgenticChunkError,
+from backend.services.ingestion.agentic_chunker import (AgenticChunkError,
                                               agentic_chunk)
-from backend.services.contextual_retriever import enrich_chunks
+from backend.services.ingestion.contextual_retriever import enrich_chunks
 from backend.services.document_service import get_document_service
 from backend.services.dim_check import VectorDimensionError
 from backend.services.embedding_service import (EmbeddingError,
@@ -97,7 +97,7 @@ from backend.services.ingestion.params import (_MAX_AGENTIC_TEXT_CHARS,
                                                resolve_parser_config,
                                                resolve_parser_engine)
 from backend.services.ingestion.trace import _TraceMixin
-from backend.services.knowledge_graph_service import build_graph_for_doc
+from backend.services.knowledge_graph.service import build_graph_for_doc
 from backend.services.llm_client import LLMRequestError, LLMTimeoutError
 from backend.services.parsers.client import (ParserUnavailableError,
                                             get_parser_client)

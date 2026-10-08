@@ -59,7 +59,7 @@ from backend.db import get_db
 from backend.deps import require_super_admin
 from backend.models.user_models import UserPublic
 from backend.services import audit_service
-from backend.services.chat_service import ChatService, \
+from backend.services.chat.service import ChatService, \
     get_chat_service, sse_event
 from backend.services.document_service import get_document_service
 from backend.services.ext_query_service import (get_ext_query_service,
@@ -292,7 +292,7 @@ async def ext_query_defaults(user: UserPublic = Depends(require_super_admin)):
     llm_cfg = resolve_llm_config({})  # 未指定模型 = 全局激活模型
     # "跟随全局"时实际会用到的提示词：全局聊天设置里配了就用它，没有才回落到
     # 内置模板（{refs} 处运行时注入引用内容）
-    from backend.services.chat_service import _SYSTEM_PROMPT_TEMPLATE
+    from backend.services.chat.refs import _SYSTEM_PROMPT_TEMPLATE
     default_prompt = resolve_system_prompt({}, cfg.chat.system_prompt) or \
         _SYSTEM_PROMPT_TEMPLATE.format(
             refs="【此处运行时注入本次检索到的引用内容】")

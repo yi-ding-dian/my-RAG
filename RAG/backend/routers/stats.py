@@ -40,7 +40,7 @@ from backend.deps import get_current_user, kb_or_404
 from backend.models.user_models import (DepartmentORM, FeedbackORM, KBORM,
                                         UserORM, UserPublic)
 from backend.services import audit_service, ragas_sampling
-from backend.services.chat_service import get_chat_service
+from backend.services.chat.service import get_chat_service
 from backend.services.document_service import get_document_service
 from backend.services.kb_service import get_kb_service
 from backend.services.parsers.probes import probe_embedding, probe_llm

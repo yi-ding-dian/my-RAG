@@ -120,7 +120,7 @@ def test_filter_graph_by_inactive_docs():
     实体照样会以「知识图谱」引用冒进回答。
     只剔除**确知非活跃**的文档（回收站/禁用），未知 doc_id 保留。
     """
-    from backend.services.knowledge_graph_service import filter_graph_by_inactive_docs
+    from backend.services.knowledge_graph.service import filter_graph_by_inactive_docs
 
     graph = {
         "entities": [

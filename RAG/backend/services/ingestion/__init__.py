@@ -8,6 +8,11 @@
 - images.py: 解析图片上传与 markdown 引用重写 mixin（_ImageMixin）
 - service.py: 主体（IngestionService：并发信号量 + 状态机编排 + 各 _stage_*），
   单例入口 get_ingestion_service
+- contextual_retriever.py: 上下文检索增强（切块后给每块生成摘要，enrich_chunks）
+- agentic_chunker.py: Agentic 切块（LLM 决策块边界，agentic_chunk）
+
+后两者原先平铺在 services/ 根下，但它们**只被 service.py 引用**（流程专用件），
+按「谁跟谁一起变」的判据收进本目录。
 
 调用方按具体子模块导入（如 `from backend.services.ingestion.service import
 get_ingestion_service`、`from backend.services.ingestion.params import

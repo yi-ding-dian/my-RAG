@@ -22,7 +22,7 @@ from conftest import char_vector, create_kb, upload_doc, wait_for_status
 from backend.chunking import Chunk
 from backend.config import ContextualRetrievalConfig, build_default_config
 from backend.services.settings import service as ss
-from backend.services.contextual_retriever import (DocTooLongError,
+from backend.services.ingestion.contextual_retriever import (DocTooLongError,
                                                    enrich_chunks)
 from backend.services.settings.service import SECTION_SCHEMA
 
@@ -50,7 +50,7 @@ class _MsgRecorderClient:
 def _patch_ctx_client(monkeypatch, fake):
     """替换 contextual_retriever 的客户端工厂"""
     monkeypatch.setattr(
-        "backend.services.contextual_retriever._get_client",
+        "backend.services.ingestion.contextual_retriever._get_client",
         lambda llm_cfg=None: fake)
     return fake
 

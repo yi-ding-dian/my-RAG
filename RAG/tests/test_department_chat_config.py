@@ -14,7 +14,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from backend.config import get_active_config
-from backend.services.chat_service import ChatService
+from backend.services.chat.service import ChatService
 from backend.services.settings.service import merge_chat_config
 from conftest import _FakeStream, create_department_and_admin, create_kb, \
     create_user, upload_and_ingest
@@ -186,7 +186,7 @@ class TestDeptChatAssembly:
 
         # 记录检索服务调用参数（转发真实离线检索）
         from backend.services import retrieval_service
-        from backend.services.chat_service import get_chat_service
+        from backend.services.chat.service import get_chat_service
         real_svc = retrieval_service.get_retrieval_service()
         retrieval_calls = []
 
@@ -202,7 +202,7 @@ class TestDeptChatAssembly:
                                   min_score=min_score, **kw)
 
         monkeypatch.setattr(
-            "backend.services.chat_service.get_retrieval_service",
+            "backend.services.chat.service.get_retrieval_service",
             lambda: SimpleNamespace(retrieve=_wrapper,
                                     retrieve_multi=_wrapper_multi))
         recorder = _RecordingLLM()

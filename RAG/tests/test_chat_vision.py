@@ -45,7 +45,7 @@ class FakeRetrieval:
 def _patch_retrieval(monkeypatch) -> FakeRetrieval:
     fake = FakeRetrieval()
     monkeypatch.setattr(
-        "backend.services.chat_service.get_retrieval_service", lambda: fake)
+        "backend.services.chat.service.get_retrieval_service", lambda: fake)
     return fake
 
 
@@ -601,7 +601,7 @@ class TestBuildMessages:
     的唯一出口，改读图行为都从这儿下手，所以要单独锁住它的契约。"""
 
     def _text(self, **kw) -> str:
-        from backend.services.chat_vision import _build_messages
+        from backend.services.chat.chat_vision import _build_messages
         msg = _build_messages(data_url="data:image/png;base64,AAA", **kw)
         return msg[0]["content"][0]["text"]
 
@@ -624,7 +624,7 @@ class TestBuildMessages:
 
     def test_image_part_untouched(self):
         """图片部分不受占位符替换影响"""
-        from backend.services.chat_vision import _build_messages
+        from backend.services.chat.chat_vision import _build_messages
         url = "data:image/png;base64,ZZZ"
         msg = _build_messages(data_url=url, prompt="", max_chars=200,
                               question="q")

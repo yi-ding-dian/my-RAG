@@ -25,7 +25,7 @@ import pytest
 from conftest import (char_vector, create_department_and_admin, create_kb,
                       create_user, upload_doc, wait_for_status)
 from backend.chunking import Chunk
-from backend.services.knowledge_graph_service import (
+from backend.services.knowledge_graph.service import (
     GRAPH_DIR, _empty_graph, build_graph_context, build_graph_for_doc,
     build_thinking_extra_body, expand_neighbors, extract_query_entities,
     graph_path, load_graph, match_entities, merge_into_graph, normalize_name,
@@ -95,7 +95,7 @@ class _FakeExtractionClient:
 def _patch_kg_client(monkeypatch, fake: _FakeExtractionClient) -> _FakeExtractionClient:
     """替换 knowledge_graph_service 的客户端工厂（build_graph_for_doc 内部经它取）"""
     monkeypatch.setattr(
-        "backend.services.knowledge_graph_service._get_client",
+        "backend.services.knowledge_graph.service._get_client",
         lambda llm_cfg=None: fake)
     return fake
 
@@ -115,7 +115,7 @@ def _patch_active_llm_online(monkeypatch):
                       temperature=0.3, max_tokens=8192, timeout=60.0,
                       thinking_control="api"))
     monkeypatch.setattr(
-        "backend.services.knowledge_graph_service.get_active_config",
+        "backend.services.knowledge_graph.service.get_active_config",
         lambda: online)
 
 
@@ -525,7 +525,7 @@ class TestBuildGraphForDoc:
 
         fake.chat.completions.create = _flaky_create
         monkeypatch.setattr(
-            "backend.services.knowledge_graph_service._get_client",
+            "backend.services.knowledge_graph.service._get_client",
             lambda llm_cfg=None: fake)
         stats = asyncio.run(build_graph_for_doc(
             "kb1", "d1", "测试.txt", _mk_chunks(["一", "二", "三"]),
@@ -576,7 +576,7 @@ class TestBuildGraphForDoc:
                           temperature=0.3, max_tokens=1024, timeout=30.0))
         # knowledge_graph_service 顶部 from-import 复制了 get_active_config 引用
         monkeypatch.setattr(
-            "backend.services.knowledge_graph_service.get_active_config",
+            "backend.services.knowledge_graph.service.get_active_config",
             lambda: bare)
         stats = asyncio.run(build_graph_for_doc(
             "kb1", "d1", "测试.txt", _mk_chunks(["片段"]),
@@ -1217,7 +1217,7 @@ class TestExtractQueryEntities:
 
     def test_ok_returns_entities(self, monkeypatch):
         fake = _FakeQueryEntitiesClient()
-        monkeypatch.setattr("backend.services.knowledge_graph_service."
+        monkeypatch.setattr("backend.services.knowledge_graph.service."
                             "_get_client", lambda llm_cfg=None: fake)
         result = asyncio.run(extract_query_entities("图灵和专家系统什么关系？"))
         assert result == ["图灵", "专家系统"]
@@ -1228,37 +1228,37 @@ class TestExtractQueryEntities:
         透传（判据是模型级 thinking_control，见 test_thinking_strategy）"""
         _patch_active_llm_online(monkeypatch)
         fake = _FakeQueryEntitiesClient()
-        monkeypatch.setattr("backend.services.knowledge_graph_service."
+        monkeypatch.setattr("backend.services.knowledge_graph.service."
                             "_get_client", lambda llm_cfg=None: fake)
         asyncio.run(extract_query_entities("图灵测试是什么"))
         assert fake.last_extra_body == {"thinking": {"type": "disabled"}}
 
     def test_failure_returns_empty(self, monkeypatch):
         fake = _FakeQueryEntitiesClient(mode="error")
-        monkeypatch.setattr("backend.services.knowledge_graph_service."
+        monkeypatch.setattr("backend.services.knowledge_graph.service."
                             "_get_client", lambda llm_cfg=None: fake)
         assert asyncio.run(extract_query_entities("图灵测试是什么")) == []
         assert fake.call_count == 1
 
     def test_garbage_returns_empty(self, monkeypatch):
         fake = _FakeQueryEntitiesClient(mode="garbage")
-        monkeypatch.setattr("backend.services.knowledge_graph_service."
+        monkeypatch.setattr("backend.services.knowledge_graph.service."
                             "_get_client", lambda llm_cfg=None: fake)
         assert asyncio.run(extract_query_entities("图灵测试是什么")) == []
 
     def test_empty_query_no_llm_call(self, monkeypatch):
         fake = _FakeQueryEntitiesClient()
-        monkeypatch.setattr("backend.services.knowledge_graph_service."
+        monkeypatch.setattr("backend.services.knowledge_graph.service."
                             "_get_client", lambda llm_cfg=None: fake)
         assert asyncio.run(extract_query_entities("  ")) == []
         assert fake.call_count == 0, "空查询不应调用 LLM"
 
     def test_timeout_returns_empty(self, monkeypatch):
         fake = _FakeQueryEntitiesClient(mode="slow")
-        monkeypatch.setattr("backend.services.knowledge_graph_service."
+        monkeypatch.setattr("backend.services.knowledge_graph.service."
                             "_get_client", lambda llm_cfg=None: fake)
         # 超时 8s 太长不便等待，直接断言内部逻辑：slow 模式 sleep 10s 会超时
         # —— 通过把模块超时临时调小验证降级路径
-        import backend.services.knowledge_graph_service as kgs
+        import backend.services.knowledge_graph.service as kgs
         monkeypatch.setattr(kgs, "_QUERY_TIMEOUT", 0.05)
         assert asyncio.run(extract_query_entities("图灵测试是什么")) == []

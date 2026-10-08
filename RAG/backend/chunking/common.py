@@ -13,7 +13,7 @@ from backend.chunking.heading_presets import match_system_position as _match_sys
 
 # 支持的切块方式（ingest 请求 method / 文档 parser_id 取值范围；
 # agentic=Agentic 智能分块（LLM 读全文切逻辑段落+标签），异步实现见
-# backend/services/agentic_chunker.py，get_chunker 不支持（ingestion 特殊分支）；
+# backend/services/ingestion/agentic_chunker.py，get_chunker 不支持（ingestion 特殊分支）；
 # hierarchical=规范文档层级聚合切块，实现在独立包 backend/normative（自带标题链，
 # 入库流程不应再叠加 add_heading_paths）
 VALID_METHODS = ("naive", "title", "regex", "parent_child", "qa", "agentic",

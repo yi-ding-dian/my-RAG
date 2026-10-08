@@ -55,7 +55,7 @@ def _stub_retrieve(scores, monkeypatch):
             return await self.retrieve(kb_ids[0], query,
                                        top_k=top_k, min_score=min_score)
 
-    monkeypatch.setattr("backend.services.agentic_service.get_retrieval_service",
+    monkeypatch.setattr("backend.services.chat.agentic_service.get_retrieval_service",
                         lambda: _StubRetrieval())
     return calls
 
@@ -70,16 +70,16 @@ def _stub_rewrite(monkeypatch, rewritten: str = "改写后的问题", fail: bool
         return SimpleNamespace(choices=[
             SimpleNamespace(message=SimpleNamespace(content=rewritten))])
 
-    monkeypatch.setattr("backend.services.agentic_service.llm_completion",
+    monkeypatch.setattr("backend.services.chat.agentic_service.llm_completion",
                         fake_completion)
-    monkeypatch.setattr("backend.services.agentic_service.get_llm_client",
+    monkeypatch.setattr("backend.services.chat.agentic_service.get_llm_client",
                         lambda llm_cfg=None, timeout=None: SimpleNamespace())
 
 
 def _stub_active_config(monkeypatch, max_retries=1, recheck=0.55,
                         abstain=0.25):
     """桩活跃配置：monkeypatch agentic_service 模块引用的 get_active_config"""
-    monkeypatch.setattr("backend.services.agentic_service.get_active_config",
+    monkeypatch.setattr("backend.services.chat.agentic_service.get_active_config",
                         lambda: SimpleNamespace(
                             agentic=AgenticConfig(
                                 enabled=True, max_retries=max_retries,
@@ -97,7 +97,7 @@ def _run(monkeypatch, scores, query="问题", rewritten="改写后的问题",
     calls = _stub_retrieve(scores, monkeypatch)
     _stub_rewrite(monkeypatch, rewritten=rewritten, fail=rewrite_fail)
     _stub_active_config(monkeypatch, **kw)
-    from backend.services.agentic_service import get_agentic_service
+    from backend.services.chat.agentic_service import get_agentic_service
     result = asyncio.run(get_agentic_service().run(["kb_x"], query))
     return result, calls
 
@@ -207,10 +207,10 @@ class TestAgenticDecisionGraph:
                 return await self.retrieve(kb_ids[0], query,
                                            top_k=top_k, min_score=min_score)
 
-        monkeypatch.setattr("backend.services.agentic_service.get_retrieval_service",
+        monkeypatch.setattr("backend.services.chat.agentic_service.get_retrieval_service",
                             lambda: _StubRetrieval())
         _stub_active_config(monkeypatch)
-        from backend.services.agentic_service import get_agentic_service
+        from backend.services.chat.agentic_service import get_agentic_service
         result = asyncio.run(get_agentic_service().run(["kb_x"], "关键词问题"))
         assert result.decision == "answer"
 
@@ -219,7 +219,7 @@ class TestAgenticDecisionGraph:
         _stub_retrieve([0.4, 0.7], monkeypatch)
         _stub_rewrite(monkeypatch, "改写后的问题")
         _stub_active_config(monkeypatch)
-        from backend.services.agentic_service import get_agentic_service
+        from backend.services.chat.agentic_service import get_agentic_service
         events: list = []
 
         async def collect():
@@ -239,7 +239,7 @@ class TestAgenticDecisionGraph:
         _stub_retrieve([0.1], monkeypatch)
         _stub_rewrite(monkeypatch)
         _stub_active_config(monkeypatch)
-        from backend.services.agentic_service import get_agentic_service
+        from backend.services.chat.agentic_service import get_agentic_service
         events: list = []
 
         async def collect():

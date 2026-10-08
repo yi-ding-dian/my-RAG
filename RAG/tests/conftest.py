@@ -110,10 +110,11 @@ def reset_services():
       删除/重建目录会使其失效（readonly 错误），故 session 级保留同一实例，
       collection 按随机 kb_id 命名天然隔离，无需重置。
     """
-    from backend.services import (chat_service, document_service,
+    from backend.services import (document_service,
                                   embedding_service, ext_query_service,
                                   kb_service, ragas_client,
                                   retrieval_service, storage_service)
+    from backend.services.chat import service as chat_service
     from backend.services.ingestion import service as ingestion_service
     from backend.services.parsers import client as parser_client
     kb_service._kb_service = None
@@ -139,7 +140,7 @@ def reset_services():
     storage_service._storage = None
     storage_service._storage_key = None
 
-    from backend.services import agentic_service
+    from backend.services.chat import agentic_service
     agentic_service._agentic_service = None
 
     from backend import db as db_module
@@ -468,7 +469,7 @@ def mock_llm(monkeypatch):
         mock_llm(parts=[...])      # 自定义流式文本
     返回 state（instances 列表记录已注入客户端，可断言 LLM 调用次数）
     """
-    from backend.services import chat_service
+    from backend.services.chat import service as chat_service
     state = _LLMMockState()
 
     def _get_client(self, llm_cfg=None):
@@ -535,7 +536,8 @@ def fake_vision(monkeypatch):
         st.clients[0].calls[0]            # 断言实际发给 VLM 的 messages
     """
     from backend.config import VisionModelConfig
-    from backend.services import chat_vision, image_summary
+    from backend.services import image_summary
+    from backend.services.chat import chat_vision
 
     state = _VisionMockState()
 

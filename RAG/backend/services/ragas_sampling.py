@@ -207,7 +207,7 @@ async def _generate_one(kb_ids: List[str], question: str, top_k: int,
     "回答引用的内容"和"评估用的上下文"对不上的样本。
     """
     # 延迟导入：避免模块级循环依赖（ragas_sampling ← chat_service 的方向）
-    from backend.services.chat_service import get_chat_service
+    from backend.services.chat.service import get_chat_service
 
     state: Dict = {"answer": "", "sources": [], "session_id": None}
     async for chunk in get_chat_service().stream_chat(
@@ -263,7 +263,7 @@ def cleanup_sessions(session_ids: List[str]) -> int:
     """
     if not session_ids:
         return 0
-    from backend.services.chat_service import get_chat_service
+    from backend.services.chat.service import get_chat_service
     svc = get_chat_service()
     removed = 0
     for sid in session_ids:

@@ -37,7 +37,7 @@ from backend.deps import get_current_user, require_super_admin, require_user_adm
 from backend.models.user_models import DepartmentORM, UserPublic
 from backend.services import audit_service, department_service
 # 读图模板（入库摘要与聊天识图共用的「看图策略」）
-from backend.services.chat_vision import render_default_prompt
+from backend.services.chat.chat_vision import render_default_prompt
 from backend.services.image_templates import (resolve_template_body,
                                               template_options)
 from backend.services.settings.service import (LLM_TEST_TIMEOUT,
@@ -218,7 +218,7 @@ def _effective_chat_payload(profile: dict,
 
 def _global_default_prompt(profile: dict) -> str:
     """全局档案下「未设置任何提示词」时实际会用的内容（不含部门覆盖）"""
-    from backend.services.chat_service import _SYSTEM_PROMPT_TEMPLATE
+    from backend.services.chat.refs import _SYSTEM_PROMPT_TEMPLATE
     g_chat = (chat_payload(profile) or {}).get("chat") or {}
     return (resolve_prompt_ref(g_chat.get("system_prompt_ref"))
             or (g_chat.get("system_prompt") or "").strip()

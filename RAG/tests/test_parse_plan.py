@@ -327,17 +327,17 @@ class TestCostConstantsMatchImplementation:
     """
 
     def test_context_chars(self):
-        from backend.services.contextual_retriever import (
+        from backend.services.ingestion.contextual_retriever import (
             _CHUNK_INPUT_CHARS, _CONTEXT_MAX_CHARS)
         assert cost_mod.CTX_CHUNK_CHARS == _CHUNK_INPUT_CHARS
         assert cost_mod.CTX_OUTPUT_CHARS == _CONTEXT_MAX_CHARS
 
     def test_kg_chars(self):
-        from backend.services.knowledge_graph_service import _CHUNK_INPUT_CHARS
+        from backend.services.knowledge_graph.service import _CHUNK_INPUT_CHARS
         assert cost_mod.KG_CHUNK_CHARS == _CHUNK_INPUT_CHARS
 
     def test_agentic_limit(self):
-        from backend.services.agentic_chunker import _MAX_TEXT_CHARS
+        from backend.services.ingestion.agentic_chunker import _MAX_TEXT_CHARS
         assert cost_mod.AGENTIC_MAX_TEXT_CHARS == _MAX_TEXT_CHARS
 
     def test_heading_batch(self):
