@@ -45,7 +45,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -542,6 +542,66 @@ async def ext_image(config_id: str, doc_id: str, name: str,
                         background=BackgroundTask(_cleanup))
 
 
+async def _retrieve_and_assemble(
+        ext: dict, conf: dict, cfg: Any, question: str, top_k: int,
+        min_score, config_id: str, kb_map: Optional[dict] = None,
+        session_id: str = "", with_history: bool = False,
+) -> Tuple[List, List[dict]]:
+    """外部查询的共用前半程：检索 → 图片适配 → prompt 组装
+
+    /chat（SSE）与 /query（同步）的差异**只在后半程**——LLM 流式 vs 一次性、
+    响应组装不同，那两步留在各自端点。此前这两段是逐字复制的两份，改检索
+    策略要同步改两处（原注释「同 /chat，见其注释」即是自白）。
+
+    - 检索异常**向上抛**（RetrievalUnavailableError / 其他），由调用方决定
+      形态：/chat 转 error 事件、/query 转 400
+    - kb_map 非空时给 sources 补 kb_name（/chat 的 meta 事件要下发库名）
+    - with_history 且配置开了多轮 → 附历史。仅 /chat 有会话概念，同步查询
+      不传（默认 False），与其「无会话」语义一致
+
+    返回 (sources, messages)；sources 为空 = 无命中，调用方走固定文案。
+    """
+    # 1) 多库检索：每库 top_k 候选 → 合并按 score 降序取全局 top_k
+    merged: List = []
+    for kid in ext["kb_ids"]:
+        merged.extend(await get_retrieval_service().retrieve(
+            kid, question, top_k=top_k, min_score=min_score))
+    merged.sort(key=lambda s: s.score, reverse=True)
+    sources = merged[:top_k]
+    if kb_map:
+        for s in sources:
+            if s.kb_id in kb_map:
+                s.kb_name = kb_map[s.kb_id]["name"]
+    # 图片适配：内部图片链接 → 本配置专用端点（关闭则剥除）。meta 下发的
+    # 文本与注入 LLM 的知识文本保持同一份
+    _adapt_sources_images(sources, config_id, ext["token"], conf)
+    if not sources:
+        return [], []
+
+    # 2) 组装 prompt（复用 chat_service 的 system 组装：config 的
+    #    system_prompt 优先（支持 {refs} 占位符），空/缺省 → 内置默认模板）
+    # LLM 配置在此提前解析：引用段装配要拿 base_url 调模型服务的 /tokenize
+    # 精确计 token（见 services/token_counter）
+    llm_cfg = resolve_llm_config(conf)
+    refs = await ChatService._build_refs(
+        sources, llm_base_url=llm_cfg.get("base_url"),
+        llm_model=llm_cfg.get("model"))
+    system_content = ChatService._build_system_content(
+        resolve_system_prompt(conf, cfg.chat.system_prompt), refs)
+    # 图片引导追加在组装结果之后：内置默认模板与自定义模板两条路径都能
+    # 覆盖，且不改动 chat_service 的共用组装逻辑（内部聊天零影响）
+    if conf.get("enable_images", True):
+        system_content += _IMAGE_OUTPUT_RULE
+    messages: List[dict] = [{"role": "system", "content": system_content}]
+    if with_history and conf.get("enable_multi_turn", False):
+        # 历史轮数不单独配置（外部场景没人会去调这个数）：固定跟随全局聊天
+        # 设置
+        messages.extend(get_ext_query_service().get_context(
+            config_id, session_id, cfg.chat.history_rounds))
+    messages.append({"role": "user", "content": question})
+    return sources, messages
+
+
 @ext_router.post("/{config_id}/chat")
 async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                    request: Request,
@@ -577,12 +637,13 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
 
     async def event_generator():
         try:
-            # 1) 多库检索：每库 top_k 候选 → 合并按 score 降序取全局 top_k
-            merged: List = []
+            # 1) 检索 + 图片适配 + prompt 组装（与 /query 同步端点共用，
+            #    见 _retrieve_and_assemble）
             try:
-                for kid in ext["kb_ids"]:
-                    merged.extend(await get_retrieval_service().retrieve(
-                        kid, question, top_k=top_k, min_score=min_score))
+                sources, messages = await _retrieve_and_assemble(
+                    ext, conf, cfg, question, top_k, min_score, config_id,
+                    kb_map=kb_map, session_id=body.session_id or "",
+                    with_history=True)
             except RetrievalUnavailableError as e:
                 log.system_error("外部查询检索服务不可用: %s", e)
                 yield sse_event("error", {"message": str(e)})
@@ -591,14 +652,6 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                 log.system_error("外部查询检索失败: %s", e, exc_info=True)
                 yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
-            merged.sort(key=lambda s: s.score, reverse=True)
-            sources = merged[:top_k]
-            for s in sources:
-                if s.kb_id in kb_map:
-                    s.kb_name = kb_map[s.kb_id]["name"]
-            # 图片适配：内部图片链接 → 本配置专用端点（关闭则剥除）；
-            # meta 下发的文本与注入 LLM 的知识文本保持同一份
-            _adapt_sources_images(sources, config_id, ext["token"], conf)
             yield sse_event("meta", {
                 "sources": [s.model_dump(mode="json") for s in sources],
             })
@@ -612,34 +665,7 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                                          "message_count": 0})
                 return
 
-            # 3) 组装 prompt（复用 chat_service 的 system 组装：config 的
-            #    system_prompt 优先（支持 {refs} 占位符），
-            #    空/缺省 → 内置默认模板）
-            # LLM 配置在此提前解析：引用段装配要拿 base_url 调模型服务的
-            # /tokenize 精确计 token（见 services/token_counter），
-            # 下方流式调用处会再解析一次（纯函数、无副作用）
-            llm_cfg = resolve_llm_config(conf)
-            refs = await ChatService._build_refs(
-                sources, llm_base_url=llm_cfg.get("base_url"),
-                llm_model=llm_cfg.get("model"))
-            system_content = ChatService._build_system_content(
-                resolve_system_prompt(conf, cfg.chat.system_prompt),
-                refs)
-            # 图片引导追加在组装结果之后：内置默认模板与自定义模板两条路径
-            # 都能覆盖，且不改动 chat_service 的共用组装逻辑（内部聊天零影响）
-            if conf.get("enable_images", True):
-                system_content += _IMAGE_OUTPUT_RULE
-            messages: List[dict] = [{"role": "system", "content": system_content}]
-            if conf.get("enable_multi_turn", False):
-                # 历史轮数不再单独配置（外部场景没人会去调这个数）：固定跟随
-                # 全局聊天设置；且 Agent 接入（/query）本就无会话概念，只有
-                # 网页版 /chat 走得到这里
-                history = ext_svc.get_context(config_id, body.session_id or "",
-                                              cfg.chat.history_rounds)
-                messages.extend(history)
-            messages.append({"role": "user", "content": question})
-
-            # 4) LLM 流式（模型由 config.llm_model 指定，空=全局激活模型；
+            # 3) LLM 流式（模型由 config.llm_model 指定，空=全局激活模型；
             #    生成参数 config 非 None 覆盖）
             llm_cfg = resolve_llm_config(conf)
             client = get_chat_service()._get_client(llm_cfg)
@@ -681,7 +707,7 @@ async def ext_chat(config_id: str, body: ExtQueryChatRequest,
                 yield sse_event("error", {"message": err_msg})
                 return
 
-            # 5) done + 上下文追加 + 记录落库
+            # 4) done + 上下文追加 + 记录落库
             ext_svc.append_context(config_id, body.session_id or "",
                                    question, "".join(answer_parts))
             await ext_svc.log_query(config_id, ext.get("name", ""), question,
@@ -800,23 +826,17 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
                  if conf.get("similarity_threshold") is not None
                  else cfg.retrieval.similarity_threshold)
 
-    # 1) 多库检索：每库 top_k 候选 → 合并按 score 降序取全局 top_k
-    merged: List = []
+    # 1) 检索 + 图片适配 + prompt 组装（与 /chat 流式端点共用，
+    #    见 _retrieve_and_assemble）
     try:
-        for kid in ext["kb_ids"]:
-            merged.extend(await get_retrieval_service().retrieve(
-                kid, question, top_k=top_k, min_score=min_score))
+        sources, messages = await _retrieve_and_assemble(
+            ext, conf, cfg, question, top_k, min_score, config_id)
     except RetrievalUnavailableError as e:
         log.system_error("外部同步查询检索服务不可用: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         log.system_error("外部同步查询检索失败: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"检索失败: {e}")
-    merged.sort(key=lambda s: s.score, reverse=True)
-    sources = merged[:top_k]
-    # 图片适配：内部图片链接 → 本配置专用端点（关闭则剥除）。Agent 侧同样
-    # 没有系统账号，返回内部链接的话 image_urls 拿过去必然 401
-    _adapt_sources_images(sources, config_id, ext["token"], conf)
 
     # 2) 无命中：固定文案直接返回，不调用 LLM（日志 hit_count=0）
     if not sources:
@@ -824,22 +844,7 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
                                 request=request, source="query")
         return {"answer": _NO_HIT_TIP, "sources": []}
 
-    # 3) 组装 prompt（复用 chat_service 的 system 组装：config.system_prompt
-    #    优先（支持 {refs} 占位符），空/缺省 → 内置默认模板；
-    #    同步查询无会话概念，不带多轮历史）
-    # LLM 配置在此解析：引用段装配要拿 base_url 调 /tokenize 精确计 token
-    llm_cfg = resolve_llm_config(conf)
-    refs = await ChatService._build_refs(
-        sources, llm_base_url=llm_cfg.get("base_url"),
-        llm_model=llm_cfg.get("model"))
-    system_content = ChatService._build_system_content(
-        resolve_system_prompt(conf, cfg.chat.system_prompt), refs)
-    if conf.get("enable_images", True):
-        system_content += _IMAGE_OUTPUT_RULE
-    messages: List[dict] = [{"role": "system", "content": system_content},
-                            {"role": "user", "content": question}]
-
-    # 4) 非流式 LLM（stream=False 一次返回完整回答；模型由 config.llm_model
+    # 3) 非流式 LLM（stream=False 一次返回完整回答；模型由 config.llm_model
     #    指定、空=全局激活模型；生成参数 config 非 None 覆盖）
     llm_cfg = resolve_llm_config(conf)
     client = get_chat_service()._get_client(llm_cfg)
@@ -865,7 +870,7 @@ async def ext_query_sync(config_id: str, body: ExtQuerySyncRequest,
         log.system_error("外部同步查询 LLM 调用失败: %s", e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"LLM 调用失败: {e}")
 
-    # 5) 截断与响应组装：answer 先兜底还原模型简化的图片链接、再 ≤6000 截断；
+    # 4) 截断与响应组装：answer 先兜底还原模型简化的图片链接、再 ≤6000 截断；
     #    sources 每条 text ≤2000，附图片 URL 列表（无图片 → 空数组）；审计日志落盘
     answer = _truncate(_fix_answer_images(answer, config_id), ANSWER_MAX_LEN)
     out_sources = []
