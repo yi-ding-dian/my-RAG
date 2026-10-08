@@ -8,7 +8,9 @@ sources 数组、无命中不调 LLM、LLM 故障走 error 事件、query/messag
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 from conftest import create_kb, extract_session_id, upload_and_ingest
 
@@ -402,3 +404,53 @@ class TestHistory:
         # 未调 LLM 的早退路径同样有首字耗时（用户看到的第一段就是这句提示）
         assert isinstance(detail["messages"][1]["total_ms"], int), \
             "无命中路径的 total_ms 也要落盘"
+
+
+class TestParallelTaskCleanup:
+    """并行的图谱/拆分任务在异常早退时必须被取消（防任务泄漏）
+
+    kg_task / split_task 是"起任务并行跑"的旁路（图谱抽实体 + 问题拆分），
+    任何早退路径都要收回，否则它们会留在后台继续烧 LLM 调用。原实现只在
+    「检索异常」的两个 except 里 cancel，其余路径（识图失败、await
+    split_task 抛错、组装段异常……）全部漏掉——现由外层 finally 统一兜底。
+    """
+
+    def test_kg_task_cancelled_when_refs_assembly_raises(
+            self, client, mock_embedding, monkeypatch, admin_headers):
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"])
+
+        kg_cancelled: list = []
+
+        async def _slow_kg(*a, **kw):
+            try:
+                await asyncio.sleep(30)   # 足够久：正常路径绝不会等到它
+            except asyncio.CancelledError:
+                kg_cancelled.append(True)
+                raise
+
+        monkeypatch.setattr(
+            "backend.services.knowledge_graph.service.build_kg_source",
+            _slow_kg)
+
+        # 在「检索之后、图谱汇合之前」制造异常：问题拆分任务抛错，await 时
+        # 重抛。这一处正是原先漏 cancel 的路径——异常发生时 kg_task 还在跑
+        # （组装引用段远在后面，等走到那里 kg_task 早被 await 过了，测不出来）
+        async def _boom_split(*a, **kw):
+            raise RuntimeError("测试构造：拆分任务异常")
+
+        monkeypatch.setattr(
+            "backend.services.chat.query_rewriter.split_query", _boom_split)
+
+        # SSE 流会在异常处中断（响应不保证完整），本测试只关心任务是否被收回
+        try:
+            client.post("/api/chat/stream",
+                        json={"kb_id": kb["id"], "query": "测试问题"},
+                        headers=admin_headers)
+        except Exception:
+            pass
+
+        # 让 event loop 处理 cancel：TestClient 的 loop 跑在 portal 线程里，
+        # 主线程 sleep 不影响它继续调度
+        time.sleep(0.3)
+        assert kg_cancelled, "图谱并行任务未被取消（任务泄漏）"

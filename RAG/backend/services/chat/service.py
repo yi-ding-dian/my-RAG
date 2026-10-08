@@ -65,6 +65,35 @@ _llm_to_dict = llm_to_dict
 logger = logging.getLogger(__name__)
 log = AppLog(__name__)
 
+
+# 行内引用标注指令（追加到 user 消息：system 指令模型遵循弱，user 侧紧邻
+# 问题遵循度高；完整示例 few-shot 强化；不含占位符，不受自定义 system_prompt
+# 影响——自定义模板用户自行负责标注规则）。
+# {image_rule} / {image_block} 仅在有图时非空（见 stream_chat 的图片注入段）；
+# 用 str.replace 而非 str.format：将来有人往文案里加花括号不会炸
+# （与 _build_system_content 同款取舍）
+_CITE_NOTE_TEMPLATE = (
+    "【回答标注要求（最高优先级，覆盖其他输出要求）：\n"
+    "1. 回答中每个事实性陈述，若内容来自上方 [引用]，"
+    "必须在该句句尾紧贴句号前标注对应编号 [n]，编号与 [引用]"
+    "中的编号一致，禁止自造或改写编号；\n"
+    "2. 示例：\"2022年11月，OpenAI发布了基于GPT-3.5的ChatGPT[1]。"
+    "它成为历史上用户增长最快的消费级应用[2]。\"；连续多句引用"
+    "同一编号时合并标注为 [1,2] 形式；\n"
+    "3. **综合归纳多条 [引用] 得出的结论同样必须标注**：把依据的"
+    "编号全部标上（如 [1,3]），不得因为\"这是我自己组织的话\"而省略；"
+    "只有完全与 [引用] 无关的内容才不标注；[引用] 含"
+    "\"知识图谱\"条目时同样可标注；\n"
+    "4. 用简洁中文转述引用内容（转述不改变标注义务：转述自哪条"
+    "就标哪条），不要原样复制 [引用] 中的"
+    "【知识图谱实体】等标记性原文；回答正文不要输出 #、*、- 等"
+    "标题或列表 Markdown 格式符号；但图片标签"
+    "（![](...) 或 <img>）不属于上述禁止符号，必须原样输出"
+    "（图片是知识库原文内容，保留图片才能完整展示配置说明）。"
+    "{image_rule}】\n\n"
+    "{image_block}问题：{question}"
+)
+
 # 自定义 system_prompt（无占位符）自动追加引用段时一并追加的行内标注规则：
 # 自定义模板覆盖内置规则，不追加标注指令则模型无 [n] 标注依据（行内引用功能失效）。
 # 标注仅添加编号不改变引用原文，与"原样输出"类模板语义兼容。
@@ -156,6 +185,59 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
 
     # ---------- 流式问答 ----------
 
+    @staticmethod
+    def _merge_run_config(dept: dict, dept_llm: dict) -> dict:
+        """本次问答的合并配置：全局活跃档案 + 部门字段级覆盖
+
+        返回 {"cfg", "chat", "agentic", "llm"}。纯函数无副作用，从
+        stream_chat 抽出——那 42 行夹在问答主流程里，让"这一趟到底怎么跑的"
+        很难扫读。
+
+        **必须在识图之前调用**：读图提示词支持部门覆盖（chat.image_prompt），
+        读图时就要拿到合并后的值。
+
+        llm 段：部门只**选条目名**，整份配置按名取（见 merge_department_llm）；
+        它与 chat/retrieval 共用同一份 cfg 快照，避免两次 get_active_config()
+        之间配置热更新导致三段不同源。
+        """
+        cfg = get_active_config()
+        merged = merge_chat_config(
+            {
+                "chat": {
+                    "temperature": cfg.chat.temperature,
+                    "top_p": cfg.chat.top_p,
+                    "max_tokens": cfg.chat.max_tokens,
+                    "enable_multi_turn": cfg.chat.enable_multi_turn,
+                    "history_rounds": cfg.chat.history_rounds,
+                    "system_prompt": cfg.chat.system_prompt,
+                    "kg_enhance": cfg.chat.kg_enhance,
+                    "thinking_mode": cfg.chat.thinking_mode,
+                    # 识图提示词（部门可覆盖）：**必须显式带上**——merge 内部
+                    # 的 chat_payload 取不到就用 "" 兜底，漏了会让全局与部门
+                    # 设的提示词双双失效（同 citation_snippet_chars 的旧坑）
+                    "image_prompt": cfg.chat.image_prompt,
+                },
+                "retrieval": {
+                    "top_k": cfg.retrieval.top_k,
+                    "similarity_threshold": cfg.retrieval.similarity_threshold,
+                },
+                "agentic": {
+                    "enabled": cfg.agentic.enabled,
+                    "max_retries": cfg.agentic.max_retries,
+                    "recheck_threshold": cfg.agentic.recheck_threshold,
+                    "abstain_threshold": cfg.agentic.abstain_threshold,
+                },
+            },
+            dept,
+        )
+        return {
+            "cfg": cfg,
+            "chat": merged["chat"],
+            "agentic": merged.get("agentic", {}),
+            "llm": merge_department_llm(
+                _llm_to_dict(cfg.llm), dept_llm, _global_llm_models()),
+        }
+
     async def stream_chat(self, kb_ids: List[str], message: str,
                           session_id: Optional[str] = None,
                           user_id: Optional[str] = None,
@@ -213,56 +295,37 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
         prompt_detail: dict = {}
         agentic_meta: dict = {}  # Agentic 决策轨迹（会话落盘用；默认关闭=空）
         saved = False
+        # 并行的图谱/拆分任务句柄（第 6 步创建）。预置 None 是为了 finally 能
+        # 兜底取消——异常可能发生在 create_task 之前（配置合并、识图早退等）
+        kg_task = None
+        split_task = None
         dept = dept_config or {}
         dept_retrieval = (dept.get("retrieval")
                           if isinstance(dept.get("retrieval"), dict) else {})
         dept_llm = dept.get("llm") if isinstance(dept.get("llm"), dict) else {}
 
-        try:
-            # 0) 聊天配置字段级合并（提前计算：知识图谱增强开关/Agentic 配置
-            #    在此读取；纯函数无副作用，后续步骤直接复用，避免重复合并）
-            #    **必须早于识图**：读图提示词支持部门覆盖（chat.image_prompt），
-            #    读图时就要拿到合并后的值——这是本块从识图之后上移的原因
-            cfg = get_active_config()
-            merged = merge_chat_config(
-                {
-                    "chat": {
-                        "temperature": cfg.chat.temperature,
-                        "top_p": cfg.chat.top_p,
-                        "max_tokens": cfg.chat.max_tokens,
-                        "enable_multi_turn": cfg.chat.enable_multi_turn,
-                        "history_rounds": cfg.chat.history_rounds,
-                        "system_prompt": cfg.chat.system_prompt,
-                        "kg_enhance": cfg.chat.kg_enhance,
-                        "thinking_mode": cfg.chat.thinking_mode,
-                        # 识图提示词（部门可覆盖）：**必须显式带上**——merge 内部
-                        # 的 chat_payload 取不到就用 "" 兜底，漏了会让全局与部门
-                        # 设的提示词双双失效（同 citation_snippet_chars 的旧坑）
-                        "image_prompt": cfg.chat.image_prompt,
-                    },
-                    "retrieval": {
-                        "top_k": cfg.retrieval.top_k,
-                        "similarity_threshold": cfg.retrieval.similarity_threshold,
-                    },
-                    "agentic": {
-                        "enabled": cfg.agentic.enabled,
-                        "max_retries": cfg.agentic.max_retries,
-                        "recheck_threshold": cfg.agentic.recheck_threshold,
-                        "abstain_threshold": cfg.agentic.abstain_threshold,
-                    },
-                },
-                dept,
-            )
-            merged_chat = merged["chat"]
-            merged_agentic = merged.get("agentic", {})
-            # LLM 合并配置提前计算（Agentic 查询改写需要；第 5 步直接复用，
-            # 纯函数无副作用——地址/密钥/模型/生成参数与历史一致）。
-            # 部门只**选条目名**，整份配置按名取（见 merge_department_llm）
-            merged_llm_dict = merge_department_llm(
-                _llm_to_dict(get_active_config().llm), dept_llm,
-                _global_llm_models())
+        def save_once(srcs: List[Source],
+                      agentic: Optional[dict] = None) -> None:
+            """落盘会话并置 saved（原先 6 个分支各写一遍同一串 140 字符参数）
 
-            # 识图前置：读图 → 描述。**必须在检索之前**——描述要并进检索词，
+            saved 是 finally 兜底的判据：已落盘就别再兜一次（否则会重复追加
+            assistant 消息）。srcs 由调用方给——兜底路径传 []（检索未必跑到）。
+            """
+            nonlocal saved
+            self._finalize(session, message, answer_parts, srcs, agentic,
+                           detail=prompt_detail, images=images,
+                           image_desc=image_desc)
+            saved = True
+
+        try:
+            # 1) 配置字段级合并（含 LLM；纯函数无副作用，后续步骤直接复用）
+            run = self._merge_run_config(dept, dept_llm)
+            cfg = run["cfg"]
+            merged_chat = run["chat"]
+            merged_agentic = run["agentic"]
+            merged_llm_dict = run["llm"]
+
+            # 2) 识图：读图 → 描述。**必须在检索之前**——描述要并进检索词，
             # 晚于检索就只剩展示价值了。读图失败不下发 error 而发 vision_error：
             # 前端据此提示"无法识图"并保留用户已选好的图，与"服务异常请稍后
             # 重试"是两回事（后者让用户白等，前者让用户知道该修配置/删图）
@@ -300,14 +363,15 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 logger.info("聊天识图: %d 张 → %d 字（%.1fs）", len(images),
                             len(image_desc), time.perf_counter() - t_img)
 
-            # 1) 检索（P1-2：Embedding 服务不可用等 RetrievalUnavailableError
-            # 直接透传"检索服务不可用：..."，其余异常统一"检索失败: ..."前缀）
-            #    部门配置覆盖检索参数：top_k（路由层选择器优先）与相似度阈值
+            # 3) 检索参数：部门配置覆盖（top_k 取路由层选择器优先，其次部门，
+            #    最后配置默认；相似度阈值同）。异常口径见下方检索执行处
+            #    （P1-2：RetrievalUnavailableError 直接透传"检索服务不可用：..."，
+            #    其余统一"检索失败: ..."前缀）
             eff_top_k = top_k
             if eff_top_k is None and dept_retrieval.get("top_k") is not None:
                 eff_top_k = int(dept_retrieval["top_k"])
             eff_min_score = dept_retrieval.get("similarity_threshold")
-            # 1.5) Agentic 检索决策（聊天设置 agentic.enabled，默认关闭）：
+            # 3.5) Agentic 检索决策（聊天设置 agentic.enabled，默认关闭）：
             # 开启时由决策层完成"检索 → 分档 → （改写重检）→ 决策/拒答"，
             # 语义见 agentic_service 模块注释；关闭时走原单次检索。
             agentic_enabled = bool(merged_agentic.get("enabled", False))
@@ -315,7 +379,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
             agentic_trace: list = []
             agentic_final_query = message
 
-            # 0.5) 查询改写（chat.query_rewrite，默认开）：LLM 结合历史把问题
+            # 4) 查询改写（chat.query_rewrite，默认开）：LLM 结合历史把问题
             #    改写为正式独立检索查询（口语→正式书面化 + 指代消解 + 省略
             #    补全，见 query_rewriter）。改写结果**仅用于本轮检索**——不
             #    落盘、不入历史、不出现在对话展示里（prompt 事件附
@@ -402,21 +466,18 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 retrieval_ms = int(round((time.perf_counter() - t_retrieval) * 1000))
             except RetrievalUnavailableError as e:
                 # 系统级故障（Embedding 服务不可用等）：打 fault 标记点亮红绿灯；
-                # warning 不透传堆栈，用户消息语义与历史一致（原样透传）
+                # warning 不透传堆栈，用户消息语义与历史一致（原样透传）。
+                # 并行的图谱/拆分任务由外层 finally 统一取消
                 log.system_error("检索服务不可用: %s", e)
-                kg_task.cancel()  # 早退：并行的图谱/拆分任务不能留着空跑
-                split_task.cancel()
                 yield sse_event("error", {"message": str(e)})
                 return
             except Exception as e:
                 # 兜底（未知异常）：不记堆栈，信息保留
                 log.system_error("检索失败: %s", e)
-                kg_task.cancel()
-                split_task.cancel()
                 yield sse_event("error", {"message": f"检索失败: {e}"})
                 return
 
-            # 2) 复合问题拆分落地：拆出多问时各子问题**并行**检索，再与主检索
+            # 5) 复合问题拆分落地：拆出多问时各子问题**并行**检索，再与主检索
             #    结果轮流合并。不这么做的后果：top_k 被前一个问题占满，后一问
             #    的原文挤不进 prompt，模型只能拿前面的材料硬编（实测"X 是什么，
             #    并且 Y 怎样"这类题后半段普遍答不全）。
@@ -445,7 +506,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
             else:
                 split_ms = 0
 
-            # 知识图谱增强通道（与普通检索并行注入：LLM 抽实体 → 图谱匹配
+            # 6) 知识图谱增强通道（与普通检索并行注入：LLM 抽实体 → 图谱匹配
             #    → 1-hop 邻接扩展 → 组装"知识图谱"来源引用；开关关/无图谱/
             #    失败一律跳过不阻塞查询；不参与 rerank——rerank 只处理检索
             #    服务内的普通候选）
@@ -470,7 +531,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 if kg_source:
                     sources.append(kg_source)
 
-            # 2.5) Agentic 决策轨迹事件（仅开启时下发；meta 之前：
+            # 7) Agentic 决策轨迹事件（仅开启时下发；meta 之前：
             # 前端"请求详情"展示改写/分档/尝试次数）
             if agentic_enabled:
                 agentic_meta = {
@@ -480,12 +541,12 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 }
                 yield sse_event("agentic", agentic_meta)
 
-            # 3) meta
+            # 8) meta
             yield sse_event("meta", {
                 "sources": [s.model_dump(mode="json") for s in sources],
             })
 
-            # 3) 无命中：直接告知，不调用 LLM
+            # 9) 无命中：直接告知，不调用 LLM
             if not sources:
                 # 未调用模型也要留痕（无 request_kwargs → 模型/采样留空）：
                 # 事后要能分清"检索没给到"和"模型没用上"
@@ -500,8 +561,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                     (time.perf_counter() - t_start) * 1000))
                 yield sse_event("delta", {"text": tip,
                                           "total_ms": prompt_detail["total_ms"]})
-                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
-                saved = True
+                save_once(sources, agentic_meta)
                 yield sse_event("done", {
                     "session_id": session.id,
                     "message_count": len(session.messages),
@@ -515,7 +575,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                     self._schedule_memory_extract(user_id, session.messages)
                 return
 
-            # 4) 组装 prompt（引用放在 system；history 截最近 N 轮，
+            # 10) 组装 prompt（引用放在 system；history 截最近 N 轮，
             #    多轮开关 enable_multi_turn=False 时不带历史；
             #    合并后的聊天配置已在第 0 步计算（部门字段级覆盖），直接复用）
             # 提示词：引用的库条目**优先**，其次本配置的 system_prompt；
@@ -557,9 +617,6 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 history = session.messages[-(rounds * 2):]
                 messages.extend(
                     {"role": m.role, "content": m.content} for m in history)
-            # 行内引用标注指令追加到 user 消息（system 指令部分模型遵循弱，
-            # user 侧紧邻问题遵循度高；完整示例 few-shot 强化；不含占位符，
-            # 不受自定义 system_prompt 影响——自定义模板用户自行负责标注规则）
             # 识图描述注入：主模型据此知道"用户发的图里有什么"。放在问题
             # **之前**——先看到图内容再看到问题，回答更贴合；无图时该块
             # 不存在，prompt 与历史版本逐字节一致（不影响既有测试与落盘）
@@ -580,30 +637,12 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 "的那张图（用户传的往往正是知识库里那张图的照片，两者内容"
                 "重合，不要因此判断为「来自图片」而漏标）。"
                 if image_desc else "")
-            cite_note = (
-                "【回答标注要求（最高优先级，覆盖其他输出要求）：\n"
-                "1. 回答中每个事实性陈述，若内容来自上方 [引用]，"
-                "必须在该句句尾紧贴句号前标注对应编号 [n]，编号与 [引用]"
-                "中的编号一致，禁止自造或改写编号；\n"
-                "2. 示例：\"2022年11月，OpenAI发布了基于GPT-3.5的ChatGPT[1]。"
-                "它成为历史上用户增长最快的消费级应用[2]。\"；连续多句引用"
-                "同一编号时合并标注为 [1,2] 形式；\n"
-                "3. **综合归纳多条 [引用] 得出的结论同样必须标注**：把依据的"
-                "编号全部标上（如 [1,3]），不得因为\"这是我自己组织的话\"而省略；"
-                "只有完全与 [引用] 无关的内容才不标注；[引用] 含"
-                "\"知识图谱\"条目时同样可标注；\n"
-                "4. 用简洁中文转述引用内容（转述不改变标注义务：转述自哪条"
-                "就标哪条），不要原样复制 [引用] 中的"
-                "【知识图谱实体】等标记性原文；回答正文不要输出 #、*、- 等"
-                "标题或列表 Markdown 格式符号；但图片标签"
-                "（![](...) 或 <img>）不属于上述禁止符号，必须原样输出"
-                "（图片是知识库原文内容，保留图片才能完整展示配置说明）。"
-                f"{image_rule}】\n\n"
-                f"{image_block}问题：{message}"
-            )
-            messages.append({"role": "user", "content": cite_note})
+            messages.append({"role": "user", "content": _CITE_NOTE_TEMPLATE
+                             .replace("{image_rule}", image_rule)
+                             .replace("{image_block}", image_block)
+                             .replace("{question}", message)})
 
-            # 4.5) prompt 事件：LLM 调用前下发完整提示词与检索/图谱耗时
+            # 11) prompt 事件：LLM 调用前下发完整提示词与检索/图谱耗时
             # （前端"请求详情"展示；此事件在 delta 之前，生成失败也已送达）
             # prompt 存副本：下面第 4.75 步的思考策略会原地 append prefill
             # （messages 是同一列表对象），不拷贝则落盘的"完整提示词"里会
@@ -626,7 +665,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
             }
             yield sse_event("prompt", prompt_detail)
 
-            # 5) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
+            # 12) LLM 流式（生成参数：chat 段配置非 None 时覆盖 LLM 段默认值；
             #    部门 llm 段字段级覆盖全局 LLM——地址/密钥/模型/生成参数，
             #    _get_client 按合并配置独立缓存，部门切换即重建；
             #    调用点传合并 dict（conftest mock_llm 记录并断言 dict 结构），
@@ -634,7 +673,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
             #    merged_llm_dict 已在第 0 步提前计算——Agentic 改写共用）
             merged_llm = LLMConfig.from_dict(merged_llm_dict)
             client = self._get_client(merged_llm_dict)
-            # 4.75) 思考模式策略（请求层变换，必须在 prompt 事件之后应用）：
+            # 12.5) 思考模式策略（请求层变换，必须在 prompt 事件之后应用）：
             # 在线 API（api.deepseek.com 等）→ extra_body 传 thinking
             # enabled/disabled + reasoning_effort；本地 Qwen 思考模型 disabled
             # → messages 末尾注入空 <think> prefill 跳过思考（LM Studio 忽略
@@ -704,8 +743,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
             except asyncio.CancelledError:
                 logger.info("客户端中断流式问答: %s", session.id)
                 if answer_parts:
-                    self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
-                    saved = True
+                    save_once(sources, agentic_meta)
                 raise
             except (APITimeoutError, APIConnectionError, RateLimitError,
                     APIStatusError) as e:
@@ -714,8 +752,7 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 log.system_error("LLM 流式调用失败（LLM 服务异常）: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
-                saved = True
+                save_once(sources, agentic_meta)
                 yield sse_event("error", {"message": err_msg})
                 return
             except Exception as e:
@@ -723,16 +760,12 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
                 log.system_error("LLM 流式调用失败: %s", e)
                 err_msg = f"LLM 调用失败: {e}"
                 answer_parts.append(err_msg)
-                self._finalize(session, message, answer_parts, sources, agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
-                saved = True
+                save_once(sources, agentic_meta)
                 yield sse_event("error", {"message": err_msg})
                 return
 
-            # 6) done
-            self._finalize(session, message, answer_parts, sources,
-                           detail=prompt_detail, images=images,
-                           image_desc=image_desc)
-            saved = True
+            # 13) done
+            save_once(sources)
             yield sse_event("done", {
                 "session_id": session.id,
                 "message_count": len(session.messages),
@@ -746,9 +779,16 @@ class ChatService(_SessionStoreMixin, _RefsMixin):
             # 兜底：异常路径下只要已有文本也落盘（优雅收尾）
             if not saved and answer_parts:
                 try:
-                    self._finalize(session, message, answer_parts, [], agentic_meta, detail=prompt_detail, images=images, image_desc=image_desc)
+                    save_once([], agentic_meta)
                 except Exception:
                     log.system_error("兜底落盘失败: %s", session.id, exc_info=True)
+            # 并行任务兜底取消：原先只在「检索异常」的两个 except 里 cancel，
+            # 其余任何早退/异常路径（识图失败、await split_task 抛错、组装段
+            # 异常……）都会把它们留在后台继续烧 LLM 调用。放 finally 覆盖全部，
+            # 已 await 过的任务 done() 为真、不会重复取消。
+            for task in (kg_task, split_task):
+                if task is not None and not task.done():
+                    task.cancel()
 
 
     @staticmethod
