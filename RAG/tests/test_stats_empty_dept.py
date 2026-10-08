@@ -46,7 +46,7 @@ class TestStatsEmptyDept:
             client, admin_headers, "空部门", "empty_dept_admin",
             "dept123456", "空部门管理员")
         # 模拟部门无任何用户：stats 路由对 list_users 的引用复制打桩返回空
-        import backend.routers.stats as stats_module
+        from backend.routers.stats import overview as stats_module
 
         async def _no_users(db, dept):
             return []

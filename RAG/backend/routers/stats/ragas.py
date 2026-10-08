@@ -1,176 +1,31 @@
-"""系统统计 API：/api/stats
+"""RAGAS 评估：/api/stats/ragas*
 
-- GET /api/stats                统计（按角色过滤：super_admin 全量 /
-                                dept_admin 本部门 kb/doc/chunk + 本部门用户会话 /
-                                user 本部门 kb/doc/chunk + 自己会话；
-                                chunk 数取 document_service 统计，排除软删，
-                                与知识库列表/详情一致）
-- GET /api/stats/quality        检索质量统计（近 30 天检索日志汇总：
-                                总次数/平均命中/文档命中排行/零命中文档/日粒度）
-- GET /api/stats/ragas          RAGAS 可用性探测 + 任务列表（3s 超时，
-                                合并本地发起的任务元数据 kb_name/发起来源）
-- POST /api/stats/ragas/evaluations  从知识库发起 RAGAS 评估（默认真实问题采样
-                                → 知识库检索填 contexts → 上传数据集 →
-                                创建评估任务；支持 samples 手动测试集优先与
-                                preview 预览模式；super_admin/dept_admin 本部门库）
-- GET /api/stats/ragas/tasks/{task_id}  RAGAS 任务报告
-- POST /api/stats/ragas/evaluations/{task_id}/cancel  取消 RAGAS 评估任务
-  （发起人本人/super_admin/dept_admin 本部门可取消，无权 404 伪装）
-- GET /api/stats/chat-feedback/logs  聊天反馈分页查询（仅超管，依赖注入点已预留
-                                      部门管理员接入；rating/用户名/部门/关键词/
-                                      时间范围过滤 + 倒序分页；用户/部门/知识库名
-                                      回填，缺失回退）
+从 `routers/stats.py` 拆出——RAGAS 是个完整子系统（发起 / 报告 / 取消 /
+评估集 CRUD / AI 出题 / 预检探测，共 10 个端点），原先与统计概览、用户反馈
+挤在同一文件里。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import get_active_config
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
-from backend.models.user_models import (DepartmentORM, FeedbackORM, KBORM,
-                                        UserORM, UserPublic)
+from backend.models.user_models import UserORM, UserPublic
 from backend.services import audit_service, ragas_sampling
-from backend.services.chat.service import get_chat_service
-from backend.services.document.service import get_document_service
-from backend.services.kb_service import get_kb_service
 from backend.services.parsers.probes import probe_embedding, probe_llm
 from backend.services.ragas_client import RagasApiError, get_ragas_client
 from backend.services.settings.service import find_llm_item
-from backend.services.retrieval_log import get_retrieval_log_service
-from backend.services.user_service import list_users
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/stats", tags=["统计"])
-
-
-@router.get("")
-async def get_stats(db: AsyncSession = Depends(get_db),
-                    user: UserPublic = Depends(get_current_user)):
-    """自身统计：知识库/文档/切块/会话/消息（按角色过滤）"""
-    kb_svc = get_kb_service()
-    doc_svc = get_document_service()
-    chat_svc = get_chat_service()
-
-    # 1) 知识库范围（super_admin 全量；dept_admin/user 本部门；无部门 → 空）
-    if user.role == "super_admin":
-        kbs = await kb_svc.list(db)
-    elif user.department_id:
-        kbs = await kb_svc.list(db, department_id=user.department_id)
-    else:
-        kbs = []
-
-    # 2) 会话范围（super_admin 全部；dept_admin 本部门用户；user 自己）
-    if user.role == "super_admin":
-        sessions = chat_svc.list_sessions(None)
-    elif user.role == "dept_admin":
-        if user.department_id:
-            users = await list_users(db, user.department_id)
-            sessions = chat_svc.list_sessions({u.id for u in users})
-        else:
-            sessions = []
-    else:
-        sessions = chat_svc.list_sessions(user.id)
-
-    doc_count = sum(doc_svc.count_by_kb(kb.id) for kb in kbs)
-    # P1-1: 切块数改用 document_service 统计（排除软删文档，与知识库列表/详情
-    # 的 chunk_count 语义一致；Chroma count 含软删向量会导致两处数字不一致）
-    chunk_count = sum(doc_svc.chunk_count_by_kb(kb.id) for kb in kbs)
-    message_count = sum(s.message_count for s in sessions)
-
-    return {
-        "kb_count": len(kbs),
-        "doc_count": doc_count,
-        "chunk_count": chunk_count,
-        "session_count": len(sessions),
-        "message_count": message_count,
-    }
-
-
-# 检索质量统计窗口（天）
-QUALITY_WINDOW_DAYS = 30
-
-
-def _build_daily(entries) -> list:
-    """近 30 天日粒度汇总（含今天，按日期正序；无检索的天 hit_rate=0）"""
-    today = datetime.now().date()
-    days = [today - timedelta(days=i) for i in range(QUALITY_WINDOW_DAYS - 1, -1, -1)]
-    by_date: dict = defaultdict(list)
-    for e in entries:
-        try:
-            d = datetime.fromisoformat(e.get("ts", "")).date()
-        except (ValueError, TypeError):
-            continue
-        by_date[d].append(e)
-    out = []
-    for d in days:
-        day_entries = by_date.get(d, [])
-        total = len(day_entries)
-        hit = sum(1 for e in day_entries if e.get("hit_doc_ids"))
-        out.append({
-            "date": d.isoformat(),
-            "retrievals": total,
-            # 命中率 = 当日有命中的检索数 / 当日检索总数
-            "hit_rate": round(hit / total, 4) if total else 0,
-        })
-    return out
-
-
-@router.get("/quality")
-async def get_retrieval_quality(kb_id: str,
-                                db: AsyncSession = Depends(get_db),
-                                user: UserPublic = Depends(get_current_user)):
-    """检索质量统计（近 30 天，登录即可；kb 不可访问 404 伪装）
-
-    返回 {kb_id, window_days, total_retrievals, avg_hits_per_retrieval,
-    hit_docs(文档命中排行 top10 降序), zero_hit_docs(窗口期从未命中的
-    ingested 文档), daily(日粒度检索数/命中率)}；无检索数据时返回空数组不报错。
-    """
-    await kb_or_404(db, kb_id, user)
-
-    entries = await get_retrieval_log_service().read(
-        kb_id, window_days=QUALITY_WINDOW_DAYS)
-
-    # 文档名/切块数映射（零命中文档判断用）
-    docs = get_document_service().list_by_kb(kb_id)
-    name_map = {d.id: d.original_name for d in docs}
-
-    # 文档命中排行（按 hit_doc_ids 内出现的次数，top10 降序）
-    counter: Counter = Counter()
-    for e in entries:
-        for doc_id in e.get("hit_doc_ids", []):
-            counter[doc_id] += 1
-    hit_docs = [{"doc_id": did, "doc_name": name_map.get(did, did), "hits": n}
-                for did, n in counter.most_common(10)]
-
-    # 零命中文档：窗口期内从未出现在任何检索命中的 ingested 文档
-    hit_ids = set(counter)
-    zero_hit_docs = [
-        {"doc_id": d.id, "doc_name": d.original_name, "chunks": d.chunk_count}
-        for d in docs if d.status == "ingested" and d.id not in hit_ids
-    ]
-
-    total = len(entries)
-    avg_hits = (round(sum(len(e.get("hit_doc_ids", [])) for e in entries) / total, 2)
-                if total else 0)
-    return {
-        "kb_id": kb_id,
-        "window_days": QUALITY_WINDOW_DAYS,
-        "total_retrievals": total,
-        "avg_hits_per_retrieval": avg_hits,
-        "hit_docs": hit_docs,
-        "zero_hit_docs": zero_hit_docs,
-        "daily": _build_daily(entries),
-    }
+router = APIRouter(prefix="/api/stats")
 
 
 # ---- RAGAS 评估发起 ----
@@ -808,156 +663,3 @@ async def ragas_precheck(user: UserPublic = Depends(get_current_user)):
     return {"llm": llm, "embedding": embedding}
 
 
-class FeedbackScope:
-    """反馈数据可见范围（当前恒为全量；预留给部门管理员接入）"""
-
-    def __init__(self, all_departments: bool = True,
-                 department_id: Optional[str] = None):
-        self.all_departments = all_departments
-        self.department_id = department_id
-
-
-async def feedback_viewer_scope(
-        user: UserPublic = Depends(get_current_user)) -> FeedbackScope:
-    """反馈数据查看权限（依赖注入点，两个反馈接口共用）
-
-    当前仅 super_admin 可看全量；其余角色 404 伪装（与 require_super_admin
-    口径一致：不暴露接口存在性与权限边界）。
-    ---- 后续接入部门管理员只改本函数 ----
-    增加分支 user.role == "dept_admin" → 返回 FeedbackScope(
-        all_departments=False, department_id=user.department_id)：路由内已按
-    scope 组织过滤条件（all_departments 为 False 时自动收窄到该部门），
-    路由签名与前端均无需改动。
-    """
-    if user.role != "super_admin":
-        raise HTTPException(status_code=404, detail="资源不存在")
-    return FeedbackScope()
-
-
-def _day_bound(value: Optional[str], end: bool) -> Optional[str]:
-    """日期参数归一：纯日期补足时分秒，带时间原样返回；空串 → None
-
-    created_at 是 "%Y-%m-%d %H:%M:%S" 字符串，按字符串比较时
-    "2026-09-11 08:00:00" <= "2026-09-11" 为 False（同前缀下更长的更大），
-    date_to 不补 23:59:59 会把当天的反馈整体漏掉。
-    """
-    v = (value or "").strip()
-    if len(v) == 10 and v.count("-") == 2:
-        return v + (" 23:59:59" if end else " 00:00:00")
-    return v or None
-
-
-@router.get("/chat-feedback")
-async def chat_feedback_stats(
-        scope: FeedbackScope = Depends(feedback_viewer_scope)):
-    """用户回答反馈汇总（仅超管）：总数/好评/差评 + 最近反馈"""
-    from backend.services.feedback_service import feedback_stats
-    return await feedback_stats()
-
-
-@router.get("/chat-feedback/logs")
-async def chat_feedback_logs(
-        page: int = Query(1, ge=1, description="页码（从 1 开始）"),
-        page_size: int = Query(20, ge=1, le=200, description="每页条数（1~200）"),
-        rating: Optional[str] = Query(None, description="评价过滤（up/down），缺省全部"),
-        username: Optional[str] = Query(None, description="用户名模糊搜索"),
-        department_id: Optional[str] = Query(None, description="部门 ID 过滤"),
-        keyword: Optional[str] = Query(None, description="关键词（模糊匹配点踩原因）"),
-        date_from: Optional[str] = Query(None, description="起始日期（YYYY-MM-DD）"),
-        date_to: Optional[str] = Query(None, description="结束日期（YYYY-MM-DD，含当天）"),
-        db: AsyncSession = Depends(get_db),
-        scope: FeedbackScope = Depends(feedback_viewer_scope)):
-    """聊天反馈分页查询（仅超管；鉴权口径与上方 chat-feedback 汇总接口一致）
-
-    - rating/username/department_id/keyword/date_from/date_to 全可选，多条件
-      AND；rating 非法值 400 显式提示（便于前端拼写/大小写错误暴露），其余
-      条件为空白串时按未传处理；page>=1、page_size 1~200（默认 20）；按
-      created_at 倒序（同秒时按 id 倒序稳定排序，避免同秒提交顺序抖动）
-    - 用户名/部门条件走 **outer join**：inner join 会让"用户已注销但反馈仍在"
-      的记录在按用户名/部门筛选时凭空消失（展示侧本就对缺失回填空字符串）
-    - username/display_name/department_name 查用户与部门表回填（用户已删除/
-      无部门 → 空字符串）；kb_name 查知识库表（kb 已删除/从未入库 → 回退 kb_id）
-    响应契约: {total, page, page_size, items: [...]}。
-    """
-    # rating 过滤条件（与反馈提交口径一致仅 up/down；非法值 400 而非静默
-    # 空页，便于前端拼写/大小写错误显性暴露）
-    conditions = []
-    if rating is not None:
-        if rating not in ("up", "down"):
-            raise HTTPException(status_code=400,
-                                detail="rating 仅支持 up（好评）/down（差评）")
-        conditions.append(FeedbackORM.rating == rating)
-    if username and username.strip():
-        conditions.append(UserORM.username.like(f"%{username.strip()}%"))
-    if department_id:
-        conditions.append(UserORM.department_id == department_id)
-    if keyword and keyword.strip():
-        conditions.append(FeedbackORM.reason.like(f"%{keyword.strip()}%"))
-    d_from = _day_bound(date_from, end=False)
-    d_to = _day_bound(date_to, end=True)
-    if d_from:
-        conditions.append(FeedbackORM.created_at >= d_from)
-    if d_to:
-        conditions.append(FeedbackORM.created_at <= d_to)
-    # 预留：部门管理员只看本部门（当前 scope 恒为全量，不会进该分支；接入
-    # dept_admin 时由 feedback_viewer_scope 返回收窄的 scope 即自动生效）
-    if not scope.all_departments:
-        conditions.append(UserORM.department_id == scope.department_id)
-
-    # outer join：用户注销后反馈记录仍要能展示与筛选（见 docstring）
-    on_clause = FeedbackORM.user_id == UserORM.id
-    total = (await db.execute(
-        select(func.count()).select_from(FeedbackORM)
-        .outerjoin(UserORM, on_clause).where(*conditions)
-    )).scalar() or 0
-
-    rows = (await db.execute(
-        select(FeedbackORM).outerjoin(UserORM, on_clause).where(*conditions)
-        .order_by(FeedbackORM.created_at.desc(), FeedbackORM.id.desc())
-        .offset((page - 1) * page_size).limit(page_size)
-    )).scalars().all()
-
-    # 用户名映射（users 表；用户已删除 → 空字符串回退）
-    user_ids = {r.user_id for r in rows}
-    users = {}
-    if user_ids:
-        users = {u.id: u for u in (
-            await db.execute(select(UserORM).where(UserORM.id.in_(user_ids)))
-        ).scalars()}
-    # 部门名映射（departments 表；用户无部门/部门已删除 → 空字符串）
-    dept_ids = {u.department_id for u in users.values() if u.department_id}
-    dept_names: Dict[str, str] = {}
-    if dept_ids:
-        dept_names = {d.id: d.name for d in (
-            await db.execute(
-                select(DepartmentORM).where(DepartmentORM.id.in_(dept_ids)))
-        ).scalars()}
-    # 知识库名映射（kbs 表；批量一次查询防 N+1，缺失回退 kb_id）
-    kb_ids = {r.kb_id for r in rows if r.kb_id}
-    kb_names: Dict[str, str] = {}
-    if kb_ids:
-        kb_names = {kb.id: kb.name for kb in (
-            await db.execute(select(KBORM).where(KBORM.id.in_(kb_ids)))
-        ).scalars()}
-
-    items = []
-    for r in rows:
-        u = users.get(r.user_id)
-        dept_id = u.department_id if u else None
-        items.append({
-            "id": r.id,
-            "user_id": r.user_id,
-            "username": u.username if u else "",
-            "display_name": u.display_name if u else "",
-            "department_id": dept_id,
-            "department_name": dept_names.get(dept_id, "") if dept_id else "",
-            "kb_id": r.kb_id,
-            # kb 不存在回退 kb_id（kb_id 为 None 时同样回退 None，原样返回）
-            "kb_name": kb_names.get(r.kb_id, r.kb_id),
-            "session_id": r.session_id,
-            "msg_idx": r.msg_idx,
-            "rating": r.rating,
-            "reason": r.reason or "",
-            "created_at": r.created_at,
-        })
-    return {"total": total, "page": page, "page_size": page_size, "items": items}

@@ -558,7 +558,7 @@ class TestContractMapping:
     def test_stats_available_mapping(self, monkeypatch):
         """stats precheck 薄包装：parsers.probes {ok, latency_ms, reason} →
         {available, reason}（成功时 reason 空串）"""
-        from backend.routers.stats import (_probe_embedding, _probe_llm)
+        from backend.routers.stats.ragas import (_probe_embedding, _probe_llm)
         fake = _patch_async_http(monkeypatch, [
             ("get", "/models", FakeResponse(200)),
             ("post", "/embeddings",
@@ -572,7 +572,7 @@ class TestContractMapping:
 
     def test_stats_failure_reason_passthrough(self, monkeypatch):
         """失败时 reason 透传（中文原因）"""
-        from backend.routers.stats import _probe_llm
+        from backend.routers.stats.ragas import _probe_llm
         _patch_async_http(monkeypatch,
                           [("get", "/models", httpx.TimeoutException("t"))])
         result = asyncio.run(_probe_llm(_cfg()))

@@ -47,7 +47,7 @@ class FakeRagasClient:
 def fake_ragas(monkeypatch):
     """替换 stats 路由的 ragas_client 为离线伪实现"""
     fake = FakeRagasClient()
-    monkeypatch.setattr("backend.routers.stats.get_ragas_client", lambda: fake)
+    monkeypatch.setattr("backend.routers.stats.ragas.get_ragas_client", lambda: fake)
     return fake
 
 

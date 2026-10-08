@@ -77,12 +77,12 @@ def _cfg(base_url="http://test:1234/v1", api_key="k", model="m"):
 
 
 def _probe_llm(cfg):
-    from backend.routers.stats import _probe_llm as fn
+    from backend.routers.stats.ragas import _probe_llm as fn
     return asyncio.run(fn(cfg))
 
 
 def _probe_embedding(cfg):
-    from backend.routers.stats import _probe_embedding as fn
+    from backend.routers.stats.ragas import _probe_embedding as fn
     return asyncio.run(fn(cfg))
 
 
@@ -229,8 +229,8 @@ class TestPrecheckRoute:
         async def fake_emb(cfg):
             return {"available": False, "reason": "Embedding 服务地址未配置"}
 
-        monkeypatch.setattr("backend.routers.stats._probe_llm", fake_llm)
-        monkeypatch.setattr("backend.routers.stats._probe_embedding", fake_emb)
+        monkeypatch.setattr("backend.routers.stats.ragas._probe_llm", fake_llm)
+        monkeypatch.setattr("backend.routers.stats.ragas._probe_embedding", fake_emb)
         resp = client.get("/api/stats/ragas/precheck", headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json() == {
@@ -246,8 +246,8 @@ class TestPrecheckRoute:
         async def fake_emb(cfg):
             return {"available": False, "reason": "连接超时（5s）"}
 
-        monkeypatch.setattr("backend.routers.stats._probe_llm", fake_llm)
-        monkeypatch.setattr("backend.routers.stats._probe_embedding", fake_emb)
+        monkeypatch.setattr("backend.routers.stats.ragas._probe_llm", fake_llm)
+        monkeypatch.setattr("backend.routers.stats.ragas._probe_embedding", fake_emb)
         resp = client.get("/api/stats/ragas/precheck", headers=admin_headers)
         assert resp.status_code == 200
         data = resp.json()
@@ -266,8 +266,8 @@ class TestPrecheckRoute:
             called.append("emb")
             return {"available": True, "reason": ""}
 
-        monkeypatch.setattr("backend.routers.stats._probe_llm", fake_llm)
-        monkeypatch.setattr("backend.routers.stats._probe_embedding", fake_emb)
+        monkeypatch.setattr("backend.routers.stats.ragas._probe_llm", fake_llm)
+        monkeypatch.setattr("backend.routers.stats.ragas._probe_embedding", fake_emb)
         client.get("/api/stats/ragas/precheck", headers=admin_headers)
         assert sorted(called) == ["emb", "llm"]
 

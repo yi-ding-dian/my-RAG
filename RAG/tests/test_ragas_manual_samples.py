@@ -85,7 +85,7 @@ class FakeRagasClient:
 def fake_ragas(monkeypatch):
     """替换 stats 路由的 ragas_client 为离线伪实现，返回其实例"""
     fake = FakeRagasClient()
-    monkeypatch.setattr("backend.routers.stats.get_ragas_client", lambda: fake)
+    monkeypatch.setattr("backend.routers.stats.ragas.get_ragas_client", lambda: fake)
     return fake
 
 
@@ -103,9 +103,9 @@ class TestManualSamples:
         """
         async def _boom(*args, **kwargs):
             raise AssertionError("samples 模式不应调用采样逻辑")
-        monkeypatch.setattr("backend.routers.stats.ragas_sampling.sample_from_logs",
+        monkeypatch.setattr("backend.routers.stats.ragas.ragas_sampling.sample_from_logs",
                             _boom)
-        monkeypatch.setattr("backend.routers.stats.ragas_sampling.sample_from_chat",
+        monkeypatch.setattr("backend.routers.stats.ragas.ragas_sampling.sample_from_chat",
                             _boom)
         kb = create_kb(client)
         resp = client.post("/api/stats/ragas/evaluations", json={
