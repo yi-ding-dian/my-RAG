@@ -20,6 +20,7 @@ import {
   toProfileInput, toTestItems,
 } from './shared';
 import type { ProfileFormValues, SectionKey, TestItem } from './shared';
+import { useModelListEditor } from './useModelListEditor';
 import ChatPanel from './ChatPanel';
 import RetrievalPanel from './RetrievalPanel';
 import IngestPanel from './IngestPanel';
@@ -145,7 +146,7 @@ const ProfileEditorModal: React.FC<{
   open, profile, focusPanel, readOnly, references, testState,
   onRequestDelete, onClose, onSaved, onTestResult,
 }) => {
-  const { message, modal } = AntApp.useApp();
+  const { message } = AntApp.useApp();
 
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
@@ -176,9 +177,6 @@ const ProfileEditorModal: React.FC<{
   const [llmModels, setLlmModels] = useState<LLMModelItem[]>([]);
   const [llmActive, setLlmActive] = useState(0);
   // 激活流程中正在测试连接的模型索引（防重复点击）
-  const [llmTestingIdx, setLlmTestingIdx] = useState<number | null>(null);
-  const [modelModalOpen, setModelModalOpen] = useState(false);
-  const [modelEditIdx, setModelEditIdx] = useState<number | null>(null);
   // ---- 图片解析模型 ----
   const [visionModels, setVisionModels] = useState<VisionModelItem[]>([]);
   // ---- 读图模板（聊天识图与入库摘要共用的「看图策略」）----
@@ -201,9 +199,6 @@ const ProfileEditorModal: React.FC<{
     setDirty(true);
   };
   const [visionActive, setVisionActive] = useState(0);
-  const [visionTestingIdx, setVisionTestingIdx] = useState<number | null>(null);
-  const [visionModalOpen, setVisionModalOpen] = useState(false);
-  const [visionEditIdx, setVisionEditIdx] = useState<number | null>(null);
   // 「标题分层模型」下拉数据源（仅名称+model，无敏感字段；失败静默）
   const [headingModelOptions, setHeadingModelOptions] =
     useState<ParserLlmModelItem[]>([]);
@@ -338,176 +333,47 @@ const ProfileEditorModal: React.FC<{
     };
   }, [open]);
 
-  // ---- LLM 模型操作（添加/编辑/删除/勾选激活） ----
-  /** 打开模型编辑弹窗（表单回填在 ModelEditModals 内部做） */
-  const openModelEdit = (idx: number | null) => {
-    setModelEditIdx(idx);
-    setModelModalOpen(true);
-  };
+  // ---- 模型列表编辑（LLM / 图片解析两组逻辑逐字相同，收敛在 useModelListEditor）----
+  const llmEditor = useModelListEditor<LLMModelItem>({
+    entity: 'LLM 模型',
+    models: llmModels,
+    setModels: setLlmModels,
+    active: llmActive,
+    setActive: setLlmActive,
+    setDirty,
+    testConnection: testLlmConnection,
+    referencesOf: name => references?.llm_models?.[name] ?? [],
+    onRequestDelete,
+    messages: {
+      done: (name, ms) => `已激活「${name}」（连接成功，${ms}ms）`,
+      doneForced: name => `已激活「${name}」`,
+      forceTitle: name => `连接失败，确认激活「${name}」？`,
+      forceOkText: '仍要激活',
+    },
+    fallbackHint: '会自动回退到全局激活模型',
+    activeDeleteNote: '注意：它正是当前激活的模型，删除后默认模型会换成列表里的第一个。',
+  });
 
-  /** 模型弹窗保存：插入或替换（api_key 留空 = 保留原值） */
-  const saveLlmModel = (item: LLMModelItem) => {
-    setLlmModels(prev => {
-      const next = [...prev];
-      if (modelEditIdx !== null && next[modelEditIdx]) {
-        // 编辑：api_key 留空 = 保留原值（回填的脱敏值原样保留）
-        next[modelEditIdx] = { ...item, api_key: item.api_key || next[modelEditIdx].api_key };
-      } else {
-        next.push(item);
-        if (next.length === 1) setLlmActive(0); // 从空添加第一个 → 自动激活
-      }
-      return next;
-    });
-    setModelModalOpen(false);
-    setDirty(true);
-  };
+  const visionEditor = useModelListEditor<VisionModelItem>({
+    entity: '图片解析模型',
+    models: visionModels,
+    setModels: setVisionModels,
+    active: visionActive,
+    setActive: setVisionActive,
+    setDirty,
+    testConnection: testVisionConnection,
+    referencesOf: name => references?.vision_models?.[name] ?? [],
+    onRequestDelete,
+    messages: {
+      done: name => `已将「${name}」设为默认`,
+      doneForced: name => `已将「${name}」设为默认`,
+      forceTitle: name => `连接失败，确认将「${name}」设为默认？`,
+      forceOkText: '仍要设为默认',
+    },
+    fallbackHint: '会自动回退到全局激活的图片模型',
+    activeDeleteNote: '注意：它正是当前默认的图片解析模型，删除后默认会换成列表里的第一个。',
+  });
 
-  const deleteModel = (idx: number) => {
-    setLlmModels(prev => {
-      if (prev.length <= 1) return prev; // 至少保留 1 个模型
-      const next = prev.filter((_, i) => i !== idx);
-      setLlmActive(a => (idx === a ? 0 : idx < a ? a - 1 : a));
-      return next;
-    });
-    setDirty(true);
-  };
-
-  /** 删除 LLM 模型前的确认：谁在用它（外部查询是按名字指定的） */
-  const requestDeleteModel = (idx: number) => {
-    const m = llmModels[idx];
-    if (!m) return;
-    onRequestDelete({
-      title: `LLM 模型「${m.name}」`,
-      references: references?.llm_models?.[m.name] ?? [],
-      fallbackHint: '会自动回退到全局激活模型',
-      extraNote: idx === llmActive
-        ? '注意：它正是当前激活的模型，删除后默认模型会换成列表里的第一个。'
-        : undefined,
-      onConfirm: () => deleteModel(idx),
-    });
-  };
-
-  /** 勾选激活：先测连接（GET {base_url}/models）→ 成功直接激活；
-   *  失败弹原因 + 可确认强制激活（管理员自行判断网络抖动等场景） */
-  const activateModel = async (idx: number) => {
-    if (idx === llmActive || llmTestingIdx !== null) return;
-    const item = llmModels[idx];
-    if (!item) return;
-    setLlmTestingIdx(idx);
-    const confirmForce = (reason: string) => {
-      modal.confirm({
-        title: `连接失败，确认激活「${item.name}」？`,
-        content: reason,
-        okText: '仍要激活',
-        cancelText: '取消',
-        onOk: () => {
-          setLlmActive(idx);
-          setDirty(true);
-          message.success(`已激活「${item.name}」`);
-        },
-      });
-    };
-    try {
-      const res = await testLlmConnection(item);
-      if (res.data.ok) {
-        setLlmActive(idx);
-        setDirty(true);
-        message.success(`已激活「${item.name}」（连接成功，${res.data.latency_ms}ms）`);
-      } else {
-        confirmForce(res.data.reason);
-      }
-    } catch (e: unknown) {
-      confirmForce(asApiError(e).response?.data?.detail || '网络请求失败，请检查服务是否可达');
-    } finally {
-      setLlmTestingIdx(null);
-    }
-  };
-
-  // ---- 图片解析模型操作（与 llm 同构；条目少 temperature/max_tokens）----
-  /** 打开图片模型编辑弹窗（表单回填在 ModelEditModals 内部做） */
-  const openVisionEdit = (idx: number | null) => {
-    setVisionEditIdx(idx);
-    setVisionModalOpen(true);
-  };
-
-  /** 图片模型弹窗保存：插入或替换（api_key 留空 = 保留原值） */
-  const saveVisionModel = (item: VisionModelItem) => {
-    setVisionModels(prev => {
-      const next = [...prev];
-      if (visionEditIdx !== null && next[visionEditIdx]) {
-        // 编辑：api_key 留空 = 保留原值（回填的是脱敏值）
-        next[visionEditIdx] = {
-          ...item, api_key: item.api_key || next[visionEditIdx].api_key,
-        };
-      } else {
-        next.push(item);
-        if (next.length === 1) setVisionActive(0);
-      }
-      return next;
-    });
-    setVisionModalOpen(false);
-    setDirty(true);
-  };
-
-  const deleteVisionModel = (idx: number) => {
-    setVisionModels(prev => {
-      if (prev.length <= 1) return prev; // 至少保留 1 个模型
-      const next = prev.filter((_, i) => i !== idx);
-      setVisionActive(a => (idx === a ? 0 : idx < a ? a - 1 : a));
-      return next;
-    });
-    setDirty(true);
-  };
-
-  /** 删除图片模型前的确认：部门是按名字选它的（image_summary.model） */
-  const requestDeleteVisionModel = (idx: number) => {
-    const m = visionModels[idx];
-    if (!m) return;
-    onRequestDelete({
-      title: `图片解析模型「${m.name}」`,
-      references: references?.vision_models?.[m.name] ?? [],
-      fallbackHint: '会自动回退到全局激活的图片模型',
-      extraNote: idx === visionActive
-        ? '注意：它正是当前默认的图片解析模型，删除后默认会换成列表里的第一个。'
-        : undefined,
-      onConfirm: () => deleteVisionModel(idx),
-    });
-  };
-
-  /** 设为默认（部门没选模型时的兜底）：先测连接，失败可确认强制 */
-  const activateVisionModel = async (idx: number) => {
-    if (idx === visionActive || visionTestingIdx !== null) return;
-    const item = visionModels[idx];
-    if (!item) return;
-    setVisionTestingIdx(idx);
-    const confirmForce = (reason: string) => {
-      modal.confirm({
-        title: `连接失败，确认将「${item.name}」设为默认？`,
-        content: reason,
-        okText: '仍要设为默认',
-        cancelText: '取消',
-        onOk: () => {
-          setVisionActive(idx);
-          setDirty(true);
-          message.success(`已将「${item.name}」设为默认`);
-        },
-      });
-    };
-    try {
-      const res = await testVisionConnection(item);
-      if (res.data.ok) {
-        setVisionActive(idx);
-        setDirty(true);
-        message.success(`已将「${item.name}」设为默认`);
-      } else {
-        confirmForce(res.data.reason);
-      }
-    } catch (e: unknown) {
-      confirmForce(asApiError(e).response?.data?.detail || '网络请求失败，请检查服务是否可达');
-    } finally {
-      setVisionTestingIdx(null);
-    }
-  };
 
   // ---- 保存 / 关闭 ----
   /** 当前表单 + 模型列表组装成后端入参（保存 与"按当前值测试"共用） */
@@ -797,10 +663,10 @@ const ProfileEditorModal: React.FC<{
                   <LlmPanel
                     llmModels={llmModels}
                     llmActive={llmActive}
-                    llmTestingIdx={llmTestingIdx}
-                    openModelEdit={openModelEdit}
-                    deleteModel={requestDeleteModel}
-                    activateModel={activateModel}
+                    llmTestingIdx={llmEditor.testingIdx}
+                    openModelEdit={llmEditor.openEdit}
+                    deleteModel={llmEditor.requestDelete}
+                    activateModel={llmEditor.activate}
                   />
                 )),
               },
@@ -1100,10 +966,10 @@ const ProfileEditorModal: React.FC<{
                   <VisionPanel
                     visionModels={visionModels}
                     visionActive={visionActive}
-                    visionTestingIdx={visionTestingIdx}
-                    openModelEdit={openVisionEdit}
-                    deleteModel={requestDeleteVisionModel}
-                    activateModel={activateVisionModel}
+                    visionTestingIdx={visionEditor.testingIdx}
+                    openModelEdit={visionEditor.openEdit}
+                    deleteModel={visionEditor.requestDelete}
+                    activateModel={visionEditor.activate}
                   />
                 )),
               },
@@ -1146,20 +1012,20 @@ const ProfileEditorModal: React.FC<{
 
       {/* 模型添加/编辑弹窗：表单实例在组件内部，这里只管开关与保存 */}
       <LlmModelEditModal
-        open={modelModalOpen}
+        open={llmEditor.modalOpen}
         models={llmModels}
-        editIdx={modelEditIdx}
-        onSave={saveLlmModel}
-        onCancel={() => setModelModalOpen(false)}
+        editIdx={llmEditor.editIdx}
+        onSave={llmEditor.save}
+        onCancel={llmEditor.closeModal}
       />
       <VisionModelEditModal
-        open={visionModalOpen}
+        open={visionEditor.modalOpen}
         models={visionModels}
         // 「模型名」下拉的数据源：从 LLM 模型列表里挑，地址/Key 一并带出
         llmModels={llmModels}
-        editIdx={visionEditIdx}
-        onSave={saveVisionModel}
-        onCancel={() => setVisionModalOpen(false)}
+        editIdx={visionEditor.editIdx}
+        onSave={visionEditor.save}
+        onCancel={visionEditor.closeModal}
       />
 
       {/* 提示词详情：正文框窄，看全文/复制靠它（内容取表单当前值） */}
