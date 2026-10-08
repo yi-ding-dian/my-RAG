@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.db import get_db
 from backend.deps import get_current_user, kb_or_404
 from backend.models.user_models import UserPublic
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.parsers.probe import probe_parsers
 from backend.services.smart_parse.build import build_analyze
 

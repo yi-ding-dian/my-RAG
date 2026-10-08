@@ -22,9 +22,15 @@ def test_quota_default_unlimited(client, admin_headers, mock_embedding):
     assert len(resp.json()) == 2  # 列表接口返回裸数组
 
     # —— 配额=1（此时库内已有 2 个，超限）——
-    fake = types.SimpleNamespace(ingestion=types.SimpleNamespace(kb_doc_limit=1))
+    fake = types.SimpleNamespace(
+        ingestion=types.SimpleNamespace(kb_doc_limit=1, max_upload_mb=100))
     import pytest
     with pytest.MonkeyPatch.context() as mp:
+        # 配额校验已下沉到 services/document/lifecycle，它与该路由模块各自
+        # from-import 了 get_active_config（配额在 lifecycle、上传大小限制仍
+        # 在 crud）——两个命名空间都要 patch，否则 fake 只对其中一处生效
+        mp.setattr("backend.services.document.lifecycle.get_active_config",
+                   lambda: fake)
         mp.setattr(doc_router, "get_active_config", lambda: fake)
         resp = client.post(
             f"/api/kbs/{kb['id']}/documents/upload",

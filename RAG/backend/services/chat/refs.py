@@ -119,7 +119,7 @@ class _RefsMixin:
         """
         out: Dict[str, List[str]] = {}
         try:
-            from backend.services.document_service import get_document_service
+            from backend.services.document.service import get_document_service
             doc_svc = get_document_service()
         except Exception:  # 导入/初始化异常不应影响引用组装
             return out

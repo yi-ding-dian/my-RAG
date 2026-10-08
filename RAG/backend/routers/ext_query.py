@@ -61,7 +61,7 @@ from backend.models.user_models import UserPublic
 from backend.services import audit_service
 from backend.services.chat.service import ChatService, \
     get_chat_service, sse_event
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.ext_query_service import (get_ext_query_service,
                                                 coerce_config, is_expired,
                                                 resolve_llm_config,

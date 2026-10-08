@@ -263,7 +263,7 @@ async def _backfill_missing_vectors(kb_id: str, handle: TaskHandle, vec, emb_svc
     写入（文本取自 chunks_meta；软删文档保留 doc_active=False）。
     collection 已有向量（重建期间 ingest 直接写入新 collection）的跳过。
     """
-    from backend.services.document_service import get_document_service
+    from backend.services.document.service import get_document_service
     doc_svc = get_document_service()
     all_ingested = [d for d in doc_svc.list_by_kb(kb_id, include_deleted=True)
                     if d.status == "ingested"]
@@ -326,7 +326,7 @@ async def run_rebuild_task(kb_id: str, task_id: str) -> None:
 
 async def _run_rebuild_locked(kb_id: str, task_id: str) -> None:
     """run_rebuild_task 的并发受限主体（快照重建 + 收尾增量补齐）"""
-    from backend.services.document_service import get_document_service
+    from backend.services.document.service import get_document_service
     from backend.services.retrieval_service import get_retrieval_service
 
     handle = TaskHandle(task_id)

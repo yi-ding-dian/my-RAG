@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from backend.models.rag_models import DocumentItem
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 
 logger = logging.getLogger(__name__)
 

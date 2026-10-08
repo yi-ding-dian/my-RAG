@@ -33,8 +33,23 @@ from backend.logger import AppLog
 logger = logging.getLogger(__name__)
 log = AppLog(__name__)
 
-# BM25 索引构建锁（模块级）：并发检索请求同时 miss 缓存时保证只构建一次
+# BM25 索引构建锁：并发检索请求同时 miss 缓存时保证只构建一次。
+# **按 event loop 持有**——不能只用一个模块级 asyncio.Lock：它绑定首次使用
+# 它的 loop，跨 loop 复用报 "bound to a different event loop"；且 loop 被
+# 强制关闭（测试里每个用例一个 TestClient）时，持有中的锁不走 __aexit__
+# 释放，会永久残留 [locked]，此后该进程所有 BM25 检索都返回 500。
+_bm25_lock_loop: Optional[asyncio.AbstractEventLoop] = None
 _bm25_build_lock = asyncio.Lock()
+
+
+def _bm25_lock() -> asyncio.Lock:
+    """取当前 event loop 的构建锁（换 loop 则换新锁，残留状态随旧 loop 丢弃）"""
+    global _bm25_lock_loop, _bm25_build_lock
+    loop = asyncio.get_running_loop()
+    if _bm25_lock_loop is not loop:
+        _bm25_build_lock = asyncio.Lock()
+        _bm25_lock_loop = loop
+    return _bm25_build_lock
 
 
 class RetrievalUnavailableError(Exception):
@@ -312,7 +327,8 @@ class RetrievalService:
 
         - 构建（chroma count/get_all + jieba 分词建索引）放到 asyncio.to_thread
           线程池执行，避免同步 CPU/IO 阻塞事件循环
-        - 模块级锁 + 锁内 double-check：并发请求同时 miss 缓存时只构建一次
+        - 按 loop 持有的锁 + 锁内 double-check：并发请求同时 miss 缓存时只构建
+          一次（见 _bm25_lock——锁必须随 loop 更换，否则残留会毒化后续检索）
         - 构建失败缓存失败态（缓存值 None），避免反复尝试；invalidate_bm25
           或 count 变化后自然重建
         """
@@ -326,7 +342,7 @@ class RetrievalService:
             return cached
         if cached is None and kb_id in self._bm25_cache:
             return None, []  # 上次构建失败：不反复尝试（invalidate 后重建）
-        async with _bm25_build_lock:
+        async with _bm25_lock():
             # 等锁期间其他请求可能已构建完成，double-check
             cached = self._bm25_cache.get(kb_id)
             if cached is not None and cached[0].size == count:
@@ -396,7 +412,7 @@ class RetrievalService:
         idx = meta.get("parent_chunk_index")
         if isinstance(idx, int) and idx >= 0:
             try:
-                from backend.services.document_service import (
+                from backend.services.document.service import (
                     get_document_service)
                 doc = get_document_service().get(meta.get("document_id") or "")
                 parents = getattr(doc, "parent_chunks_meta", None) or []

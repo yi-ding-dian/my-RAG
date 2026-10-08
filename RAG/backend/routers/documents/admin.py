@@ -34,7 +34,7 @@ from backend.db import get_db
 from backend.deps import require_super_or_dept_admin
 from backend.models.user_models import UserPublic
 from backend.services import department_service
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.kb_service import get_kb_service
 
 logger = logging.getLogger(__name__)
@@ -53,11 +53,14 @@ UNASSIGNED_DEPT_KEY = "__unassigned__"
 
 def _match_status(doc_status: str, status: str) -> bool:
     """状态筛选匹配（unparsed = uploaded + parsed + pending_update，
-    failed 组含 pending_confirm 待确认，与部门内文档列表语义一致）"""
+    parsing 组含 converting 转换中，failed 组含 pending_confirm 待确认，
+    与部门内文档列表语义一致）"""
     if status in ("uploaded", "unparsed"):
         return doc_status in ("uploaded", "parsed", "pending_update")
     if status == "failed":
         return doc_status in ("failed", "pending_confirm")
+    if status == "parsing":
+        return doc_status in ("parsing", "converting")
     return doc_status == status
 
 
@@ -157,9 +160,10 @@ async def get_admin_documents_status_counts(
 
     过滤粒度同列表接口的 department_id/kb_id 子集（super_admin 全量可带
     任意过滤；dept_admin 强制本部门，未归属部门 403；未分配部门传
-    __unassigned__）。计数语义与部门内一致：unparsed=uploaded+parsed
-    （待解析/已解析均未入库）；failed=failed+pending_confirm（Agentic
-    超限待确认归失败组）；parsing/ingested 单值；total=全部。
+    __unassigned__）。计数语义与部门内一致：unparsed=uploaded+parsed+
+    pending_update（待解析/已解析/待确认更新均未入库）；parsing=parsing+
+    converting（转换中同为"处理中"）；failed=failed+pending_confirm
+    （Agentic 超限待确认归失败组）；ingested 单值；total=全部。
     """
     if user.role == "dept_admin":
         if not user.department_id:
@@ -178,16 +182,21 @@ async def get_admin_documents_status_counts(
                 if (kbs.get(d.kb_id).department_id if d.kb_id in kbs
                     else None) == target]
 
-    # 静态聚合（与部门内 documents.py 的 _aggregate_status_counts 同语义）
+    # 静态聚合（与部门内 crud._aggregate_status_counts 同语义）：
+    # unparsed = uploaded + parsed + pending_update——待确认更新的新版本
+    # 同样没有向量、不参与检索，归「未入库」组；parsing 组含 converting。
+    # 口径必须与上面 _match_status 的筛选一致，否则徽标数字与点击后的结果
+    # 对不上。四个分组是全部状态的划分（不重不漏），故四者之和恒等于 total
     per_status = {s: 0 for s in
-                  ("uploaded", "parsing", "parsed", "ingested",
-                   "failed", "pending_confirm")}
+                  ("uploaded", "converting", "parsing", "parsed", "ingested",
+                   "failed", "pending_confirm", "pending_update")}
     for d in docs:
         per_status[d.status] = per_status.get(d.status, 0) + 1
     return {
         "total": len(docs),
-        "unparsed": per_status["uploaded"] + per_status["parsed"],
-        "parsing": per_status["parsing"],
+        "unparsed": (per_status["uploaded"] + per_status["parsed"]
+                     + per_status["pending_update"]),
+        "parsing": per_status["parsing"] + per_status["converting"],
         "ingested": per_status["ingested"],
         "failed": per_status["failed"] + per_status["pending_confirm"],
     }

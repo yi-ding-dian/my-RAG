@@ -85,7 +85,7 @@ from backend.config import get_active_config
 from backend.services.ingestion.agentic_chunker import (AgenticChunkError,
                                               agentic_chunk)
 from backend.services.ingestion.contextual_retriever import enrich_chunks
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.dim_check import VectorDimensionError
 from backend.services.embedding_service import (EmbeddingError,
                                                 get_embedding_service)

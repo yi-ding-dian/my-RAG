@@ -33,7 +33,7 @@ from backend.db import get_db
 from backend.deps import get_current_user_query_or_header, kb_or_404
 from backend.models.user_models import UserPublic
 from backend.services import user_service
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.storage_service import get_storage_service
 
 logger = logging.getLogger(__name__)

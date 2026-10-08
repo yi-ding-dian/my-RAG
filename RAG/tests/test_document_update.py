@@ -24,7 +24,7 @@ import pytest
 
 from conftest import create_kb, upload_and_ingest, upload_doc, wait_for_status
 
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.fingerprint import (EXACT_DUP, NONE, SAME_NAME,
                                           SAME_NAME_BUSY, check_upload,
                                           compute_content_hash,
@@ -360,6 +360,36 @@ class TestPendingUpdateListing:
         counts = client.get(f"/api/kbs/{kb['id']}/documents/status-counts",
                             headers=admin_headers).json()
         assert counts["unparsed"] >= 1
+
+    def test_admin_global_counts_match_filter(self, client, admin_headers,
+                                              mock_embedding):
+        """超管全局计数与筛选同语义：unparsed 同样含 pending_update
+
+        回归（2026-10-08）：admin.py 的计数漏了 pending_update，而它的筛选
+        （_match_status）含它 → 超管「全局文档」页徽标「未入库」显示 N，
+        点进去列出 N+1 个。此前只因**部门内**接口有测试（上一个用例）、
+        超管这份没有，才一直没暴露。
+
+        断言的是不变式「计数 == 同一筛选的结果」而非具体数字——将来增删
+        文档也不会误报；并先确认待确认文档确实落在筛选结果里，防止两边
+        都是 0 的假通过。
+        """
+        kb = create_kb(client)
+        upload_and_ingest(client, kb["id"], filename="a.txt",
+                          content="旧版本内容" * 30)
+        new = _upload(client, kb["id"], "a.txt", "新版本内容" * 30,
+                      admin_headers).json()
+        wait_for_status(client, kb["id"], new["id"], status="pending_update")
+
+        listed = client.get("/api/admin/documents",
+                            params={"status": "unparsed"},
+                            headers=admin_headers).json()
+        counts = client.get("/api/admin/documents/status-counts",
+                            headers=admin_headers).json()
+        # 待确认更新的文档确实在 unparsed 筛选结果里（防假通过）
+        assert any(d["id"] == new["id"] for d in listed["items"])
+        # 徽标数字必须与筛选结果数一致（漏 pending_update 时这里差 1）
+        assert counts["unparsed"] == listed["total"]
 
 
 # ============ 核心场景：文件被重新保存（字节变、内容没变） ============

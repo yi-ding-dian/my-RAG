@@ -110,11 +110,11 @@ def reset_services():
       删除/重建目录会使其失效（readonly 错误），故 session 级保留同一实例，
       collection 按随机 kb_id 命名天然隔离，无需重置。
     """
-    from backend.services import (document_service,
-                                  embedding_service, ext_query_service,
+    from backend.services import (embedding_service, ext_query_service,
                                   kb_service, ragas_client,
                                   retrieval_service, storage_service)
     from backend.services.chat import service as chat_service
+    from backend.services.document import service as document_service
     from backend.services.ingestion import service as ingestion_service
     from backend.services.parsers import client as parser_client
     kb_service._kb_service = None

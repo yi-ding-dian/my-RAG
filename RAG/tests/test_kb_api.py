@@ -201,7 +201,7 @@ class TestIngest:
     def test_ingest_parsing_state_409(self, client, mock_embedding,
                                       admin_headers):
         """parsing 中间态重复触发 ingest → 409（防重复触发）"""
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"])
         # 直接把状态机拨到 parsing（模拟后台解析中）
@@ -298,7 +298,7 @@ class TestDocumentDetail:
     def test_delete_kb_cascade(self, client, mock_embedding, admin_headers):
         """删除知识库：collection/文档元数据/上传文件全部级联清除"""
         from backend.config import DOCUMENTS_DIR, UPLOAD_DIR
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         from backend.services.vector_store import get_vector_store
         kb = create_kb(client)
         upload_and_ingest(client, kb["id"])

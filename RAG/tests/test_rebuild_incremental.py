@@ -72,7 +72,7 @@ class TestBackfillUnit:
     def test_backfill_missing_vectors(self):
         """collection 无向量的 ingested 文档被补齐（快照内/未入库的不动）"""
         from backend.services import dim_check
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         from backend.services.vector_store import get_vector_store
 
         async def _run():
@@ -115,7 +115,7 @@ class TestBackfillUnit:
         """collection 已有向量的 ingested 文档（重建期间 ingest 直接写入
         新 collection）不重复补齐"""
         from backend.services import dim_check
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         from backend.services.vector_store import get_vector_store
 
         async def _run():
@@ -139,7 +139,7 @@ class TestBackfillUnit:
     def test_backfill_preserves_deleted_flag(self):
         """软删的 ingested 文档补齐后 doc_active=False（检索不复活）"""
         from backend.services import dim_check
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         from backend.services.vector_store import get_vector_store
 
         async def _run():

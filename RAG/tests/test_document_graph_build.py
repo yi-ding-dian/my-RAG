@@ -184,7 +184,7 @@ class TestGraphBuildAPI:
         kb = create_kb(client)
         final = _upload_and_ingest(client, kb["id"], headers=admin_headers)
         # 直接持久化 building 状态（模拟任务运行中），路由应拒绝重复触发
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         get_document_service().update_graph_status(final["id"], "building")
         resp = _post_graph_build(client, kb["id"], final["id"],
                                  headers=admin_headers)

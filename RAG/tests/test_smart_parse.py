@@ -599,7 +599,7 @@ class TestFailureTolerance:
 
     def test_unknown_file_type(self, client, admin_headers):
         """不支持的类型（如 url 导入文档）→ 提取失败但整体 200"""
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"], filename="x.txt",
                          content="正文")

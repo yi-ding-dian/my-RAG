@@ -41,7 +41,7 @@ from backend.models.user_models import (DepartmentORM, FeedbackORM, KBORM,
                                         UserORM, UserPublic)
 from backend.services import audit_service, ragas_sampling
 from backend.services.chat.service import get_chat_service
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.kb_service import get_kb_service
 from backend.services.parsers.probes import probe_embedding, probe_llm
 from backend.services.ragas_client import RagasApiError, get_ragas_client

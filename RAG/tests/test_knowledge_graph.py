@@ -934,10 +934,11 @@ class TestGraphCleanup:
         def _boom_save(kb_id, graph):
             raise RuntimeError("图谱落盘失败（测试构造）")
 
-        # from-import 后名字绑定在 documents 模块，须在此 patch（_purge_graph_refs
-        # 内部 try/except 会吞掉该异常 → warning 不阻塞 purge 主流程）
-        monkeypatch.setattr("backend.routers.documents.crud.save_graph",
-                            _boom_save)
+        # 图谱引用清理已下沉到 services/document/lifecycle（from-import 后
+        # 名字绑定在该模块，须在此 patch；_purge_graph_refs 内部 try/except
+        # 会吞掉该异常 → warning 不阻塞 purge 主流程）
+        monkeypatch.setattr(
+            "backend.services.document.lifecycle.save_graph", _boom_save)
         resp = client.delete(f"/api/kbs/{kb['id']}/documents/{doc['id']}",
                              headers=admin_headers)
         assert resp.status_code == 200

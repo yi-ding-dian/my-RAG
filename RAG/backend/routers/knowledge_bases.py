@@ -30,7 +30,7 @@ from backend.services import audit_service
 from backend.services.dim_check import (get_kb_vector_status,
                                         get_rebuild_status, kb_vector_summary,
                                         run_rebuild_task, start_rebuild_task)
-from backend.services.document_service import get_document_service
+from backend.services.document.service import get_document_service
 from backend.services.ingestion.params import public_defaults
 from backend.services.kb_service import get_kb_service
 from backend.services.knowledge_graph.service import graph_path

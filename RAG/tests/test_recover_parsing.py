@@ -17,7 +17,7 @@ class TestRecoverStuckParsing:
     def test_parsing_docs_marked_failed_with_clear_error(self, client,
                                                          admin_headers):
         """构造 parsing 状态文档 → 恢复函数把其拨回 failed + 明确 error"""
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"])
         svc = get_document_service()
@@ -36,7 +36,7 @@ class TestRecoverStuckParsing:
     def test_recover_then_reingest_success(self, client, mock_embedding,
                                            admin_headers):
         """恢复（failed）后可直接重新触发解析并成功入库（完整链路）"""
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         from conftest import wait_for_status
         kb = create_kb(client)
         doc = upload_doc(client, kb["id"])
@@ -56,7 +56,7 @@ class TestRecoverStuckParsing:
     def test_non_parsing_docs_unaffected(self, client, mock_embedding,
                                          admin_headers):
         """ingested/failed/uploaded 状态不受恢复影响"""
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         kb = create_kb(client)
         doc1 = upload_and_ingest(client, kb["id"], filename="已入库.txt")
         doc2 = upload_doc(client, kb["id"], filename="待解析.txt")
@@ -92,7 +92,7 @@ class TestRecoverStuckParsing:
         from fastapi.testclient import TestClient
         from backend.main import app
         with TestClient(app) as c:  # 触发 lifespan → recover_stuck_parsing
-            from backend.services.document_service import get_document_service
+            from backend.services.document.service import get_document_service
             d = get_document_service().get("stuck1")
             assert d is not None
             assert d.status == "failed"

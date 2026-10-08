@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
     await get_storage_service().ensure_bucket()
     # 解析中断恢复（P0-1）：后台解析任务无持久化，进程重启后 parsing 状态文档
     # 无法重新解析且前端无限轮询；启动时统一拨回 failed（可重新解析）
-    from backend.services.document_service import get_document_service
+    from backend.services.document.service import get_document_service
     recovered = get_document_service().recover_stuck_parsing()
     if recovered:
         logger.warning("启动恢复: %d 个解析中断文档已标记失败（可重新解析）",

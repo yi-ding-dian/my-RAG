@@ -407,7 +407,7 @@ def _inactive_doc_ids(kb_id: str) -> set:
     过滤时只剔除这些文档的引用；引用里出现未知 doc_id（测试造数、历史脏数据、
     文档元数据已丢）一律保留——宁可多留，也不能让图谱整体失效。
     """
-    from backend.services.document_service import get_document_service
+    from backend.services.document.service import get_document_service
     docs = get_document_service().list_by_kb(kb_id, include_deleted=True)
     return {
         d.id for d in docs

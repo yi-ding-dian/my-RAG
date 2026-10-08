@@ -755,7 +755,7 @@ class TestAgenticConfirmStateMachine:
 
     def _mk(self):
         """构造 uploaded 文档（_isolated_env 每测试隔离数据目录）"""
-        from backend.services.document_service import get_document_service
+        from backend.services.document.service import get_document_service
         svc = get_document_service()
         doc = svc.create("kb-pc", "测试.txt", 100)
         return svc, doc
@@ -804,5 +804,5 @@ class TestAgenticConfirmStateMachine:
 
     def test_valid_status_contains_pending_confirm(self):
         """VALID_STATUS 含 pending_confirm（transition 校验通过的前置）"""
-        from backend.services.document_service import VALID_STATUS
+        from backend.services.document.service import VALID_STATUS
         assert "pending_confirm" in VALID_STATUS

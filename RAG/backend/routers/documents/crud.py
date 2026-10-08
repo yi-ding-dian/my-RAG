@@ -42,24 +42,24 @@ from backend.models.task_models import (TASK_CANCELLED, TASK_DONE, TASK_FAILED,
 from backend.models.user_models import UserPublic
 from backend.services import audit_service
 from backend.services import fingerprint
-from backend.services.document_service import (SUPPORTED_EXTS,
+from backend.services.document.lifecycle import (QuotaExceeded,
+                                                 VectorSyncError,
+                                                 check_doc_quota,
+                                                 purge_document as purge_doc,
+                                                 set_deleted, set_enabled)
+from backend.services.document.service import (SUPPORTED_EXTS,
                                                get_document_service)
 from backend.services.fingerprint import check_upload
 from backend.services.ingestion.params import (resolve_parser_config,
                                                resolve_parser_engine)
 from backend.services.ingestion.service import get_ingestion_service
 from backend.services.kb_service import get_kb_service
-from backend.services.knowledge_graph.service import (build_graph_for_doc,
-                                                      load_graph,
-                                                      remove_doc_refs,
-                                                      save_graph)
+from backend.services.knowledge_graph.service import build_graph_for_doc
 from backend.services.parsers.probe import probe_parsers
-from backend.services.retrieval_service import get_retrieval_service
 from backend.services.settings.service import find_llm_item
 from backend.services.storage_service import get_storage_service
 from backend.services.task_service import (TaskHandle, claim_task,
                                            request_cancel, watch_cancel)
-from backend.services.vector_store import get_vector_store
 from backend.services.web_importer import (WebFetchError, build_filename,
                                            fetch_webpage)
 
@@ -68,6 +68,9 @@ router = APIRouter(prefix="/api/kbs/{kb_id}/documents", tags=["文档"])
 
 _MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB
 _MAX_PREVIEW_PDF_BYTES = 50 * 1024 * 1024  # PDF 在线预览上限 50MB
+
+# 向量 metadata 同步失败的统一文案（可见性四个端点共用，见 lifecycle）
+_VECTOR_SYNC_ERROR = "向量状态更新失败，请稍后重试"
 
 # 文档列表状态筛选合法值（空/缺省 = 全部；parsed 为历史中间态，归入
 # 「待解析」；unparsed 为前端「未入库」筛选 value，映射 uploaded+parsed 两态；
@@ -125,14 +128,10 @@ async def upload_document(request: Request, kb_id: str,
             status_code=400,
             detail=f"不支持的文件类型: .{ext}（支持 {sorted(SUPPORTED_EXTS)}）")
 
-    # 知识库文档数配额（kb_doc_limit>0 时启用；0=不限）：
-    # 防"单库无限膨胀/多用户上传耗尽磁盘"，超限给出友好提示
-    limit = get_active_config().ingestion.kb_doc_limit
-    if limit and limit > 0 and \
-            get_document_service().count_by_kb(kb_id) >= limit:
-        raise HTTPException(
-            status_code=400,
-            detail=f"知识库文档数已达上限（{limit} 个），请删除部分文档或调大配额后再上传")
+    try:
+        check_doc_quota(kb_id, "上传")
+    except QuotaExceeded as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # 分块读取，限制大小（上限可由配置档案 ingestion.max_upload_mb 调整）
     # 注：老版 .doc 曾另设 50MB 上限——本地 LibreOffice 转换没有内存上限，
@@ -370,7 +369,7 @@ async def resolve_pending_update(request: Request, kb_id: str, doc_id: str,
                        graph_status="none", graph_error=None)
 
     # 3) 删除临时文档（存储对象 + 图片 + 元数据；它从未入库，无向量）
-    await _purge_document(kb_id, doc_id)
+    await purge_doc(kb_id, doc_id)
 
     # 4) 触发旧文档重新入库（ingested → parsing，向量先删后建）
     asyncio.create_task(get_ingestion_service().run_ingestion(old.id))
@@ -543,13 +542,11 @@ async def import_from_url(request: Request, kb_id: str, req: UrlImportRequest,
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise HTTPException(status_code=400, detail="仅支持 http/https 网址导入")
-    # 配额护栏（同 upload：kb_doc_limit>0 时启用）
-    limit = get_active_config().ingestion.kb_doc_limit
-    if limit and limit > 0 and \
-            get_document_service().count_by_kb(kb_id) >= limit:
-        raise HTTPException(
-            status_code=400,
-            detail=f"知识库文档数已达上限（{limit} 个），请删除部分文档或调大配额后再导入")
+    # 配额护栏（与 upload 共用实现）
+    try:
+        check_doc_quota(kb_id, "导入")
+    except QuotaExceeded as e:
+        raise HTTPException(status_code=400, detail=str(e))
     try:
         title, text = await fetch_webpage(url)
     except WebFetchError as e:
@@ -663,6 +660,14 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
                 # 待确认：异常/挂起态一组，前端「失败」标签下可见待确认文档）
                 docs = [d for d in docs
                         if d.status in ("failed", "pending_confirm")]
+            elif status == "parsing":
+                # 「解析中」组 = parsing + converting（ppt/pptx 转 PDF 的
+                # 中间态）——两者都是"系统在处理、用户等着"，且都不可触发
+                # 解析（is_ingestable 均不含）；前端 busy 判定同款
+                # （DocumentTable: parsing || converting → 禁用操作）。
+                # 不归「未入库」：那里是"可触发解析"的语义，点批量解析会 409
+                docs = [d for d in docs
+                        if d.status in ("parsing", "converting")]
             else:
                 docs = [d for d in docs if d.status == status]
     if page is None or page_size is None or page_size <= 0:
@@ -681,10 +686,15 @@ async def list_documents(kb_id: str, page: Optional[int] = Query(None),
 def _aggregate_status_counts(docs: List) -> dict:
     """按状态筛选语义聚合计数（Segmented 徽标数据源，与 _VALID_LIST_STATUS
     分组完全一致）：unparsed=uploaded+parsed+pending_update（待解析/已解析/
-    待确认更新均未入库）；failed=failed+pending_confirm（Agentic 超限待确认
-    归失败组）；parsing/ingested 单值；total=全部。纯静态统计，无 DB/向量开销。"""
+    待确认更新均未入库）；parsing=parsing+converting（转换中同为"处理中"，
+    见 list_documents 筛选）；ingested 单值；failed=failed+pending_confirm
+    （Agentic 超限待确认归失败组）。
+
+    **四个分组是全部状态的划分**（不重不漏），故四者之和恒等于 total
+    ——新增状态时必须同步归组，否则徽标加起来对不上「全部」。纯静态统计，
+    无 DB/向量开销。"""
     per_status = {s: 0 for s in
-                  ("uploaded", "parsing", "parsed", "ingested",
+                  ("uploaded", "converting", "parsing", "parsed", "ingested",
                    "failed", "pending_confirm", "pending_update")}
     for d in docs:
         per_status[d.status] = per_status.get(d.status, 0) + 1
@@ -692,7 +702,7 @@ def _aggregate_status_counts(docs: List) -> dict:
         "total": len(docs),
         "unparsed": (per_status["uploaded"] + per_status["parsed"]
                      + per_status["pending_update"]),
-        "parsing": per_status["parsing"],
+        "parsing": per_status["parsing"] + per_status["converting"],
         "ingested": per_status["ingested"],
         "failed": per_status["failed"] + per_status["pending_confirm"],
     }
@@ -713,53 +723,8 @@ async def get_documents_status_counts(kb_id: str,
     return _aggregate_status_counts(get_document_service().list_by_kb(kb_id))
 
 
-def _purge_graph_refs(kb_id: str, doc_id: str) -> None:
-    """彻底删除文档时清理知识图谱中该文档的实体/关系引用（失败仅 warning 不阻塞）
-
-    - 引用移除（chunk_refs 清空、count 重算、无引用的实体/关系删除，复用
-      remove_doc_refs）+ docs 条目移除；无任何变化不落盘（不产生空文件）
-    - 软删除（回收站）不清——恢复免重建，与 MinIO 对象清理逻辑一致
-    - 图谱文件不存在时 load_graph 返回空结构、remove 0 条 → 不 save
-    """
-    try:
-        graph = load_graph(kb_id)
-        removed = remove_doc_refs(graph, doc_id)
-        had_doc = doc_id in graph.get("docs", {})
-        if removed or had_doc:
-            graph["docs"].pop(doc_id, None)
-            save_graph(kb_id, graph)
-    except Exception as e:
-        logger.warning("清理知识图谱文档引用失败（不阻塞删除）: %s err=%s",
-                       doc_id, str(e)[:150])
-
-
-def _purge_local(kb_id: str, doc_id: str) -> bool:
-    """purge 的纯同步部分（Chroma 向量删除 + BM25 失效 + 图谱引用清理
-    + 元数据/文件删除）
-
-    放线程池执行（asyncio.to_thread）：空回收站批量 purge 时同步阻塞
-    不占用事件循环，其他请求（列表/检索）不被卡住。
-    """
-    get_vector_store().sync.delete_by_document(kb_id, doc_id)
-    # 向量删除后 count 变化，BM25 自动重建（显式失效双保险）
-    get_retrieval_service().invalidate_bm25(kb_id)
-    # 图谱引用清理（失败仅 warning，不阻塞删除主流程）
-    _purge_graph_refs(kb_id, doc_id)
-    return get_document_service().delete(doc_id)
-
-
-async def _purge_document(kb_id: str, doc_id: str):
-    """彻底删除（purge）：存储对象 + 向量 + 元数据 + 本地文件全清"""
-    doc = get_document_service().get(doc_id)
-    storage = get_storage_service()
-    try:
-        await storage.delete(f"uploads/{doc.name}")
-        await storage.delete_prefix(f"images/{doc_id}/")
-    except Exception as e:
-        logger.warning("删除存储对象失败 %s: %s", doc_id, str(e)[:150])
-    ok = await asyncio.to_thread(_purge_local, kb_id, doc_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="文档不存在")
+# 彻底删除（存储对象 + 向量 + 图谱引用 + 元数据/本地文件）与图谱引用清理
+# 见 services/document/lifecycle.py——跨 5 个存储的编排不放路由层
 
 
 # 注意：/trash 必须声明在 /{doc_id} 之前，否则 "trash" 会被当成 doc_id 捕获
@@ -796,7 +761,7 @@ async def empty_trash(request: Request, kb_id: str,
     await kb_or_404(db, kb_id, user, manage=True)
     docs = get_document_service().list_trash(kb_id)
     for doc in docs:
-        await _purge_document(kb_id, doc.id)
+        await purge_doc(kb_id, doc.id)
     await _refresh_kb_stats(db, kb_id)
     await audit_service.record_action(
         user, action="doc.trash-empty", target_type="kb",
@@ -1091,12 +1056,10 @@ async def delete_document(request: Request, kb_id: str, doc_id: str,
     doc = _get_doc_or_404(kb_id, doc_id)
     if doc.deleted:
         raise HTTPException(status_code=409, detail="文档已在回收站")
-    # 先更新向量标志再标记元数据：失败则中止，保持两侧一致
-    if not await get_vector_store().update_metadata(kb_id, doc_id, doc_active=False):
-        raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
-    get_document_service().soft_delete(doc_id)
-    # 软删不改变向量 count，BM25 索引不会自动失效，必须显式失效
-    get_retrieval_service().invalidate_bm25(kb_id)
+    try:
+        await set_deleted(kb_id, doc_id, True)
+    except VectorSyncError:
+        raise HTTPException(status_code=500, detail=_VECTOR_SYNC_ERROR)
     await _refresh_kb_stats(db, kb_id)
     await audit_service.record_action(
         user, action="doc.delete", target_type="doc",
@@ -1118,11 +1081,10 @@ async def restore_document(request: Request, kb_id: str, doc_id: str,
     doc = _get_doc_or_404(kb_id, doc_id)
     if not doc.deleted:
         raise HTTPException(status_code=409, detail="文档不在回收站")
-    if not await get_vector_store().update_metadata(
-            kb_id, doc_id, doc_active=doc.enabled):
-        raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
-    restored = get_document_service().restore(doc_id)
-    get_retrieval_service().invalidate_bm25(kb_id)
+    try:
+        restored = await set_deleted(kb_id, doc_id, False)
+    except VectorSyncError:
+        raise HTTPException(status_code=500, detail=_VECTOR_SYNC_ERROR)
     await _refresh_kb_stats(db, kb_id)
     await audit_service.record_action(
         user, action="doc.restore", target_type="doc",
@@ -1143,14 +1105,12 @@ async def disable_document(request: Request, kb_id: str, doc_id: str,
     """
     await kb_or_404(db, kb_id, user, manage=True)
     doc = _get_doc_or_404(kb_id, doc_id)
-    # 先更新向量标志再改元数据：失败则中止，保持两侧一致（与删除同口径）
-    if not await get_vector_store().update_metadata(kb_id, doc_id, doc_active=False):
-        raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
-    updated = get_document_service().set_enabled(doc_id, False)
+    try:
+        updated = await set_enabled(kb_id, doc_id, False)
+    except VectorSyncError:
+        raise HTTPException(status_code=500, detail=_VECTOR_SYNC_ERROR)
     if updated is None:
         raise HTTPException(status_code=404, detail="文档不存在")
-    # 软删/禁用不改变向量 count，BM25 索引不会自动失效，必须显式失效
-    get_retrieval_service().invalidate_bm25(kb_id)
     await audit_service.record_action(
         user, action="doc.disable", target_type="doc",
         target_id=doc_id, target_name=doc.original_name, request=request)
@@ -1170,13 +1130,12 @@ async def enable_document(request: Request, kb_id: str, doc_id: str,
     """
     await kb_or_404(db, kb_id, user, manage=True)
     doc = _get_doc_or_404(kb_id, doc_id)
-    if not await get_vector_store().update_metadata(
-            kb_id, doc_id, doc_active=not doc.deleted):
-        raise HTTPException(status_code=500, detail="向量状态更新失败，请稍后重试")
-    updated = get_document_service().set_enabled(doc_id, True)
+    try:
+        updated = await set_enabled(kb_id, doc_id, True)
+    except VectorSyncError:
+        raise HTTPException(status_code=500, detail=_VECTOR_SYNC_ERROR)
     if updated is None:
         raise HTTPException(status_code=404, detail="文档不存在")
-    get_retrieval_service().invalidate_bm25(kb_id)
     await audit_service.record_action(
         user, action="doc.enable", target_type="doc",
         target_id=doc_id, target_name=doc.original_name, request=request)
@@ -1200,7 +1159,8 @@ async def purge_document(request: Request, kb_id: str, doc_id: str,
     if not doc.deleted:
         raise HTTPException(status_code=409,
                             detail="文档不在回收站，请先移入回收站再彻底删除")
-    await _purge_document(kb_id, doc_id)
+    if not await purge_doc(kb_id, doc_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
     await _refresh_kb_stats(db, kb_id)
     await audit_service.record_action(
         user, action="doc.purge", target_type="doc",
