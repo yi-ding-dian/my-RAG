@@ -18,11 +18,11 @@ import {
   DOMAIN_CARDS, allFailed, allTesting, emptyTest, sectionLabel, toTestItems,
 } from './shared';
 import type { SectionKey, TestItem } from './shared';
-import ProfileCard from './ProfileCard';
-import DeleteConfirmModal from './DeleteConfirmModal';
-import type { DeleteTarget } from './DeleteConfirmModal';
-import DeptConfigViewModal from './DeptConfigViewModal';
-import ProfileEditorModal from './ProfileEditorModal';
+import ProfileCard from './profile/ProfileCard';
+import DeleteConfirmModal from './profile/DeleteConfirmModal';
+import type { DeleteTarget } from './profile/DeleteConfirmModal';
+import DeptConfigViewModal from './dept/DeptConfigViewModal';
+import ProfileEditorModal from './profile/ProfileEditorModal';
 
 const { Text } = Typography;
 

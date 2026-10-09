@@ -1,7 +1,7 @@
 import React from 'react';
 import { Alert, App as AntApp, Button } from 'antd';
-import AppModal from '../../shared/components/common/AppModal';
-import { PRE_STYLE } from './shared';
+import AppModal from '../../../shared/components/common/AppModal';
+import { PRE_STYLE } from '../shared';
 
 /** 部门配置查看的数据（null = 不弹） */
 export interface DeptConfigView {

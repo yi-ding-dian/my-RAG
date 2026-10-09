@@ -1,6 +1,6 @@
 import React from 'react';
 import { Col, Form, Input, InputNumber, Row, Select } from 'antd';
-import type { ParserLlmModelItem } from '../../shared/api/types';
+import type { ParserLlmModelItem } from '../../../../shared/api/types';
 
 const { Password } = Input;
 

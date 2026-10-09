@@ -3,7 +3,7 @@ import { Divider, Tooltip, theme } from 'antd';
 import MineruPanel from './MineruPanel';
 import DeepdocPanel from './DeepdocPanel';
 import GotenbergPanel from './GotenbergPanel';
-import type { TestItem } from './shared';
+import type { TestItem } from '../../shared';
 
 /** 本面板涉及的三个可探测段（key 与 SectionKey 一致） */
 export type ParseSectionKey = 'mineru' | 'deepdoc' | 'gotenberg';

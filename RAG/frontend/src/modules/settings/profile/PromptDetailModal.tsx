@@ -1,7 +1,7 @@
 import React from 'react';
 import { App as AntApp, Button } from 'antd';
-import AppModal from '../../shared/components/common/AppModal';
-import { PRE_STYLE } from './shared';
+import AppModal from '../../../shared/components/common/AppModal';
+import { PRE_STYLE } from '../shared';
 
 /** 要展示的提示词（null = 不弹） */
 export interface PromptPreview {

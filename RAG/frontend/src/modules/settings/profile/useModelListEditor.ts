@@ -11,7 +11,7 @@
 import { useState, type Dispatch, type SetStateAction } from 'react';
 import { App as AntApp } from 'antd';
 
-import { asApiError } from '../../shared/api/client';
+import { asApiError } from '../../../shared/api/client';
 import type { DeleteTarget } from './DeleteConfirmModal';
 
 /** 两组条目的公共形状（LLM 条目另有 temperature/max_tokens，此处用不到） */

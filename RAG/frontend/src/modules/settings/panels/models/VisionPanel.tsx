@@ -7,7 +7,7 @@ import {
   LoadingOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
-import type { VisionModelItem } from '../../shared/api/types';
+import type { VisionModelItem } from '../../../../shared/api/types';
 import ModelParamTooltip from './ModelParamTooltip';
 import type { ParamRow } from './ModelParamTooltip';
 

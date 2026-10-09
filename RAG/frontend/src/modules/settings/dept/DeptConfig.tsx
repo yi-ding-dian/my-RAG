@@ -35,9 +35,9 @@ import {
   Typography,
 } from 'antd';
 import type { CollapseProps } from 'antd';
-import { asApiError, getChatSettings, updateChatSettings } from '../../shared/api/client';
-import type { ThinkingMode, ImageSummaryConfig } from '../../shared/api/client';
-import { buildDefaultImgPrompt } from './imageSummaryPrompt';
+import { asApiError, getChatSettings, updateChatSettings } from '../../../shared/api/client';
+import type { ThinkingMode, ImageSummaryConfig } from '../../../shared/api/client';
+import { buildDefaultImgPrompt } from '../imageSummaryPrompt';
 
 const { TextArea } = Input;
 const { Text } = Typography;

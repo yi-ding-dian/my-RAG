@@ -4,9 +4,9 @@ import {
   CheckOutlined, CheckCircleFilled, CloseCircleFilled,
   DeleteOutlined, EditOutlined, LoadingOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
-import type { LLMModelItem, ServiceProfile } from '../../shared/api/client';
-import { DOMAIN_CARDS, emptyTest, IMG_FMT_LABEL, sectionLabel } from './shared';
-import type { SectionKey, TestItem } from './shared';
+import type { LLMModelItem, ServiceProfile } from '../../../shared/api/client';
+import { DOMAIN_CARDS, emptyTest, IMG_FMT_LABEL, sectionLabel } from '../shared';
+import type { SectionKey, TestItem } from '../shared';
 
 const { Text } = Typography;
 

@@ -5,32 +5,32 @@ import {
 import {
   UndoOutlined, DeleteOutlined, EyeOutlined, PlusOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
-import AppModal, { AppModalFooter } from '../../shared/components/common/AppModal';
+import AppModal, { AppModalFooter } from '../../../shared/components/common/AppModal';
 import {
   asApiError, createProfile, updateProfile,
   testDraftConnection, testLlmConnection, testProfileConnection, testVisionConnection,
   getLlmModelList, getChatSettings, LLMModelItem,
-} from '../../shared/api/client';
+} from '../../../shared/api/client';
 import type {
   ParserLlmModelItem, ServiceProfile, ServiceProfileInput,
   SettingsReferences, VisionModelItem,
-} from '../../shared/api/types';
+} from '../../../shared/api/types';
 import {
   HEADING_END_PUNCT_DEFAULT, PANEL_TEST_SECTIONS, sectionLabel, toFormValues,
   toProfileInput, toTestItems,
-} from './shared';
-import type { ProfileFormValues, SectionKey, TestItem } from './shared';
+} from '../shared';
+import type { ProfileFormValues, SectionKey, TestItem } from '../shared';
 import { useModelListEditor } from './useModelListEditor';
-import ChatPanel from './ChatPanel';
-import RetrievalPanel from './RetrievalPanel';
-import IngestPanel from './IngestPanel';
-import LlmPanel from './LlmPanel';
-import EmbeddingPanel from './EmbeddingPanel';
-import ParseServicesPanel from './ParseServicesPanel';
-import MinioPanel from './MinioPanel';
-import VectorStorePanel from './VectorStorePanel';
-import VisionPanel from './VisionPanel';
-import ImageSummaryPanel from './ImageSummaryPanel';
+import ChatPanel from '../panels/ingest/ChatPanel';
+import RetrievalPanel from '../panels/retrieval/RetrievalPanel';
+import IngestPanel from '../panels/ingest/IngestPanel';
+import LlmPanel from '../panels/models/LlmPanel';
+import EmbeddingPanel from '../panels/retrieval/EmbeddingPanel';
+import ParseServicesPanel from '../panels/parsers/ParseServicesPanel';
+import MinioPanel from '../panels/storage/MinioPanel';
+import VectorStorePanel from '../panels/storage/VectorStorePanel';
+import VisionPanel from '../panels/models/VisionPanel';
+import ImageSummaryPanel from '../panels/models/ImageSummaryPanel';
 import { LlmModelEditModal, VisionModelEditModal } from './ModelEditModals';
 import PromptDetailModal from './PromptDetailModal';
 import type { PromptPreview } from './PromptDetailModal';

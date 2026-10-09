@@ -1,7 +1,7 @@
 import React from 'react';
 import { Space } from 'antd';
 import { ExclamationCircleFilled } from '@ant-design/icons';
-import AppModal, { AppModalFooter } from '../../shared/components/common/AppModal';
+import AppModal, { AppModalFooter } from '../../../shared/components/common/AppModal';
 
 /**
  * 「有未保存的改动」确认框（配置档案编辑弹窗关闭前弹）

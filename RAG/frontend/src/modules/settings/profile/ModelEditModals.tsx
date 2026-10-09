@@ -3,9 +3,9 @@ import {
   AutoComplete, Col, Form, Input, InputNumber, Row, Select, Space, Tooltip,
 } from 'antd';
 import { DownOutlined, QuestionCircleOutlined } from '@ant-design/icons';
-import AppModal from '../../shared/components/common/AppModal';
-import type { LLMModelItem, VisionModelItem } from '../../shared/api/client';
-import type { ThinkingControl } from '../../shared/api/types';
+import AppModal from '../../../shared/components/common/AppModal';
+import type { LLMModelItem, VisionModelItem } from '../../../shared/api/client';
+import type { ThinkingControl } from '../../../shared/api/types';
 
 const { Password } = Input;
 

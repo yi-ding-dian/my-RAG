@@ -54,7 +54,7 @@ const AnalyticsQualityDetailPage = lazy(() => import('./modules/analytics/retrie
 const AnalyticsRagasDetailPage = lazy(() => import('./modules/analytics/ragas/RagasDetail'));
 const AnalyticsFeedbackDetailPage = lazy(() => import('./modules/analytics/feedback/FeedbackDetail'));
 const SettingsPage = lazy(() => import('./modules/settings/Settings'));
-const DeptConfigPage = lazy(() => import('./modules/settings/DeptConfig'));
+const DeptConfigPage = lazy(() => import('./modules/settings/dept/DeptConfig'));
 const UsersPage = lazy(() => import('./modules/users/Users'));
 const ProfilePage = lazy(() => import('./modules/profile/Profile'));
 const LoginPage = lazy(() => import('./modules/auth/Login'));

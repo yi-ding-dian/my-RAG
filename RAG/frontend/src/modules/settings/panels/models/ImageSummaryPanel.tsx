@@ -2,8 +2,8 @@ import React from 'react';
 import {
   Alert, Button, Col, Form, Input, InputNumber, Row, Select, Space, Switch, Typography,
 } from 'antd';
-import type { VisionModelItem } from '../../shared/api/types';
-import { buildDefaultImgPrompt } from './imageSummaryPrompt';
+import type { VisionModelItem } from '../../../../shared/api/types';
+import { buildDefaultImgPrompt } from '../../imageSummaryPrompt';
 
 const { Text } = Typography;
 

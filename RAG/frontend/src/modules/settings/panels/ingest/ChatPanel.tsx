@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Button, Col, Divider, Form, Input, InputNumber, Row, Select, Space, Switch, Typography } from 'antd';
-import type { LLMModelItem, VisionModelItem } from '../../shared/api/types';
-import { buildDefaultImgPrompt } from './imageSummaryPrompt';
+import type { LLMModelItem, VisionModelItem } from '../../../../shared/api/types';
+import { buildDefaultImgPrompt } from '../../imageSummaryPrompt';
 
 const { Text } = Typography;
 

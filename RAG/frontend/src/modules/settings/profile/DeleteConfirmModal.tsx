@@ -1,8 +1,8 @@
 import React from 'react';
 import { Space } from 'antd';
 import { ExclamationCircleFilled } from '@ant-design/icons';
-import AppModal, { AppModalFooter } from '../../shared/components/common/AppModal';
-import type { ConfigReference } from '../../shared/api/types';
+import AppModal, { AppModalFooter } from '../../../shared/components/common/AppModal';
+import type { ConfigReference } from '../../../shared/api/types';
 
 /** 待确认的一次删除 */
 export interface DeleteTarget {
