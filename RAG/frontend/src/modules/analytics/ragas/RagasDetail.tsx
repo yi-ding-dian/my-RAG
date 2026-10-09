@@ -10,20 +10,18 @@ import AppModal from '../../../shared/components/common/AppModal';
 import {
   App as AntApp, Card, Col, Row, Table, Typography, Alert,
   Space, Tooltip, Button, Empty, Select, Checkbox, Form, Input,
-  Segmented, List, Popconfirm, Radio, Skeleton,
+  Radio, Skeleton,
 } from 'antd';
 import {
-  DatabaseOutlined, DeleteOutlined, FileExcelOutlined,
+  DatabaseOutlined, DeleteOutlined,
   FileTextOutlined, ImportOutlined, PlusOutlined, ReloadOutlined,
-  RobotOutlined, SaveOutlined,
-  PlayCircleOutlined, UploadOutlined,
+  SaveOutlined,
+  PlayCircleOutlined,
 } from '@ant-design/icons';
-import dayjs from 'dayjs';
-import * as XLSX from 'xlsx';
 import {
   getRagasStatus,
   listKbs, startRagasEvaluation, previewRagasSamples, ragasPrecheck,
-  listRagasDatasets, createRagasDataset, deleteRagasDataset, getLlmModelList,
+  listRagasDatasets, getLlmModelList,
   KnowledgeBase, RagasStatus, RagasTask, RagasSampleInput,
   RagasDataset, ParserLlmModelItem,
 } from '../../../shared/api/client';
@@ -34,12 +32,15 @@ import TableSectionLayout from '../../../shared/components/layout/TableSectionLa
 import ResizableTitle from '../../../shared/components/common/ResizableTitle';
 import {
   ragasMetricOptions, DEFAULT_METRICS, EvalSampleRow,
-  downloadBlob, evalFileStamp, parseTxtSamples, parseExcelSamples,
-  parseDatasetText,
 } from './ragas-shared';
 import { useRagasColumns } from './useRagasColumns';
 import { RagasReportModal } from './components/RagasReportModal';
 import { GenerateQuestionsModal } from './components/GenerateQuestionsModal';
+import { NewDatasetModal } from './components/NewDatasetModal';
+import { ChatSamplePickerModal } from './components/ChatSamplePickerModal';
+import { DatasetManagerModal } from './components/DatasetManagerModal';
+import { SampleTextImportModal } from './components/SampleTextImportModal';
+import { SaveAsDatasetModal } from './components/SaveAsDatasetModal';
 
 const { Text } = Typography;
 
@@ -85,13 +86,8 @@ const AnalyticsRagasDetailPage: React.FC = () => {
   const [datasetMgrOpen, setDatasetMgrOpen] = useState(false);
   // 「另存为评估集」小弹窗：把当前测试集沉淀成可复用的题集
   const [saveDsOpen, setSaveDsOpen] = useState(false);
-  const [saveDsName, setSaveDsName] = useState('');
   // 「新建评估集」（评估集管理弹窗入口）：不经过发起评估，直接建题集
   const [newDsOpen, setNewDsOpen] = useState(false);
-  const [newDsName, setNewDsName] = useState('');
-  const [newDsKbIds, setNewDsKbIds] = useState<string[]>([]);
-  const [newDsText, setNewDsText] = useState('');
-  const [newDsSubmitting, setNewDsSubmitting] = useState(false);
   // AI 出题（合成测试集）：生成的是**草稿**，审核通过才存成评估集
   const [genOpen, setGenOpen] = useState(false);
   // 评估用的**评委模型**（数据源 = 当前档案的 LLM 模型列表）：
@@ -112,16 +108,14 @@ const AnalyticsRagasDetailPage: React.FC = () => {
   );
   // 测试集文本导入/导出 Modal
   const [textModalOpen, setTextModalOpen] = useState(false);
-  const [evalText, setEvalText] = useState('');
-  // 导入/导出格式（txt 文本 / Excel）；txt 走文本区与文件，Excel 走文件
-  const [ioFormat, setIoFormat] = useState<'txt' | 'excel'>('txt');
-  // 文件导入解析结果提示（有效/跳过/无效行明细），展示在弹窗内
-  const [fileParseResult, setFileParseResult] = useState<{ ok: number; skipped: number; invalid: string[] } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // 打开那一刻的测试集快照（供弹窗带出文本 / 导出用）。
+  // **必须存快照，不能写成 samples={evalValidRows()}**：后者在渲染期访问 evalForm，
+  // 而表单只在「发起评估」弹窗内挂载——弹窗关着时 antd 会报
+  // "Instance created by useForm is not connected to any Form element"
+  const [textModalSamples, setTextModalSamples] = useState<EvalSampleRow[]>([]);
   // 从聊天历史导入选择 Modal（勾选预览样本后追加）
   const [chatPickOpen, setChatPickOpen] = useState(false);
   const [chatPickList, setChatPickList] = useState<RagasSampleInput[]>([]);
-  const [chatPickSelected, setChatPickSelected] = useState<string[]>([]);
   const pollTimerRef = useRef<number | null>(null);
 
   // 发起评估成功"魔法注入"动画：测试集飞向任务列表（注入 0.6s + 光晕）→ 新任务行高亮
@@ -244,8 +238,7 @@ const AnalyticsRagasDetailPage: React.FC = () => {
         return;
       }
       setChatPickList(list);
-      setChatPickSelected(list.map(s => s.question)); // 默认全选
-      setChatPickOpen(true);
+      setChatPickOpen(true);  // 默认全选由 ChatSamplePickerModal 打开时处理
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       message.error(detail || '导入失败');
@@ -255,8 +248,8 @@ const AnalyticsRagasDetailPage: React.FC = () => {
   };
 
   // 选择弹窗确定：勾选的样本追加到当前测试集（相同问题不重复添加）
-  const handleChatPickConfirm = () => {
-    const selected = new Set(chatPickSelected);
+  const handleChatPickConfirm = (selectedQuestions: string[]) => {
+    const selected = new Set(selectedQuestions);
     const current = (evalForm.getFieldValue('samples') as EvalSampleRow[] | undefined) || [];
     const existing = new Set(current.map(r => r?.question?.trim()).filter(Boolean));
     const merged = [...current];
@@ -288,88 +281,10 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       .map(r => ({ question: r.question!.trim(), ground_truth: r.ground_truth!.trim() }));
   };
 
-  // 当前测试集 → 文本（每行一条：问题【Tab】正确答案；首行 # 注释说明，
-  // 导入时自动忽略——txt 导出/导入闭环）
-  const exportSamplesText = (): string => {
-    const rows = evalValidRows();
-    if (rows.length === 0) return '';
-    return `# 每行一条：问题【Tab 键】正确答案（# 开头为注释行，导入时忽略）\n`
-      + rows.map(r => `${r.question}\t${r.ground_truth}`).join('\n');
-  };
-
-  // 打开测试集导入/导出 Modal：默认带出当前测试集文本
+  // 打开测试集导入/导出 Modal：先把当前测试集存成快照
   const openTextModal = () => {
-    setEvalText(exportSamplesText());
-    setFileParseResult(null);
+    setTextModalSamples(evalValidRows());
     setTextModalOpen(true);
-  };
-
-  // 导出（按所选格式）：txt 回填文本区 + 下载 .txt；Excel 生成 .xlsx 下载
-  const handleExportByFormat = () => {
-    const rows = evalValidRows();
-    if (rows.length === 0) {
-      message.warning('当前测试集为空，无可导出内容');
-      return;
-    }
-    if (ioFormat === 'excel') {
-      // 生成 Excel（列：问题/正确答案，首行表头——导入时跳过）
-      const ws = XLSX.utils.json_to_sheet(
-        rows.map(r => ({ 问题: r.question, 正确答案: r.ground_truth })));
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '测试集');
-      XLSX.writeFile(wb, `测试集_${evalFileStamp()}.xlsx`);
-      message.success(`已导出 Excel（${rows.length} 条），请选择保存位置`);
-      return;
-    }
-    const text = exportSamplesText();
-    setEvalText(text);
-    downloadBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }),
-      `测试集_${evalFileStamp()}.txt`);
-    message.success(`已导出 txt（${rows.length} 条），请选择保存位置`);
-  };
-
-  // 导入结果回填测试集（覆盖）+ 提示（有效/跳过；无效行明细展示在弹窗内）
-  const applyImportResult = (
-    rows: EvalSampleRow[], skipped: number, invalid: string[], closeModal: boolean) => {
-    if (rows.length === 0) {
-      message.error(invalid.length
-        ? `未能解析出有效测试样本（${invalid[0]}）`
-        : '未能解析出有效测试样本，请检查文件内容格式');
-      return;
-    }
-    evalForm.setFieldsValue({ samples: rows });
-    setFileParseResult({ ok: rows.length, skipped, invalid });
-    if (closeModal) setTextModalOpen(false);
-    message.success(
-      `已导入 ${rows.length} 条测试样本（覆盖当前测试集）${skipped ? `，跳过 ${skipped} 条无效内容` : ''}`);
-  };
-
-  // 导入：解析文本框内容（txt：每行一条：问题【Tab】正确答案）覆盖回填
-  const handleImportText = () => {
-    const { rows, skipped, invalid } = parseTxtSamples(evalText);
-    applyImportResult(rows, skipped, invalid, true);
-  };
-
-  // 导入：文件选择器按所选格式解析（txt 读文本；Excel 读 .xlsx/.csv）覆盖回填
-  const handleFileImport = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = ioFormat === 'excel'
-        ? parseExcelSamples(reader.result as ArrayBuffer)
-        : parseTxtSamples(String(reader.result ?? ''));
-      applyImportResult(result.rows, result.skipped, result.invalid, false);
-    };
-    reader.onerror = () => message.error('文件读取失败');
-    if (ioFormat === 'excel') reader.readAsArrayBuffer(file);
-    else reader.readAsText(file, 'utf-8');
-  };
-
-  // 文件选择器触发（按所选格式限定文件类型）；选择后清空 value 允许重选同文件
-  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    handleFileImport(file);
   };
 
   // 发起评估提交（手动测试集：问题 + 正确答案，answer 由后端自动=ground_truth）
@@ -452,92 +367,6 @@ const AnalyticsRagasDetailPage: React.FC = () => {
       message.error(detail || '发起评估失败，请确认 RAGAS 服务已启动（端口 8090）');
     } finally {
       setEvalSubmitting(false);
-    }
-  };
-
-  // 直接新建评估集（不走发起评估）：题集可以先把问题攒起来，之后再跑
-  const handleCreateDataset = async () => {
-    const name = newDsName.trim();
-    if (!name) {
-      message.error('请填写评估集名称');
-      return;
-    }
-    if (newDsKbIds.length === 0) {
-      message.error('请选择知识库');
-      return;
-    }
-    const rows = parseDatasetText(newDsText);
-    if (rows.length === 0) {
-      message.error('请至少填一条样本，每行格式：问题 | 参考答案（答案可留空）');
-      return;
-    }
-    setNewDsSubmitting(true);
-    try {
-      const res = await createRagasDataset({
-        kb_id: newDsKbIds[0], name, samples: rows, source: 'manual',
-      });
-      setEvalDatasets(prev => [res.data, ...prev]);
-      setNewDsOpen(false);
-      setNewDsName('');
-      setNewDsText('');
-      setNewDsKbIds([]);
-      message.success(`评估集「${name}」已创建（${rows.length} 条样本）`);
-    } catch (e) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      message.error(detail || '新建评估集失败');
-    } finally {
-      setNewDsSubmitting(false);
-    }
-  };
-
-  // 删除评估集（已跑过的任务记录不受影响，仍可在任务列表回看）
-  const handleDeleteDataset = async (d: RagasDataset) => {
-    try {
-      await deleteRagasDataset(d.id);
-      message.success('评估集已删除');
-      if (evalDatasetId === d.id) setEvalDatasetId(undefined);
-      setEvalDatasets(prev => prev.filter(x => x.id !== d.id));
-    } catch {
-      message.error('删除评估集失败');
-    }
-  };
-
-  // 把当前填写/导入的测试集另存为评估集，之后可反复重跑同一份题集做分数对比
-  const handleSaveAsDataset = async () => {
-    const name = saveDsName.trim();
-    if (!name) {
-      message.error('请填写评估集名称');
-      return;
-    }
-    if (evalKbIds.length === 0) {
-      message.error('请先选择知识库');
-      return;
-    }
-    let values: { samples?: EvalSampleRow[] };
-    try {
-      values = await evalForm.validateFields();
-    } catch {
-      return;
-    }
-    const rows = (values.samples || [])
-      .filter(r => r.question?.trim() && r.ground_truth?.trim())
-      .map(r => ({ question: r.question!.trim(), ground_truth: r.ground_truth!.trim() }));
-    if (rows.length === 0) {
-      message.error('请先填写至少一条有效测试样本（问题 + 正确答案）');
-      return;
-    }
-    try {
-      const res = await createRagasDataset({
-        // 评估集绑定单个知识库：多库时取第一个作为归属库
-        kb_id: evalKbIds[0], name, samples: rows, source: 'manual',
-      });
-      setEvalDatasets(prev => [res.data, ...prev]);
-      setSaveDsOpen(false);
-      setSaveDsName('');
-      message.success(`评估集「${name}」已保存（${rows.length} 条样本），以后可一键重跑对比`);
-    } catch (e) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      message.error(detail || '保存评估集失败');
     }
   };
 
@@ -877,303 +706,44 @@ const AnalyticsRagasDetailPage: React.FC = () => {
         </Space>
       </AppModal>
 
-      {/* 测试集导入/导出 Modal（txt / Excel 格式选择；导出下载文件，导入文件/文本回填） */}
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 680, h: 480 }}
-        rememberKey="ana-2"
-        title="测试集导入/导出"
+      <SampleTextImportModal
         open={textModalOpen}
-        onCancel={() => setTextModalOpen(false)}
-        width={680}
-        footer={[
-          <Button
-            key="export"
-            icon={ioFormat === 'excel' ? <FileExcelOutlined /> : <FileTextOutlined />}
-            onClick={handleExportByFormat}
-          >
-            导出文件（{ioFormat === 'excel' ? 'Excel' : 'txt'}）
-          </Button>,
-          <Button key="file" icon={<UploadOutlined />} onClick={() => fileInputRef.current?.click()}>
-            导入文件（{ioFormat === 'excel' ? 'Excel/csv' : 'txt'}）
-          </Button>,
-          ...(ioFormat === 'txt' ? [(
-            <Button
-              key="import"
-              type="primary"
-              icon={<ImportOutlined />}
-              onClick={handleImportText}
-            >
-              从下方文本导入（覆盖测试集）
-            </Button>
-          )] : []),
-        ]}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <Space wrap>
-            <Text strong>格式</Text>
-            <Segmented
-              options={[{ label: 'txt 文本', value: 'txt' }, { label: 'Excel(xlsx/csv)', value: 'excel' }]}
-              value={ioFormat}
-              onChange={(v) => setIoFormat(v as 'txt' | 'excel')}
-            />
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {ioFormat === 'excel'
-                ? 'Excel：导出两列（问题/正确答案，首行表头）；导入解析第一列为问题、第二列为正确答案'
-                : 'txt：每行一条：问题【Tab 键】正确答案'}
-            </Text>
-          </Space>
-          {ioFormat === 'txt' ? (
-            <Alert
-              type="info"
-              showIcon
-              message="txt 格式：每行一条：问题【Tab 键】正确答案"
-              description={
-                <span style={{ fontSize: 12 }}>
-                  先导出当前测试集（自动下载文件）→ 在外部按格式编辑 → 再导入回填（覆盖）。
-                  <br />空行与 <Text code>#</Text> 注释行忽略；问题或答案为空的行跳过；最多 100 条。
-                  <br />
-                  <Text code>在线式软地线和 IEC104 接地线配置有什么区别？&nbsp;&nbsp;两者不可同时配置</Text>
-                </span>
-              }
-            />
-          ) : (
-            <Alert
-              type="info"
-              showIcon
-              message="Excel 格式：两列（问题 / 正确答案）"
-              description={
-                <span style={{ fontSize: 12 }}>
-                  导出生成 .xlsx（首行表头，Excel/WPS 均可打开）；导入支持 .xlsx/.csv
-                  文件（首行表头跳过，其余每行取第一列为问题、第二列为正确答案）。
-                  <br />问题或答案为空的单元格所在行跳过；最多 100 条。
-                </span>
-              }
-            />
-          )}
-          {fileParseResult ? (
-            <Alert
-              type={fileParseResult.invalid.length ? 'warning' : 'success'}
-              showIcon
-              message={`导入结果：有效 ${fileParseResult.ok} 条${fileParseResult.skipped ? `，跳过 ${fileParseResult.skipped} 条无效内容` : ''}（已覆盖当前测试集）`}
-              description={fileParseResult.invalid.length > 0 ? (
-                <span style={{ fontSize: 12 }}>
-                  无效内容（最多显示前 3 条）：<br />
-                  {fileParseResult.invalid.slice(0, 3).map((s, i) => (
-                    <span key={i}>{s}<br /></span>
-                  ))}
-                </span>
-              ) : undefined}
-            />
-          ) : null}
-          <Input.TextArea
-            value={evalText}
-            onChange={(e) => setEvalText(e.target.value)}
-            rows={12}
-            placeholder={'问题1\t正确答案1\n问题2\t正确答案2'}
-            style={{ fontFamily: 'monospace', fontSize: 13 }}
-          />
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={ioFormat === 'excel' ? '.xlsx,.xls,.csv' : '.txt'}
-            style={{ display: 'none' }}
-            onChange={onFileChange}
-          />
-        </Space>
-      </AppModal>
+        samples={textModalSamples}
+        onClose={() => setTextModalOpen(false)}
+        onImport={rows => evalForm.setFieldsValue({ samples: rows })}
+      />
 
-      {/* 从聊天历史导入选择 Modal：勾选想要的预览样本 → 确定后追加到测试集 */}
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 680, h: 480 }}
-        rememberKey="ana-3"
-        title={`从聊天历史导入（预览 ${chatPickList.length} 条）`}
+      <ChatSamplePickerModal
         open={chatPickOpen}
-        onCancel={() => setChatPickOpen(false)}
-        onOk={handleChatPickConfirm}
-        okText={`追加勾选的 ${chatPickSelected.length} 条`}
-        cancelText="取消"
-        width={680}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <Alert
-            type="info"
-            showIcon
-            message="将追加到当前测试集"
-            description="勾选想要的问题后点确定：追加到测试集表单末尾（相同问题不重复添加）；点取消则不改动当前测试集。"
-          />
-          <Space>
-            <Button size="small" onClick={() => setChatPickSelected(chatPickList.map(s => s.question))}>
-              全选
-            </Button>
-            <Button size="small" onClick={() => setChatPickSelected([])}>
-              全不选
-            </Button>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              已选 {chatPickSelected.length} / {chatPickList.length} 条
-            </Text>
-          </Space>
-          <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 6, padding: '4px 8px' }}>
-            <Checkbox.Group
-              style={{ width: '100%' }}
-              value={chatPickSelected}
-              onChange={(v) => setChatPickSelected(v as string[])}
-            >
-              <List
-                size="small"
-                dataSource={chatPickList}
-                renderItem={(s, i) => (
-                  <List.Item style={{ padding: '6px 4px' }}>
-                    <Checkbox value={s.question} style={{ width: '100%' }}>
-                      <Tooltip title={s.question}>
-                        <span
-                          style={{
-                            display: 'inline-block', maxWidth: 470,
-                            overflow: 'hidden', textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap', verticalAlign: 'bottom',
-                          }}
-                        >
-                          {i + 1}. {s.question}
-                        </span>
-                      </Tooltip>
-                      <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                        会话问答
-                      </Text>
-                    </Checkbox>
-                  </List.Item>
-                )}
-              />
-            </Checkbox.Group>
-          </div>
-        </Space>
-      </AppModal>
+        list={chatPickList}
+        onClose={() => setChatPickOpen(false)}
+        onPick={handleChatPickConfirm}
+      />
 
-      {/* 任务报告 Modal */}
-      {/* 评估集管理：已保存的题集列表，可一键用它评估、也可删除 */}
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 720, h: 460 }}
-        rememberKey="ana-dataset-mgr"
-        title="评估集管理"
+      <DatasetManagerModal
         open={datasetMgrOpen}
-        onCancel={() => setDatasetMgrOpen(false)}
-        footer={[
-          <Button
-            key="ai"
-            icon={<RobotOutlined />}
-            onClick={() => setGenOpen(true)}
-          >
-            AI 生成题集
-          </Button>,
-          <Button
-            key="new"
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => setNewDsOpen(true)}
-          >
-            新建评估集
-          </Button>,
-          <Button key="close" onClick={() => setDatasetMgrOpen(false)}>关闭</Button>,
-        ]}
-        width={720}
-      >
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          评估集是一份固定的题集（问题 + 正确答案）。反复用同一份题集重跑，分数才有可比性
-          ——改了切块 / 检索 / 提示词之后跑一次，就知道是变好还是变差。
-        </Text>
-        <List
-          rowKey="id"
-          style={{ marginTop: 12 }}
-          dataSource={evalDatasets}
-          locale={{ emptyText: <Empty description="暂无评估集（在发起评估弹窗里可把测试集另存为评估集）"
-                                           image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-          renderItem={d => (
-            <List.Item
-              actions={[
-                <Button
-                  key="run"
-                  type="link"
-                  size="small"
-                  icon={<PlayCircleOutlined />}
-                  onClick={() => {
-                    setEvalDatasetId(d.id);
-                    setEvalKbIds([d.kb_id]);
-                    setDatasetMgrOpen(false);
-                    setEvalOpen(true);  // 直接打开发起弹窗，评估集已选好
-                  }}
-                >
-                  用它评估
-                </Button>,
-                <Popconfirm key="del" title="删除该评估集？" onConfirm={() => handleDeleteDataset(d)}>
-                  <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
-                </Popconfirm>,
-              ]}
-            >
-              <List.Item.Meta
-                title={d.name}
-                description={`${d.kb_name} · ${d.samples?.length ?? 0} 条样本 · 更新于 ${dayjs(d.updated_at).format('YYYY-MM-DD HH:mm')}`}
-              />
-            </List.Item>
-          )}
-        />
-      </AppModal>
+        datasets={evalDatasets}
+        onClose={() => setDatasetMgrOpen(false)}
+        onDeleted={id => {
+          if (evalDatasetId === id) setEvalDatasetId(undefined);
+          setEvalDatasets(prev => prev.filter(x => x.id !== id));
+        }}
+        onUse={d => {
+          setEvalDatasetId(d.id);
+          setEvalKbIds([d.kb_id]);
+          setDatasetMgrOpen(false);
+          setEvalOpen(true);
+        }}
+        onOpenGenerate={() => setGenOpen(true)}
+        onOpenNewDataset={() => setNewDsOpen(true)}
+      />
 
-      {/* 新建评估集：不经过发起评估，先把题集攒起来（之后可随时"用它评估"） */}
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 560, h: 540 }}
-        rememberKey="ana-dataset-new"
-        title="新建评估集"
+      <NewDatasetModal
         open={newDsOpen}
-        onCancel={() => setNewDsOpen(false)}
-        onOk={handleCreateDataset}
-        okText="创建"
-        cancelText="取消"
-        confirmLoading={newDsSubmitting}
-        width={560}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <div>
-            <Text strong>知识库</Text>
-            <Select
-              style={{ width: '100%', marginTop: 4 }}
-              placeholder="选择题集归属的知识库"
-              value={newDsKbIds[0]}
-              onChange={(v: string) => setNewDsKbIds([v])}
-              options={kbs.map(k => ({ value: k.id, label: k.name }))}
-              notFoundContent={<Empty description="暂无可用知识库" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
-            />
-          </div>
-          <div>
-            <Text strong>名称</Text>
-            <Input
-              style={{ marginTop: 4 }}
-              placeholder="评估集名称（1~50 字）"
-              maxLength={50}
-              value={newDsName}
-              onChange={e => setNewDsName(e.target.value)}
-            />
-          </div>
-          <div>
-            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-              <Text strong>样本</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>每行一条：问题 | 参考答案</Text>
-            </Space>
-            <Input.TextArea
-              style={{ marginTop: 4 }}
-              rows={9}
-              placeholder={'这份文档主要讲什么？ | 讲的是……\n第二个问题？ |'}
-              value={newDsText}
-              onChange={e => setNewDsText(e.target.value)}
-            />
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              共 {parseDatasetText(newDsText).length} 条。答案可以留空——配合「系统实时生成」
-              跑评估时不需要标准答案（那种模式测的是端到端质量）
-            </Text>
-          </div>
-        </Space>
-      </AppModal>
+        kbs={kbs}
+        onClose={() => setNewDsOpen(false)}
+        onCreated={ds => setEvalDatasets(prev => [ds, ...prev])}
+      />
 
       <GenerateQuestionsModal
         open={genOpen}
@@ -1182,32 +752,18 @@ const AnalyticsRagasDetailPage: React.FC = () => {
         onCreated={ds => setEvalDatasets(prev => [ds, ...prev])}
       />
 
-      {/* 另存为评估集：把当前测试集沉淀成可复用题集 */}
-      <AppModal
-        dimension="auto"
-        defaultSize={{ w: 440, h: 280 }}
-        rememberKey="ana-dataset-save"
-        title="另存为评估集"
+      <SaveAsDatasetModal
         open={saveDsOpen}
-        onCancel={() => setSaveDsOpen(false)}
-        onOk={handleSaveAsDataset}
-        okText="保存"
-        cancelText="取消"
-        width={440}
-      >
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          保存后可在「评估集」下拉里选中它重跑；同一份题集的历次分数可以直接对比。
-        </Text>
-        <Input
-          style={{ marginTop: 12 }}
-          placeholder="评估集名称（1~50 字）"
-          maxLength={50}
-          value={saveDsName}
-          onChange={e => setSaveDsName(e.target.value)}
-          onPressEnter={handleSaveAsDataset}
-          autoFocus
-        />
-      </AppModal>
+        kbIds={evalKbIds}
+        getSamples={async () => {
+          const values = await evalForm.validateFields();
+          return (values.samples || [])
+            .filter(r => r.question?.trim() && r.ground_truth?.trim())
+            .map(r => ({ question: r.question!.trim(), ground_truth: r.ground_truth!.trim() }));
+        }}
+        onClose={() => setSaveDsOpen(false)}
+        onCreated={ds => setEvalDatasets(prev => [ds, ...prev])}
+      />
 
       <RagasReportModal
         open={reportOpen}

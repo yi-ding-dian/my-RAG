@@ -157,6 +157,23 @@ flowchart LR
 
 按业务模块组织，模块内自带 `components/`；跨模块复用的 API 封装、布局与通用组件放在 `shared/`。
 
+**模块内按需再分一级子域目录**——仅当该子域有独立的页面 / 状态 / 组件群时（如 `analytics/` 下的 `ragas/`、`feedback/`、`retrieval-quality/`）。子域内的水平分层与模块一致：
+
+```
+modules/<域>/
+├── <域入口>.tsx             路由入口（平铺在模块根）
+├── shared.tsx               域内跨子域共享（确实有两个以上子域在用才放这里）
+└── <子域>/
+    ├── <子域入口>.tsx       去掉冗余的模块名前缀（ragas/RagasDetail.tsx，而非 AnalyticsRagasDetail.tsx）
+    ├── <子域>-shared.ts     子域专用常量与纯函数（无 JSX 则用 .ts）
+    ├── use<子域>Xxx.tsx     子域专用 hooks
+    └── components/          子域专用组件
+```
+
+**判据是「有几条独立的业务线」，不是行数**：单文件够用就保持单文件，不为对称而分三级。对照后端 `routers/`（2 个目录 vs 13 个单文件）、`services/`（8 个目录 vs 31 个单文件）——都是长到需要时才拆。
+
+**工具文件不省前缀**：页面文件名会在全局搜索与报错堆栈里独立出现，故去掉模块名前缀；但 `ragas-shared.ts` 这类工具要保留子域名，否则 `shared.ts` 会与其它模块的同名文件混淆。
+
 | 模块 | 职责 |
 |------|------|
 | `auth/` | 登录页 |
