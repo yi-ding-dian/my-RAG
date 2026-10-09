@@ -10,13 +10,13 @@ import {
   App as AntApp, Card, Col, Row, Skeleton, Statistic, Table, Tag, Typography, Alert, Space, Tooltip, Empty,
   Select,
 } from 'antd';
-import { getRetrievalQuality, listKbs, KnowledgeBase, RetrievalQuality } from '../../shared/api/client';
-import AppEmpty from '../../shared/components/common/AppEmpty';
-import PageLayout from '../../shared/components/layout/PageLayout';
-import LeftPagination from '../../shared/components/layout/LeftPagination';
-import ResizableTitle from '../../shared/components/common/ResizableTitle';
-import { useResizableColumns } from '../../shared/hooks/useResizableColumns';
-import { scoreColor } from './analytics-shared';
+import { getRetrievalQuality, listKbs, KnowledgeBase, RetrievalQuality } from '../../../shared/api/client';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
+import PageLayout from '../../../shared/components/layout/PageLayout';
+import LeftPagination from '../../../shared/components/layout/LeftPagination';
+import ResizableTitle from '../../../shared/components/common/ResizableTitle';
+import { useResizableColumns } from '../../../shared/hooks/useResizableColumns';
+import { scoreColor } from '../shared';
 
 const { Text } = Typography;
 

@@ -6,7 +6,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Breadcrumb } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import AppModal from '../../shared/components/common/AppModal';
+import AppModal from '../../../shared/components/common/AppModal';
 import {
   App as AntApp, Card, Col, Row, Statistic, Table, Tag, Typography, Alert,
   Space, Tooltip, Button, Empty, Select, Checkbox, Form, Input, InputNumber,
@@ -27,17 +27,17 @@ import {
   generateRagasQuestions, listDocuments,
   KnowledgeBase, RagasStatus, RagasTask, RagasReport, RagasSampleInput,
   RagasDataset, ParserLlmModelItem, RagasGeneratedSample, DocumentItem,
-} from '../../shared/api/client';
-import { useAuth } from '../../shared/auth/AuthContext';
-import AppEmpty from '../../shared/components/common/AppEmpty';
-import PageLayout from '../../shared/components/layout/PageLayout';
-import TableSectionLayout from '../../shared/components/layout/TableSectionLayout';
-import ResizableTitle from '../../shared/components/common/ResizableTitle';
-import { useResizableColumns } from '../../shared/hooks/useResizableColumns';
+} from '../../../shared/api/client';
+import { useAuth } from '../../../shared/auth/AuthContext';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
+import PageLayout from '../../../shared/components/layout/PageLayout';
+import TableSectionLayout from '../../../shared/components/layout/TableSectionLayout';
+import ResizableTitle from '../../../shared/components/common/ResizableTitle';
+import { useResizableColumns } from '../../../shared/hooks/useResizableColumns';
+import { statusOf, scoreColor } from '../shared';
 import {
-  metricLabel, metricLabelMap, statusOf, scoreColor,
-  ragasMetricOptions, DEFAULT_METRICS, EvalSampleRow,
-} from './analytics-shared';
+  metricLabel, metricLabelMap, ragasMetricOptions, DEFAULT_METRICS, EvalSampleRow,
+} from './ragas-shared';
 
 const { Text } = Typography;
 

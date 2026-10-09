@@ -1,7 +1,7 @@
 /**
  * 统计分析概览页（/analytics）：KPI 卡 + 3 张摘要卡（点击整卡下钻详情页）。
  * 概览一屏不滚动；检索质量 / RAGAS 评测 / 用户反馈的完整能力分别迁移到
- * AnalyticsQualityDetail / AnalyticsRagasDetail / AnalyticsFeedbackDetail。
+ * retrieval-quality/RetrievalQualityDetail、ragas/RagasDetail、feedback/FeedbackDetail。
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -18,7 +18,8 @@ import {
   KnowledgeBase, RetrievalQuality, Stats, RagasStatus,
 } from '../../shared/api/client';
 import PageLayout from '../../shared/components/layout/PageLayout';
-import { FeedbackSummary, statusOf, useVisibleCount } from './analytics-shared';
+import { statusOf, useVisibleCount } from './shared';
+import { FeedbackSummary } from './feedback/FeedbackSummary';
 
 const { Text } = Typography;
 

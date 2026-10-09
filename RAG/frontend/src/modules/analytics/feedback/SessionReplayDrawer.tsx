@@ -15,12 +15,12 @@ import {
   addRagasDatasetSamples,
   getSession, listRagasDatasets,
   type ChatMessage, type ChatSessionDetail, type RagasDataset,
-} from '../../shared/api/client';
-import AppEmpty from '../../shared/components/common/AppEmpty';
-import AppModal from '../../shared/components/common/AppModal';
-import RequestDetailModal from '../../shared/components/common/RequestDetailModal';
-import { useAuth } from '../../shared/auth/AuthContext';
-import { isKgSource, scoreBadge } from '../../shared/utils/sourceScore';
+} from '../../../shared/api/client';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
+import AppModal from '../../../shared/components/common/AppModal';
+import RequestDetailModal from '../../../shared/components/common/RequestDetailModal';
+import { useAuth } from '../../../shared/auth/AuthContext';
+import { isKgSource, scoreBadge } from '../../../shared/utils/sourceScore';
 
 const { Text } = Typography;
 

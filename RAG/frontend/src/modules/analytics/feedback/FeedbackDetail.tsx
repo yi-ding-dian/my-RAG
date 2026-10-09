@@ -18,13 +18,13 @@ import type { Dayjs } from 'dayjs';
 import {
   getChatFeedbackStats, listChatFeedbackLogs, listDepartments,
   type ChatFeedbackLogItem, type ChatFeedbackStats, type Department,
-} from '../../shared/api/client';
-import { useAuth } from '../../shared/auth/AuthContext';
-import AppEmpty from '../../shared/components/common/AppEmpty';
-import PageLayout from '../../shared/components/layout/PageLayout';
-import TableSectionLayout from '../../shared/components/layout/TableSectionLayout';
-import ResizableTitle from '../../shared/components/common/ResizableTitle';
-import { useResizableColumns } from '../../shared/hooks/useResizableColumns';
+} from '../../../shared/api/client';
+import { useAuth } from '../../../shared/auth/AuthContext';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
+import PageLayout from '../../../shared/components/layout/PageLayout';
+import TableSectionLayout from '../../../shared/components/layout/TableSectionLayout';
+import ResizableTitle from '../../../shared/components/common/ResizableTitle';
+import { useResizableColumns } from '../../../shared/hooks/useResizableColumns';
 import SessionReplayDrawer from './SessionReplayDrawer';
 
 const { Text } = Typography;
