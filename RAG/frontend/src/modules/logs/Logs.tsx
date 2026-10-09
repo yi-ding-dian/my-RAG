@@ -8,10 +8,10 @@ import {
   getLogHealth,
 } from '../../shared/api/client';
 import type { LogHealth } from '../../shared/api/client';
-import AuditTab from './AuditTab';
-import LogFilesTab from './LogFilesTab';
-import LiveLogTab from './LiveLogTab';
-import OverviewTab from './OverviewTab';
+import AuditTab from './components/AuditTab';
+import LogFilesTab from './components/LogFilesTab';
+import LiveLogTab from './components/LiveLogTab';
+import OverviewTab from './components/OverviewTab';
 
 /**
  * 日志查看页（super_admin 全量 / dept_admin 仅操作审计）：

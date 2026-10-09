@@ -12,13 +12,13 @@ import {
   deleteAuditLogsByDate,
   listAuditActions,
   listAuditLogs,
-} from '../../shared/api/client';
-import AppEmpty from '../../shared/components/common/AppEmpty';
-import ResizableTitle from '../../shared/components/common/ResizableTitle';
-import LeftPagination from '../../shared/components/layout/LeftPagination';
-import { useAuth } from '../../shared/auth/AuthContext';
-import { POLL_INTERVAL, VIEW_DAYS, roleMeta, targetTypeLabelMap } from './shared';
-import type { AppInstance } from './shared';
+} from '../../../shared/api/client';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
+import ResizableTitle from '../../../shared/components/common/ResizableTitle';
+import LeftPagination from '../../../shared/components/layout/LeftPagination';
+import { useAuth } from '../../../shared/auth/AuthContext';
+import { POLL_INTERVAL, VIEW_DAYS, roleMeta, targetTypeLabelMap } from '../shared';
+import type { AppInstance } from '../shared';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;

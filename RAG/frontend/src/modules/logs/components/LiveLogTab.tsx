@@ -9,8 +9,8 @@ import {
   listLogSegments,
   queryLogRange,
   tailSystemLogs,
-} from '../../shared/api/client';
-import AppEmpty from '../../shared/components/common/AppEmpty';
+} from '../../../shared/api/client';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
 import {
   GAP_OPTIONS,
   LEVEL_OPTIONS,
@@ -24,8 +24,8 @@ import {
   recentDates,
   renderLogItem,
   shortTs,
-} from './shared';
-import type { AppInstance } from './shared';
+} from '../shared';
+import type { AppInstance } from '../shared';
 
 const { Text } = Typography;
 

@@ -8,17 +8,17 @@ import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/compon
 import { CanvasRenderer } from 'echarts/renderers';
 import type { ECharts, EChartsCoreOption } from 'echarts/core';
 
-import { ackLogFaults, getLogOverview, LOG_HEALTH_REFRESH_EVENT } from '../../shared/api/client';
+import { ackLogFaults, getLogOverview, LOG_HEALTH_REFRESH_EVENT } from '../../../shared/api/client';
 import type {
   LogDayStat,
   LogFaultEntry,
   LogHealth,
   LogOverview,
-} from '../../shared/api/client';
-import AppEmpty from '../../shared/components/common/AppEmpty';
-import AppModal from '../../shared/components/common/AppModal';
-import { levelColor } from './shared';
-import type { AppInstance } from './shared';
+} from '../../../shared/api/client';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
+import AppModal from '../../../shared/components/common/AppModal';
+import { levelColor } from '../shared';
+import type { AppInstance } from '../shared';
 
 echarts.use([BarChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 

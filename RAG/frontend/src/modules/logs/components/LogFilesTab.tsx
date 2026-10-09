@@ -17,13 +17,13 @@ import {
   downloadLogFile,
   listLogFiles,
   tailSystemLogs,
-} from '../../shared/api/client';
-import AppEmpty from '../../shared/components/common/AppEmpty';
-import ResizableTitle from '../../shared/components/common/ResizableTitle';
-import LeftPagination from '../../shared/components/layout/LeftPagination';
-import { useResizableColumns } from '../../shared/hooks/useResizableColumns';
-import { DETAIL_LIMIT, POLL_INTERVAL, formatBytes, renderLogItem } from './shared';
-import type { AppInstance } from './shared';
+} from '../../../shared/api/client';
+import AppEmpty from '../../../shared/components/common/AppEmpty';
+import ResizableTitle from '../../../shared/components/common/ResizableTitle';
+import LeftPagination from '../../../shared/components/layout/LeftPagination';
+import { useResizableColumns } from '../../../shared/hooks/useResizableColumns';
+import { DETAIL_LIMIT, POLL_INTERVAL, formatBytes, renderLogItem } from '../shared';
+import type { AppInstance } from '../shared';
 
 const { Text } = Typography;
 
