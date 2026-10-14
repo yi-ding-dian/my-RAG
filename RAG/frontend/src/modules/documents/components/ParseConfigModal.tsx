@@ -19,10 +19,40 @@ import {
 import { CheckCircleFilled, CloseCircleFilled, EyeOutlined } from '@ant-design/icons';
 import type { DocumentItem, ImgSummaryFormat, IngestConfig, MinerUBackend, MinerUEffort, ParseLang, ParseMethod, ParseMode, ParserStatus, ParserStatusEntry, ParserLlmModelItem, ThinkingMode } from '../../../shared/api/client';
 import {
+  analyzeDocument,
   asApiError, getLlmModelList, getParserStatus, getDocxOutline, ingestDocument, testLlmModelByName } from '../../../shared/api/client';
 /** 通用切块默认分隔符集（与后端 RecursiveChunker.DEFAULT_SEPARATORS 对应，
     去掉字符级兜底 "" 与逗号；换行以键盘转义 \n 形式展示与编辑） */
 const DEFAULT_DELIMITERS = ['\n\n', '\n', '。', '；'];
+
+/** analyze 引擎建议（engine_suggestion.suggested）→ 解析方式映射（首次解析
+    的默认值来源，见打开时的推荐 effect）；auto/spreadsheet 等无对应项不在表内
+    ——查不到就保持现有默认值，不做映射 */
+const ENGINE_TO_PARSE_MODE: Record<string, ParseMode> = {
+  mineru: 'MinerU',
+  deepdoc: 'DeepDOC',
+  docx_struct: 'DocxStruct',
+  plain: 'PlainText',
+};
+
+/** 解析方式中文名（自动切换的提示文案用） */
+const PARSE_MODE_LABELS: Record<ParseMode, string> = {
+  MinerU: 'MinerU',
+  DeepDOC: 'DeepDOC',
+  DocxStruct: '结构解析',
+  PlainText: '纯文本',
+};
+
+/** 解析方式可用性判定（探测结果 + 本地解析恒可用规则）：自动降级与应用推荐
+    共用。本地解析无外部服务依赖、不参与探测：纯文本直提（pypdf/python-docx）
+    与 DOCX 结构解析（OOXML 直读）恒可用。DocxStruct 曾在降级判断里漏处理、
+    落进 else 被当 DeepDOC 查可用性——DeepDOC 不可用时把用户上次选的结构解析
+    误判"不可用"自动切成 MinerU */
+const isParseModeAvailable = (mode: ParseMode, status: ParserStatus): boolean => {
+  if (mode === 'PlainText' || mode === 'DocxStruct') return true;
+  const entry = mode === 'MinerU' ? status.mineru : status.deepdoc;
+  return !!entry && entry.available;
+};
 
 /** 句末标点候选（与后端 chunking.common._END_PUNCT_CHARS 一致）：只有标题末尾是
     这些符号时才受白名单裁决。冒号/顿号/右括号等是标题的正常组成部分（"注："、
@@ -35,7 +65,8 @@ const parseDelimiterInput = (s: string): string => s.replace(/\\n/g, '\n');
 
 import { useIngestDefaults } from '../ingestDefaults';
 import MinerUBackendField from './parse-fields/MinerUBackendField';import PagesRangeField from './parse-fields/PagesRangeField';
-import TaskPageSizeField from './parse-fields/TaskPageSizeField';
+// TaskPageSizeField（任务页面大小）暂不渲染：后端单任务解析不消费该参数，
+// 详见渲染处的注释；文件保留供未来实现分批解析时恢复
 import SwitchField from './parse-fields/SwitchField';
 import LangSelectField from './parse-fields/LangSelectField';
 import DocxOutlineModal from './DocxOutlineModal';
@@ -68,7 +99,8 @@ interface ParseConfigFormValues {
   effort: MinerUEffort;
   /** Form.List 页码范围（每项 {from, to}），提交时转 [[from, to]] */
   pages?: Array<{ from?: number; to?: number }>;
-  task_page_size: number;
+  // 任务页面大小（task_page_size）：暂不生效（后端单任务解析不消费），输入框
+  // 已隐藏、字段不再提交——后端保留默认值/校验，重跑沿用文档已存配置
   table_enable: boolean;
   formula_enable: boolean;
   return_images: boolean;
@@ -97,17 +129,22 @@ interface ParseConfigModalProps {
 }
 
 /** 解析方式下拉选项的状态标签：可用 → 绿色 √；不可用 → 红色 x（Tooltip 显示
- *  原因，选项禁用）；探测中（probe 未返回）→ Spin */
-const ParseModeOptionLabel: React.FC<{ label: string; entry: ParserStatusEntry | undefined; probing: boolean }> = ({
-  label,
-  entry,
-  probing,
-}) => {
+ *  原因，选项禁用）；探测中（probe 未返回）→ Spin；文档画像推荐（文档的
+ *  engine_suggestion）→ 尾部加「推荐」徽标（样式复用智能解析向导的
+ *  .spw-badge--rec，两处 UI 语言一致） */
+const ParseModeOptionLabel: React.FC<{
+  label: string;
+  entry: ParserStatusEntry | undefined;
+  probing: boolean;
+  recommended?: boolean;
+}> = ({ label, entry, probing, recommended }) => {
+  const badge = recommended ? <span className="spw-badge spw-badge--rec">推荐</span> : null;
   if (probing) {
     return (
       <Space size={6}>
         <Spin size="small" />
         <span>{label}</span>
+        {badge}
       </Space>
     );
   }
@@ -117,6 +154,7 @@ const ParseModeOptionLabel: React.FC<{ label: string; entry: ParserStatusEntry |
         <Space size={6}>
           <CloseCircleFilled style={{ color: '#ff4d4f' }} />
           <span>{label}</span>
+          {badge}
         </Space>
       </Tooltip>
     );
@@ -125,6 +163,7 @@ const ParseModeOptionLabel: React.FC<{ label: string; entry: ParserStatusEntry |
     <Space size={6}>
       <CheckCircleFilled style={{ color: '#52c41a' }} />
       <span>{label}</span>
+      {badge}
     </Space>
   );
 };
@@ -175,9 +214,39 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 解析器可用性探测（GET /kbs/parsers/status，mineru/deepdoc 并行 ≤8s）：
   // 解析方式下拉的选项状态图标（绿√/红x+禁用）数据源；弹窗打开（组件
   // 加载）与解析方式下拉每次打开时都刷新；探测失败静默（下拉不显示状态，
-  // 不阻塞弹窗使用）；探测完成后若当前选中的解析方式不可用，自动切换到
-  // 下一个可用项（优先级 MinerU → DeepDOC → 纯文本）并提示（探测中不切换）
+  // 不阻塞弹窗使用）
   const [probing, setProbing] = useState(false);
+  // 探测状态与画像推荐的最新值（ref 镜像）：autoSwitchIfUnavailable 会在
+  // "探测返回"和"推荐返回"两个异步时机被调用，闭包读 state 会拿到旧快照
+  const parserStatusRef = useRef<ParserStatus | null>(null);
+  const engineSuggestionRef = useRef<{ suggested: string; reason: string } | null>(null);
+
+  // 当前解析方式不可用时的自动降级（探测返回 / 推荐返回时都调用）：
+  // 降级目标**优先取后端推荐**（engine_suggestion，与"首次默认值"同一数据源，
+  // 前端不自己拍板）——规范 docx 推荐结构解析（MinerU 挂不挂都保层级）、
+  // 非规范 docx 在 MinerU 不可用时后端推荐纯文本，跟着走；
+  // 推荐未返回/不可用时按**文档类型的兜底链**：Word 系 MinerU → 结构解析 →
+  // 纯文本（DeepDOC 仅 PDF，不进 Word 的降级链），PDF MinerU → DeepDOC → 纯文本。
+  // 用户手动选择不受影响——不可用项本就 disabled，选不到
+  const autoSwitchIfUnavailable = React.useCallback(() => {
+    const status = parserStatusRef.current;
+    if (!status) return; // 探测未返回：没有可用性可判，等它回来再判
+    const current = (form.getFieldValue('parse_mode') ?? 'MinerU') as ParseMode;
+    if (isParseModeAvailable(current, status)) return;
+    const order: ParseMode[] = isWordLike
+      ? ['MinerU', 'DocxStruct', 'PlainText']
+      : ['MinerU', 'DeepDOC', 'PlainText'];
+    const rec = ENGINE_TO_PARSE_MODE[engineSuggestionRef.current?.suggested ?? ''];
+    const next = rec && isParseModeAvailable(rec, status)
+      ? rec
+      : order.find(m => isParseModeAvailable(m, status));
+    if (next && next !== current) {
+      form.setFieldValue('parse_mode', next);
+      message.info(
+        `当前解析方式（${PARSE_MODE_LABELS[current]}）不可用，已自动切换为${PARSE_MODE_LABELS[next]}`);
+    }
+  }, [form, isWordLike, message]);
+
   const refreshParserStatus = React.useCallback(() => {
     let cancelled = false;
     setProbing(true);
@@ -185,32 +254,15 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       .then(res => {
         if (cancelled) return;
         setParserStatus(res.data);
-        // 自动切换：仅"探测已完成且有结果"时触发；当前值不可用 → 按优先级
-        // MinerU → DeepDOC → 纯文本选第一个可用项（纯文本恒可用兜底，必有
-        // 结果）；用户手动选择不受影响（不可用项本就 disabled，探测中不切换）
-        const current = (form.getFieldValue('parse_mode') ?? 'MinerU') as ParseMode;
-        const isAvailable = (mode: ParseMode): boolean => {
-          if (mode === 'PlainText') return true;
-          const entry = mode === 'MinerU' ? res.data.mineru : res.data.deepdoc;
-          return !!entry && entry.available;
-        };
-        if (!isAvailable(current)) {
-          const order: ParseMode[] = ['MinerU', 'DeepDOC', 'PlainText'];
-          const next = order.find(isAvailable);
-          if (next && next !== current) {
-            form.setFieldValue('parse_mode', next);
-            const nameMap: Record<ParseMode, string> = {
-              MinerU: 'MinerU',
-              DeepDOC: 'DeepDOC',
-              DocxStruct: '结构解析',
-              PlainText: '纯文本',
-            };
-            message.info(`当前解析方式（${nameMap[current]}）不可用，已自动切换为${nameMap[next]}`);
-          }
-        }
+        parserStatusRef.current = res.data;
+        // 探测完成：当前值不可用 → 按推荐/兜底链降级（推荐没返回时先按兜底链）
+        autoSwitchIfUnavailable();
       })
       .catch(() => {
-        if (!cancelled) setParserStatus(null);
+        if (!cancelled) {
+          setParserStatus(null);
+          parserStatusRef.current = null;
+        }
       })
       .finally(() => {
         if (!cancelled) setProbing(false);
@@ -218,7 +270,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     return () => {
       cancelled = true;
     };
-  }, [form, message]);
+  }, [autoSwitchIfUnavailable]);
   useEffect(() => {
     if (open && doc) {
       return refreshParserStatus();
@@ -321,7 +373,6 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
         // （服务端默认 medium 会关掉图片/图表分析，质量明显差一档）
         effort: cfg.effort === 'medium' ? 'medium' : 'high',
         pages: cfgPages.length > 0 ? cfgPages : [{ from: 1, to: 1000000 }],
-        task_page_size: toNumber(cfg.task_page_size, 12),
         table_enable: typeof cfg.table_enable === 'boolean' ? cfg.table_enable : true,
         formula_enable: typeof cfg.formula_enable === 'boolean' ? cfg.formula_enable : true,
         return_images: typeof cfg.return_images === 'boolean' ? cfg.return_images : true,
@@ -407,7 +458,10 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   const probeKeyRef = useRef('');
   useEffect(() => {
     const key = `${doc?.id}|${parseMode}`;
-    if (!open || !doc || !kbId || !isWordDoc || parseMode !== 'MinerU') {
+    // 当前方式会丢层级时才探测：MinerU/纯文本都丢（各自的提示文案见下方 Alert）；
+    // 结构解析自身保留层级，不探测不打扰
+    const losesLevel = parseMode === 'MinerU' || parseMode === 'PlainText';
+    if (!open || !doc || !kbId || !isWordDoc || !losesLevel) {
       setOutlineProbe(null);
       probeKeyRef.current = '';
       return;
@@ -432,10 +486,72 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       });
     return () => { cancelled = true; };
   }, [open, doc, kbId, isWordDoc, parseMode]);
-  // 有真层级才提醒：max_level>=2 说明这份文档确实有上下级会被压平；
-  // 只有一级标题时（或压根没标题）MinerU 的损失有限，不必打扰
+  // 有真层级、且当前方式会丢层级才提醒：max_level>=2 说明这份文档确实有
+  // 上下级会被压平；只有一级标题时（或压根没标题）损失有限，不必打扰；
+  // 已选结构解析（层级由 OOXML 直读保留）则无需提醒
   const showLevelLossHint = !!outlineProbe
-    && outlineProbe.max_level >= 2 && outlineProbe.count >= 3;
+    && outlineProbe.max_level >= 2 && outlineProbe.count >= 3
+    && parseMode !== 'DocxStruct';
+
+  // ---- 文档画像推荐（GET /analyze，轻量本地提取，与智能解析向导同源）----
+  // 解析方式下拉的「推荐」徽标 + **首次解析**的默认值都从这里取；重解析保持
+  // 回填值不动（"沿用上次选择"是有意设计，不能被推荐静默覆盖），推荐差异靠
+  // 徽标与红框提示。失败静默（保持现有默认值，不影响解析）
+  const [engineSuggestion, setEngineSuggestion] = useState<
+    { suggested: string; reason: string } | null>(null);
+  // 用户是否手动改过（竞态检查：analyze 返回晚于用户操作时不得覆盖用户选择）
+  const parseModeTouchedRef = useRef(false);
+  const methodTouchedRef = useRef(false);
+  useEffect(() => {
+    if (!open || !doc) return;
+    parseModeTouchedRef.current = false;
+    methodTouchedRef.current = false;
+    setEngineSuggestion(null);
+    // 清空跨文档缓存：新文档的降级判断不得读到上一份文档的推荐/探测值
+    // （新一次的探测与 analyze 返回后会重新写入）
+    engineSuggestionRef.current = null;
+    parserStatusRef.current = null;
+    const kb = doc.kb_id || kbId;
+    if (!kb) return;
+    let cancelled = false;
+    analyzeDocument(kb, doc.id)
+      .then(res => {
+        if (cancelled) return;
+        const sug = res.data.engine_suggestion;
+        setEngineSuggestion(sug);
+        engineSuggestionRef.current = sug;
+        // 仅首次解析（parser_config 无引擎记录）应用推荐默认值
+        const cfg = doc.parser_config ?? {};
+        const hasStoredMode = cfg.parser_engine != null || cfg.layout_recognize != null;
+        if (!hasStoredMode) {
+          const recMode = ENGINE_TO_PARSE_MODE[sug?.suggested ?? ''];
+          const status = parserStatusRef.current;
+          // 推荐不可用（探测已返回且判定不可用）就不设——交给下方 autoSwitch
+          // 按兜底链降级，避免"设了不可用的值再纠偏"的双重提示/闪烁；
+          // 探测未返回时乐观先设，返回后 autoSwitch 兜底纠正
+          if (recMode && !parseModeTouchedRef.current
+              && (!status || isParseModeAvailable(recMode, status))) {
+            form.setFieldValue('parse_mode', recMode);
+          }
+          // 切块方式同样取推荐（决策矩阵的 method 推荐，如 docx 规范 → 层级聚合）
+          const recMethod = res.data.parse_plan?.config?.method as ParseMethod | undefined;
+          if (recMethod && !methodTouchedRef.current) {
+            form.setFieldValue('method', recMethod);
+          }
+        }
+        // 推荐到达后的可用性纠偏（须放在"应用推荐"之后）：推荐值本身可能不可
+        // 用——前端探测与 analyze 的后端探测是两次独立探测，结果可能不一致；
+        // 当前值不可用时按推荐/兜底链降级（兜底链见 autoSwitch 注释）
+        autoSwitchIfUnavailable();
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEngineSuggestion(null);
+          engineSuggestionRef.current = null;
+        }
+      });
+    return () => { cancelled = true; };
+  }, [open, doc, kbId, form, autoSwitchIfUnavailable]);
 
   // ===== 解析方式联动显隐（设置不了的就不显示；依据后端实际生效范围）=====
   // 前端解析方式直接映射引擎提交（MinerU→mineru / DeepDOC→deepdoc /
@@ -447,7 +563,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 显隐对照表：
   //   配置项                  MinerU   DeepDOC   PlainText
   //   页码范围 pages           显示     隐藏      隐藏（非 MinerU 不透传）
-  //   任务页面大小             显示     隐藏      隐藏（同上）
+  //   任务页面大小             已隐藏（后端暂不消费，见表单类型处注释）
   //   表格识别                 显示     隐藏      隐藏（同上；参数透传服务端，是否生效取决于服务端配置）
   //   公式识别                 显示     隐藏      隐藏（同上；参数透传服务端）
   //   图片提取                 显示     隐藏      隐藏（同上；DeepDOC 无图片链路）
@@ -472,6 +588,8 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
   // 从结构解析切走时**不再回退**：层级聚合切块对 PDF 等同样可选（后端用
   // 「标题分层模型」做 LLM 分层），选项不会消失，保留用户的选择
   const handleParseModeChange = (next: ParseMode) => {
+    // 标记用户已手动选择：首次解析的推荐默认值（analyze 异步返回）不得覆盖它
+    parseModeTouchedRef.current = true;
     const current = (form.getFieldValue('method') as ParseMethod | undefined) ?? 'naive';
     if (next === 'DocxStruct' && current === 'naive') {
       form.setFieldValue('method', 'hierarchical');
@@ -554,17 +672,18 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       }
     }
     // 解析方式联动提交（隐藏即不提交）：非 MinerU 时后端不读
-    // pages/task_page_size/table_enable/formula_enable/return_images/lang_list
+    // pages/table_enable/formula_enable/return_images/lang_list
     // （engine=deepdoc 时 parse_opts={}；plain 分支不消费 parse_opts），
     // 剔除避免持久化无关配置；缺省由后端 _DEFAULT_PARSER_CONFIG 兜底，
-    // 重跑回填（前端缺省默认值）兼容
+    // 重跑回填（前端缺省默认值）兼容。
+    // task_page_size 已从界面隐藏、不再提交：后端"请求 > 文档已存 > 默认"
+    // 三级合并会沿用已存值/落默认 12，不缺口
     if (isPdfLike && values.parse_mode === 'MinerU') {
       // 页码范围转 [[from,to]] 数组；空时发默认全篇 [[1, 1000000]]
       const pages: number[][] = (values.pages ?? [])
         .filter(p => p && typeof p.from === 'number' && typeof p.to === 'number')
         .map(p => [p.from as number, p.to as number]);
       config.pages = pages.length > 0 ? pages : [[1, 1000000]];
-      config.task_page_size = values.task_page_size;
       config.table_enable = values.table_enable;
       config.formula_enable = values.formula_enable;
       config.return_images = values.return_images;
@@ -632,9 +751,11 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
 
   // 解析方式下拉选项（含连接检测状态）：可用 → 绿√；不可用 → 红x + 禁用 +
   // Tooltip 原因；探测中（parserStatus 未返回）→ Spin 且不禁用（探测完成前
-  // 不阻断选择）；纯文本本地直提恒可用（绿√）
+  // 不阻断选择）；纯文本本地直提恒可用（绿√）；画像推荐项 → 「推荐」徽标
   // 结构解析选项：仅 Word 文档（docx/doc）有意义——其他格式没有可读的标题样式。
   // 本地解析无外部服务依赖，恒可用（不参与探测）
+  // 画像推荐（engineSuggestion）映射到本下拉：与选项值比较决定徽标落哪一项
+  const recommendedMode = ENGINE_TO_PARSE_MODE[engineSuggestion?.suggested ?? ''];
   const docxStructOptions: Array<{ value: ParseMode; label: React.ReactNode; disabled?: boolean }> =
     isWordLike
       ? [{
@@ -644,6 +765,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
               label="DOCX 结构解析（保留标题层级与自动编号，仅 Word 文档）"
               entry={{ available: true, reason: '' }}
               probing={false}
+              recommended={recommendedMode === 'DocxStruct'}
             />
           ),
         }]
@@ -656,6 +778,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           label="MinerU（高精度，PDF 混排图文表格）"
           entry={parserStatus?.mineru}
           probing={probing && !parserStatus}
+          recommended={recommendedMode === 'MinerU'}
         />
       ),
       disabled: !!parserStatus && !parserStatus.mineru.available,
@@ -667,6 +790,7 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
           label="DeepDOC（表格输出可检索 HTML）"
           entry={parserStatus?.deepdoc}
           probing={probing && !parserStatus}
+          recommended={recommendedMode === 'DeepDOC'}
         />
       ),
       disabled: !!parserStatus && !parserStatus.deepdoc.available,
@@ -674,7 +798,14 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
     ...docxStructOptions,
     {
       value: 'PlainText',
-      label: <ParseModeOptionLabel label="纯文本（本地直提，无表格/图片识别）" entry={{ available: true, reason: '' }} probing={false} />,
+      label: (
+        <ParseModeOptionLabel
+          label="纯文本（本地直提，无表格/图片识别）"
+          entry={{ available: true, reason: '' }}
+          probing={false}
+          recommended={recommendedMode === 'PlainText'}
+        />
+      ),
     },
   ];
 
@@ -698,10 +829,9 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
       rememberKey="parse-config-modal"
     >
       <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
-        {/* PDF 解析配置（仅 pdf/docx 文档显示，B4；解析方式并入 Collapse 顶部，
-            不再孤悬在外）：解析方式（合并原解析引擎+版面识别，带连接检测）/
-            MinerU 解析后端 / 页码范围 / 任务页面大小 / 表格/公式/图片 /
-            语言（参考 KnowFlow 范式） */}
+        {/* PDF 解析配置（仅 pdf/docx 文档显示，B4；解析方式不折叠、置于顶部）：
+            解析方式（合并原解析引擎+版面识别，带连接检测+画像推荐徽标）/
+            MinerU 解析后端 / 页码范围 / 表格/公式/图片 / 语言（参考 KnowFlow 范式） */}
         {isSpreadsheet && (
           <Alert
             type="info"
@@ -716,99 +846,101 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
             type="warning"
             showIcon
             style={{ marginBottom: 16 }}
-            message="这份文档有规范的标题层级，MinerU 解析会把它压平"
+            message={parseMode === 'MinerU'
+              ? '这份文档有规范的标题层级，MinerU 解析会把它压平'
+              : '这份文档有规范的标题层级，纯文本解析会丢掉它'}
             description={
               `结构解析读出 ${outlineProbe!.count} 个标题、最深 ${outlineProbe!.max_level} 级。`
-              + 'MinerU 输出时会丢掉层级差（实测有文档 541 个标题被压成同一级，'
-              + '还把「注意事项：」这类正文误标成标题），切块后的「目录」会变得不可读。'
+              + (parseMode === 'MinerU'
+                ? 'MinerU 输出时会丢掉层级差（实测有文档 541 个标题被压成同一级，'
+                  + '还把「注意事项：」这类正文误标成标题），切块后的「目录」会变得不可读。'
+                : '纯文本直提不含标题/大纲信息，切块后没有章节结构，「目录」会变得不可读。')
               + '改用「结构解析」可完整保留 Word 的标题层级。'
             }
           />
         )}
+        {/* 解析方式（第一步决策，不折叠——原先夹在「PDF 解析配置」折叠区里，
+            docx 文档看到"PDF"标题名不副实、折叠也容易漏看）：MinerU=高精度 /
+            DeepDOC=表格输出可检索 HTML / 结构解析=OOXML 直读（仅 Word）/
+            PlainText=纯文本直提；选项状态图标来自探测（弹窗打开+每次打开下拉
+            刷新），不可用禁用；「推荐」徽标来自文档画像（与智能解析向导同源） */}
         {isPdfLike && (
+          <Form.Item
+            name="parse_mode"
+            label="解析方式"
+            rules={[{ required: true, message: '请选择解析方式' }]}
+            extra="选项前 √/x 为服务可用性检测；带「推荐」标记为按本文档画像的建议"
+          >
+            <Select
+              options={parseModeOptions}
+              onChange={handleParseModeChange}
+              onDropdownVisibleChange={visible => {
+                if (visible) refreshParserStatus();
+              }}
+            />
+          </Form.Item>
+        )}
+        {/* 结构解析：选项下方给"查看文档结构"入口（与画像「引擎建议：结构解析」
+            标签同一弹窗）——解析前预览这份文档会被解析成什么样的标题层级树 */}
+        {isPdfLike && parseMode === 'DocxStruct' && isWordLike && (
+          <div style={{ marginTop: -16, marginBottom: 12 }}>
+            <Button
+              type="link"
+              size="small"
+              icon={<EyeOutlined />}
+              onClick={() => setOutlineOpen(true)}
+              style={{ padding: 0, height: 'auto', fontSize: 13 }}
+            >
+              查看文档结构
+            </Button>
+          </div>
+        )}
+        {/* MinerU 解析参数（仅解析方式=MinerU 显示；结构解析/纯文本无附加参数，
+            整个折叠区不渲染）：解析后端档位/页码范围/表格/公式/图片/语言——
+            非 MinerU 时后端 parse_opts={} 或 plain 分支不消费，隐藏即不提交 */}
+        {isPdfLike && isMinerU && (
           <Collapse
             ghost
             style={{ marginBottom: 16, marginTop: 4 }}
-            defaultActiveKey={['pdf-parse']}
+            defaultActiveKey={['mineru-params']}
             items={[
               {
-                key: 'pdf-parse',
-                label: 'PDF 解析配置',
+                key: 'mineru-params',
+                label: 'MinerU 解析参数',
                 children: (
                   <>
-                    {/* 解析方式（合并解析引擎+版面识别，无自动档）：MinerU=高精度 /
-                        DeepDOC=表格输出可检索 HTML / PlainText=纯文本直提；选项状态
-                        图标来自探测（弹窗打开+每次打开下拉刷新），不可用禁用 */}
-                    <Form.Item
-                      name="parse_mode"
-                      label="解析方式"
-                      rules={[{ required: true, message: '请选择解析方式' }]}
-                      extra="选项前 √/x 为服务可用性检测，不可用的无法选择"
-                    >
-                      <Select
-                        options={parseModeOptions}
-                        onChange={handleParseModeChange}
-                        onDropdownVisibleChange={visible => {
-                          if (visible) refreshParserStatus();
-                        }}
-                      />
-                    </Form.Item>
-                    {/* 结构解析：选项下方给"查看文档结构"入口（与画像「引擎
-                        建议：结构解析」标签同一弹窗）——解析前预览这份文档会被
-                        解析成什么样的标题层级树 */}
-                    {parseMode === 'DocxStruct' && isWordLike && (
-                      <div style={{ marginTop: -16, marginBottom: 12 }}>
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<EyeOutlined />}
-                          onClick={() => setOutlineOpen(true)}
-                          style={{ padding: 0, height: 'auto', fontSize: 13 }}
-                        >
-                          查看文档结构
-                        </Button>
-                      </div>
-                    )}
-                    {/* MinerU 解析后端：仅解析方式=MinerU 时显示（其他方式不传，
-                        跟随 MinerU 服务端默认）。可用档由系统配置声明（默认只开 pipeline），
-                        不选则走后端配置的默认档 */}
-                    {isMinerU && (
-                      <MinerUBackendField
-                        enabledBackends={defaults?.mineru_backends?.enabled}
-                        defaultBackend={defaults?.mineru_backends?.default}
-                      />
-                    )}
-                    {/* 页码范围/任务页面大小/表格/公式/图片/语言：仅 MinerU 生效（非 MinerU
-                        时后端 parse_opts={} 或 plain 分支不消费），隐藏即不提交 */}
-                    {isMinerU && <PagesRangeField />}
-                    {isMinerU && <TaskPageSizeField />}
-                    {isMinerU && (
-                      <SwitchField
-                        name="table_enable"
-                        label="表格识别"
-                        desc="是否生效取决于 MinerU 服务端配置"
-                        defaultValue
-                      />
-                    )}
-                    {isMinerU && (
-                      <SwitchField
-                        name="formula_enable"
-                        label="公式识别"
-                        desc="是否生效取决于 MinerU 服务端配置"
-                        defaultValue
-                      />
-                    )}
-                    {isMinerU && (
-                      <SwitchField
-                        name="return_images"
-                        label="图片提取"
-                        desc="提取文档图片"
-                        defaultValue
-                      />
-                    )}
-                    {/* 语言 lang_list：仅 MinerU 显示/提交（B1）——与页码范围同组条件；
-                        非 MinerU 时提交剔除（后端不透传，缺省默认 ch） */}
-                    {isMinerU && <LangSelectField />}
+                    {/* MinerU 解析后端（其他方式不传，跟随 MinerU 服务端默认）。
+                        可用档由系统配置声明（默认只开 pipeline），不选则走后端
+                        配置的默认档 */}
+                    <MinerUBackendField
+                      enabledBackends={defaults?.mineru_backends?.enabled}
+                      defaultBackend={defaults?.mineru_backends?.default}
+                    />
+                    <PagesRangeField />
+                    {/* 任务页面大小（TaskPageSizeField）已隐藏：后端单任务解析
+                        不消费该参数（_PARSER_PARSE_OPTS 白名单不含它），填了不
+                        生效；后端默认值/校验保留，未来实现分批解析时恢复渲染 */}
+                    <SwitchField
+                      name="table_enable"
+                      label="表格识别"
+                      desc="是否生效取决于 MinerU 服务端配置"
+                      defaultValue
+                    />
+                    <SwitchField
+                      name="formula_enable"
+                      label="公式识别"
+                      desc="是否生效取决于 MinerU 服务端配置"
+                      defaultValue
+                    />
+                    <SwitchField
+                      name="return_images"
+                      label="图片提取"
+                      desc="提取文档图片"
+                      defaultValue
+                    />
+                    {/* 语言 lang_list：仅 MinerU 显示/提交（B1）；非 MinerU 时提交
+                        剔除（后端不透传，缺省默认 ch） */}
+                    <LangSelectField />
                   </>
                 ),
               },
@@ -818,6 +950,10 @@ const ParseConfigModal: React.FC<ParseConfigModalProps> = ({ open, doc, kbId, on
 
         <Form.Item name="method" label="切块方式" rules={[{ required: true }]} extra={isSpreadsheet ? '表格文档按 Sheet 名称（## Sheet:）切分，推荐"按标题切块"' : undefined}>
           <Select
+            onChange={() => {
+              // 标记用户已手动选择：首次解析的推荐默认值（analyze 异步返回）不得覆盖
+              methodTouchedRef.current = true;
+            }}
             options={
               isSpreadsheet
                 ? [
