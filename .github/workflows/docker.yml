@@ -1,0 +1,75 @@
+# 构建并推送 Docker 镜像到 GitHub Container Registry（GHCR）
+# 触发：推送 v* tag（正式发布）；或手动运行（可指定镜像标签）
+# 产物：
+#   ghcr.io/<owner>/<repo>-backend:<version>   FastAPI + Chroma
+#   ghcr.io/<owner>/<repo>-frontend:<version>  nginx + 前端静态产物
+#   ghcr.io/<owner>/<repo>-ragas:<version>     RAGAS 评估系统
+# 说明：MySQL / MinIO / Milvus / Gotenberg / MinerU / Elasticsearch 使用官方或
+#       上游镜像，不在本工作流构建。
+name: Docker
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '镜像标签（例如 v1.0.0）'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: RAG
+            dockerfile: RAG/docker/backend.Dockerfile
+          - name: frontend
+            context: RAG
+            dockerfile: RAG/docker/frontend.Dockerfile
+          - name: ragas
+            context: RAGAS
+            dockerfile: RAGAS/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR 镜像名必须全小写：yi-ding-dian/my-RAG → yi-ding-dian/my-rag
+      # 推送 tag 时版本取 tag 名；手动运行时取输入值
+      - name: 计算镜像名与版本
+        id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+          echo "version=${{ inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+          # 三个矩阵任务各自独立缓存，避免互相覆盖
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          # 关闭 provenance：避免生成额外的 attestation manifest，旧版 docker 拉取更省事
+          provenance: false

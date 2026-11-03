@@ -29,10 +29,20 @@ frontend/*.tsbuildinfo
 # 文档与辅助脚本（镜像内不需要）
 *.md
 record.md
+参考/
+代码设计文档/
 deploy/
-docker/
 scripts/
 tests/
+mcp-server/
+.playwright-mcp/
+.git.bak/
+*.zip
+
+# Docker 目录：只保留前端镜像要 COPY 的 nginx.conf，编排文件/子目录不进上下文
+# （注意不能直接写 docker/：整目录排除后 !docker/nginx.conf 无法重新包含）
+docker/*
+!docker/nginx.conf
 
 # 版本库与 IDE / 系统
 .git/
