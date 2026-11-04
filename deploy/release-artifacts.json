@@ -1,0 +1,9 @@
+{
+  "kind": "docker",
+  "images": [
+    { "name": "backend",  "image": "ghcr.io/${owner}/${repo}-backend" },
+    { "name": "frontend", "image": "ghcr.io/${owner}/${repo}-frontend" },
+    { "name": "ragas",    "image": "ghcr.io/${owner}/${repo}-ragas" }
+  ],
+  "items": []
+}

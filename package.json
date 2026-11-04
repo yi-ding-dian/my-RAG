@@ -1,0 +1,6 @@
+{
+  "name": "my-rag",
+  "version": "0.1.0",
+  "private": true,
+  "description": "my-RAG 企业知识库套件（RAG + RAGAS）"
+}

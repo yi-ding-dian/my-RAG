@@ -1,0 +1,75 @@
+# ============================================================
+# my-RAG 发布版部署编排（直接拉 GHCR 镜像，不需要源码构建）
+#
+# 用法：
+#   cp RAG/docker/.env.docker.example .env   # 首次：填 JWT_SECRET / MYSQL_* 等
+#   mkdir -p data && sudo chown -R 1000:1000 data
+#   docker compose -f docker-compose.release.yml up -d
+#
+# 启用 RAGAS 评估系统（可选）：
+#   docker compose -f docker-compose.release.yml --profile ragas up -d
+#
+# 升级版本：改 .env 里的 MY_RAG_VERSION，然后
+#   docker compose -f docker-compose.release.yml pull
+#   docker compose -f docker-compose.release.yml up -d
+#
+# 说明：
+#   - 三个自建镜像：rag-backend / rag-frontend / ragas-eval
+#   - MySQL / MinIO / Milvus / Gotenberg / MinerU / Elasticsearch 不在本文件内，
+#     按 deploy/README.md 的「外部服务」一节准备
+#   - frontend 的 nginx 反代写死了 http://rag-backend:8091，服务名不要改
+# ============================================================
+
+services:
+  # ---------- 后端：FastAPI + Chroma ----------
+  rag-backend:
+    image: ${MY_RAG_IMAGE:-ghcr.io/yi-ding-dian/my-rag}-backend:${MY_RAG_VERSION:-v0.1.0}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${MY_RAG_BACKEND_PORT:-8091}:8091"
+    volumes:
+      # 数据持久化：上传/解析/知识库/对话/Chroma + settings.json
+      # 容器内 rag 用户 uid=1000，宿主 data/ 需同属主：
+      #   mkdir -p data && sudo chown -R 1000:1000 data
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8091/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------- 前端：nginx 托管静态文件 + 反代 /api ----------
+  rag-frontend:
+    image: ${MY_RAG_IMAGE:-ghcr.io/yi-ding-dian/my-rag}-frontend:${MY_RAG_VERSION:-v0.1.0}
+    restart: unless-stopped
+    ports:
+      - "${MY_RAG_HTTP_PORT:-80}:80"
+    depends_on:
+      rag-backend:
+        condition: service_healthy
+
+  # ---------- RAGAS 评估系统（可选，--profile ragas 启动）----------
+  ragas-eval:
+    image: ${MY_RAG_IMAGE:-ghcr.io/yi-ding-dian/my-rag}-ragas:${MY_RAG_VERSION:-v0.1.0}
+    restart: unless-stopped
+    profiles: ["ragas"]
+    ports:
+      - "${MY_RAGAS_PORT:-8090}:8090"
+    volumes:
+      - ./ragas-data/datasets:/app/data/datasets
+      - ./ragas-data/uploads:/app/data/uploads
+      - ./ragas-reports:/app/reports
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # RAGAS 镜像基于 python:3.10-slim（无 curl），用 python urllib 探测
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/api/health', timeout=5)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
