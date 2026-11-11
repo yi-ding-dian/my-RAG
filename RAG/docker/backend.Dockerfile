@@ -22,7 +22,15 @@ WORKDIR /app
 
 # 先复制依赖描述文件，利用 Docker 层缓存（仅依赖变更时才重新 pip install）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# 依赖下载源（构建期参数，默认官方 PyPI，不改变默认行为）
+# 为什么做成参数：国内网络访问 pypi.org 常慢到超时，直接改 Dockerfile 会让
+#   本文件与仓库分叉；改成参数后，默认值仍是官方源，需要时构建命令里覆盖即可：
+#     docker compose -f docker/docker-compose.yml build \
+#       --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+# 注意：ARG 只在构建期生效，不会写进镜像的运行环境，也不影响容器内运行时的 pip 行为。
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir -r requirements.txt -i ${PIP_INDEX_URL}
 
 # 复制后端代码（根目录 .dockerignore 已排除 data/.venv/前端产物等）
 COPY backend/ backend/

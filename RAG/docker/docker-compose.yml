@@ -51,7 +51,18 @@ services:
     container_name: rag-frontend
     restart: unless-stopped
     ports:
-      - "80:80"                    # 若宿主机 80 被占用，可改为 "8080:80"
+      # 宿主机端口经 MY_RAG_HTTP_PORT 覆盖，默认 80。
+      # 为什么用变量而不是直接写死：真实部署环境里 80 常被既有服务占用
+      # （如已在跑的 ragflow/nginx）。若每次部署都手改本文件，compose 文件会
+      # 与仓库版本产生分叉——升级时 git pull 覆盖或冲突，改动就丢了。
+      # 用法（注意 Compose 的插值规则）：${} 只读 **shell 环境变量** 或
+      #   **--env-file 指定的文件**；下方 env_file: .env.docker 只把变量注入
+      #   容器内部，**不参与** ${} 插值，所以值写在 .env.docker 里时启动命令须带：
+      #     docker compose -f docker/docker-compose.yml --env-file docker/.env.docker up -d
+      #   或不带 --env-file、直接 export MY_RAG_HTTP_PORT=8081。
+      # 容器内 nginx 始终监听 80，只有宿主机映射端口可变。
+      # release 版 docker-compose.release.yml 同此写法。
+      - "${MY_RAG_HTTP_PORT:-80}:80"
     # 后端健康检查通过后才启动（nginx 启动时后端必须可达，否则 /api 返回 502）
     depends_on:
       rag-backend:

@@ -15,7 +15,16 @@ WORKDIR /app/frontend
 # 先复制依赖描述文件，利用 Docker 层缓存（npm ci 依赖 package-lock.json 精确安装，
 # 与 package.json 必须保持同步，勿手动改动 lock 后 npm install）
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+
+# npm 源（构建期参数，默认官方 registry，不改变默认行为）
+# 为什么做成参数：国内网络访问 registry.npmjs.org 常超时，而国内镜像
+#   （如 npmmirror）可达；写死在 Dockerfile 里会让文件与仓库分叉，
+#   做成参数后按需覆盖：
+#     docker compose -f docker/docker-compose.yml build \
+#       --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+# 注意：仅影响构建期依赖下载，产物 dist 与使用官方源构建完全等价。
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm ci --registry=${NPM_REGISTRY}
 
 # 复制源码并构建（根目录 .dockerignore 已排除 frontend/node_modules 与 dist，
 # 不会覆盖 npm ci 产物）

@@ -9,8 +9,10 @@
 cp docker/.env.docker.example docker/.env.docker
 vi docker/.env.docker
 
-# 2. 构建并后台启动（前端 80 + 后端 8091）
-docker compose -f docker/docker-compose.yml up -d --build
+# 2. 构建并后台启动（前端默认 80，端口可在 .env.docker 用 MY_RAG_HTTP_PORT 覆盖；后端 8091）
+#    必须带 --env-file：compose 的 ${} 插值只认 shell 环境变量与 --env-file，
+#    env_file: 声明只注入容器内部、不参与插值（详见下方「端口与变量插值」）
+docker compose -f docker/docker-compose.yml --env-file docker/.env.docker up -d --build
 
 # 3. 常用运维
 docker compose -f docker/docker-compose.yml logs -f          # 日志
@@ -18,7 +20,7 @@ docker compose -f docker/docker-compose.yml down             # 停止（../data 
 docker compose -f docker/docker-compose.yml build rag-backend  # 单独重建后端
 ```
 
-- 前端: http://localhost（nginx，SPA + /api 反代 8091）
+- 前端: http://localhost（nginx，SPA + /api 反代 8091；端口取 `MY_RAG_HTTP_PORT`，默认 80）
 - 后端: http://localhost:8091/api/health
 
 ## 一键启动外部依赖（可选）
@@ -106,6 +108,28 @@ Rerank 无独立环境变量，在「系统配置」页检索(retrieval)分组�
 - 检索参数 `enable_hybrid`（BM25+向量混合）与 `similarity_threshold`（相似度阈值）
   同样在配置档案 retrieval 段设置，无需 env
 
+## 端口与变量插值
+
+前端宿主机端口由 `MY_RAG_HTTP_PORT` 控制（默认 80），写在 `.env.docker` 里。
+注意 Compose 的插值规则，否则会出现「配了却不生效」：
+
+- `${MY_RAG_HTTP_PORT}` 只读取 **shell 环境变量** 或 **`--env-file` 指定的文件**
+- compose 中的 `env_file:` 只把变量注入容器内部，**不参与** `${}` 插值
+
+所以 `up` 命令必须显式带 `--env-file`（已在「快速开始」中体现）：
+
+```bash
+docker compose -f docker/docker-compose.yml --env-file docker/.env.docker up -d
+```
+
+或者一次性覆盖：
+
+```bash
+MY_RAG_HTTP_PORT=8081 docker compose -f docker/docker-compose.yml up -d
+```
+
+> 只影响 `up` 时刻的端口映射；`logs` / `down` / `restart` 等运维命令无需 `--env-file`。
+
 ## 数据持久化
 
 - `../data/` bind 挂载（uploads / parsed / kbs / documents / chat / chroma /
@@ -114,6 +138,54 @@ Rerank 无独立环境变量，在「系统配置」页检索(retrieval)分组�
   `sudo chown -R 1000:1000 ./data`
 - `host.docker.internal` 已配置 host-gateway 解析，仅监听宿主机 127.0.0.1 的
   外部服务（如 RAGAS 8090）用它访问
+
+## 国内网络部署
+
+国内服务器上构建时，外部源常不可用。下面是三处替代做法，只影响**构建过程**，
+不改变镜像内容；默认配置不受影响，按需使用。
+
+### 1. 基础镜像拉取（Docker Hub 直连超时 / 加速器失效）
+
+用公共镜像代理拉取后重打标准 tag，Dockerfile 无需改动，也不必改
+`/etc/docker/daemon.json`：
+
+```bash
+docker pull docker.m.daocloud.io/library/python:3.12-slim
+docker tag  docker.m.daocloud.io/library/python:3.12-slim python:3.12-slim
+docker pull docker.m.daocloud.io/library/node:22-alpine
+docker tag  docker.m.daocloud.io/library/node:22-alpine node:22-alpine
+docker pull docker.m.daocloud.io/library/nginx:alpine
+docker tag  docker.m.daocloud.io/library/nginx:alpine nginx:alpine
+```
+
+> 代理可用性会变化（`dockerproxy.net`、`docker.m.daocloud.io` 等），
+> 拉不动就换一个；`curl -s -o /dev/null -w "%{http_code}" https://<代理>/v2/`
+> 返回 200/401 都表示可达。
+
+### 2. Python / npm 依赖源
+
+两个 Dockerfile 都预留了构建参数（默认仍走官方源），国内构建时覆盖：
+
+```bash
+docker compose -f docker/docker-compose.yml build \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+  --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+```
+
+### 3. 源码获取（服务器访问 GitHub 慢 / 不通）
+
+在能访问 GitHub 的机器上打包后传输（`git archive` 只含**已提交**内容）：
+
+```bash
+# 有网机器
+git archive --format=tar main --prefix=my-RAG/ | gzip > my-rag-src.tar.gz
+scp my-rag-src.tar.gz user@server:/tmp/
+
+# 服务器
+cd ~ && tar xzf /tmp/my-rag-src.tar.gz
+```
+
+> 未跟踪文件（本地改动、`.env`、`data/`）不在包内，需要单独同步。
 
 ## 已知限制
 
