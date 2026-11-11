@@ -147,7 +147,7 @@
   "...现有字段...",
   "mysql": {
     "host": "127.0.0.1", "port": 5455,
-    "user": "ragflow", "password": "******",   // GET 脱敏（endswith password 脱敏）
+    "user": "app_rag", "password": "******",   // GET 脱敏（endswith password 脱敏）
     "database": "my_rag"
   },
   "minio": {

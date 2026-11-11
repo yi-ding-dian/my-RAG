@@ -209,14 +209,19 @@ cd frontend && npm install && npm run dev
 
 ### 路径二：Docker 部署（生产）
 
+> **新机器从零部署**（含 Docker 安装、MySQL 部署、国内网络适配、常见问题排查）
+> 见 **[docs/部署指南.md](docs/部署指南.md)**。
+
 ```bash
 cp docker/.env.docker.example docker/.env.docker   # 生成后编辑 docker/.env.docker
-docker compose -f docker/docker-compose.yml up -d --build   # 构建并后台启动
+
+# 必须带 --env-file：前端端口变量 ${MY_RAG_HTTP_PORT} 只认它
+docker compose -f docker/docker-compose.yml --env-file docker/.env.docker up -d --build
 docker compose -f docker/docker-compose.yml logs -f         # 查看日志
 docker compose -f docker/docker-compose.yml down            # 停止（数据卷 ../data 保留）
 ```
 
-- 前端: http://localhost （nginx，SPA 路由 + /api 反代 8091）
+- 前端: http://localhost（端口取 `MY_RAG_HTTP_PORT`，默认 80；nginx，SPA 路由 + /api 反代 8091）
 - 后端 API: http://localhost:8091/api/health
 - 详细说明（含配置字段、Rerank 档案配置、已知限制）见 `docker/README.md`
 

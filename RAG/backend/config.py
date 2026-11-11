@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     # ---- 数据库（MySQL，多租户 users/departments/kbs 三表）----
     MYSQL_HOST: str = "127.0.0.1"
     MYSQL_PORT: int = 5455
-    MYSQL_USER: str = "ragflow"
+    MYSQL_USER: str = "app_rag"
     MYSQL_PASSWORD: str = ""
     MYSQL_DATABASE: str = "my_rag"
     # URL 覆盖字段：正常为空走 host/port/user/password/database 组装；
@@ -507,7 +507,7 @@ class MySQLConfig(BaseModel):
     """MySQL 连接配置（url 非空时优先使用，测试覆盖 sqlite 用）"""
     host: str = "127.0.0.1"
     port: int = 5455
-    user: str = "ragflow"
+    user: str = "app_rag"
     password: str = ""
     database: str = "my_rag"
     url: str = ""

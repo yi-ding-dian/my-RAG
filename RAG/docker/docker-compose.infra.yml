@@ -30,7 +30,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: <your-password>
       MYSQL_DATABASE: my_rag
-      MYSQL_USER: ragflow
+      MYSQL_USER: app_rag
       MYSQL_PASSWORD: <your-password>
     ports:
       - "5455:3306"          # 系统配置页默认 MYSQL_PORT=5455

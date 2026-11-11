@@ -31,13 +31,13 @@ docker run -d --name my-rag-mysql \
   -p 5455:3306 \
   -e MYSQL_ROOT_PASSWORD=<your-password> \
   -e MYSQL_DATABASE=my_rag \
-  -e MYSQL_USER=ragflow \
+  -e MYSQL_USER=app_rag \
   -e MYSQL_PASSWORD=<your-password> \
   -v my-rag-mysql-data:/var/lib/mysql \
   mysql:8
 ```
 
-**连接配置**：`MYSQL_HOST=127.0.0.1` / `MYSQL_PORT=5455` / `MYSQL_USER=ragflow`
+**连接配置**：`MYSQL_HOST=127.0.0.1` / `MYSQL_PORT=5455` / `MYSQL_USER=app_rag`
 / `MYSQL_PASSWORD=<your-password>` / `MYSQL_DATABASE=my_rag`。
 
 **可降级性**：无。测试可注入 `MYSQL_URL=sqlite+aiosqlite://` 离线跑测试，

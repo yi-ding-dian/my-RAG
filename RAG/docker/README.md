@@ -57,6 +57,31 @@ docker compose -f docker/docker-compose.infra.yml down
 - **MinIO 连接参数不在 `.env.docker`**：它可在网页「系统配置」里配（配错只
   影响功能、不影响启动）。注意容器内的 `127.0.0.1` 指向**容器自身**，访问
   宿主机服务须写宿主机 IP 或 `host.docker.internal`
+
+### 独立部署（基础服务放到别处）
+
+希望把某个基础服务单独部署到另一台机器时，`docker/` 下各有独立编排：
+
+| 目录 | 服务 | 默认端口 | 说明 |
+|---|---|---|---|
+| `docker/Mysql/` | MySQL 8 | 8100 | 独立数据库实例 |
+| `docker/Minio/` | MinIO | 9000 / 9001 | 独立对象存储 |
+| `docker/Gotenberg/` | Office → PDF | 3001 | 按需启用 |
+| `docker/Milvus/` | 向量库 | 19530 等 | 按需启用 |
+| `docker/MinerU/` | 文档解析 | 8001 | 按需启用 |
+
+用法一致（以 MinIO 为例）：
+
+```bash
+cd docker/Minio
+vi docker-compose.yml      # 先改占位符口令
+docker compose up -d
+docker compose ps          # 等 healthy
+```
+
+> **注意**：`docker-compose.infra.yml` 与 `docker/Mysql/`、`docker/Minio/`
+> 功能重叠——同一台机器上**只起其中一种**，否则端口冲突。
+> 单机一键起齐用 infra；服务分散部署用各自目录。
 - 外部依赖（LLM / Embedding / MinerU / Rerank / RAGAS）的获取方式与可降级性
   见 `../docs/外部依赖部署指南.md`
 

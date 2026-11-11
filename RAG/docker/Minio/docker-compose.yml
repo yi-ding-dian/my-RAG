@@ -1,0 +1,47 @@
+# ============================================================
+# docker/Minio/docker-compose.yml — MinIO 对象存储（独立部署）
+#
+# 用途：把对象存储单独部署在一台机器上（与业务机分离），
+#       与 docker/Gotenberg/、docker/Milvus/、docker/Mysql/ 的组织方式一致。
+#
+# 用法（在本目录执行）:
+#   vi docker-compose.yml          # ① 先改两个占位符口令
+#   docker compose up -d           # ② 启动
+#   docker compose ps              # ③ 等 healthy
+#   docker compose logs -f         # 查看日志
+#   docker compose down            # 停止（./data 数据保留）
+#
+# 重要:
+#   1. 口令是占位符，原样启动等于弱口令，必须改成强口令。
+#   2. 与 docker-compose.infra.yml 中的 minio 服务等价——**两者只需起一个**：
+#      - 单机部署（业务 + 基础服务同一台机器）→ 用 infra 一条命令起齐
+#      - 独立部署（对象存储单独一台机器）      → 用本文件
+#      两个都起会争用 9000/9001 端口。
+#   3. 数据持久化在 ./data（本文件同级目录），down 不删除。
+#   4. 部署完成后，在网页「系统配置 → 配置档案 → 数据存储」里填：
+#        endpoint  = <本机IP>:9000
+#        access_key / secret_key = 下方填写的口令
+#        bucket    = 桶名（不存在时系统会自动建）
+#      同时把 .env.docker 的 STORAGE_BACKEND 设为 minio。
+# ============================================================
+
+services:
+  minio:
+    image: minio/minio
+    container_name: my-rag-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: <your-access-key>        # 控制台/API 账号（至少 3 字符）
+      MINIO_ROOT_PASSWORD: <your-secret-key>    # 控制台/API 密码（至少 8 字符）
+    ports:
+      - "9000:9000"          # S3 API，系统配置页默认 MINIO_ENDPOINT=127.0.0.1:9000
+      - "9001:9001"          # Web 控制台（浏览器访问 http://<IP>:9001）
+    volumes:
+      - ./data:/data         # 数据持久化目录
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

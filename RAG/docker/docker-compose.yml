@@ -53,7 +53,7 @@ services:
     ports:
       # 宿主机端口经 MY_RAG_HTTP_PORT 覆盖，默认 80。
       # 为什么用变量而不是直接写死：真实部署环境里 80 常被既有服务占用
-      # （如已在跑的 ragflow/nginx）。若每次部署都手改本文件，compose 文件会
+      # （如已在跑的其它服务，例如 nginx）。若每次部署都手改本文件，compose 文件会
       # 与仓库版本产生分叉——升级时 git pull 覆盖或冲突，改动就丢了。
       # 用法（注意 Compose 的插值规则）：${} 只读 **shell 环境变量** 或
       #   **--env-file 指定的文件**；下方 env_file: .env.docker 只把变量注入
