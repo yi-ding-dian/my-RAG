@@ -3,16 +3,48 @@
 本项目提供两种部署方式：
 
 - **源码部署**（本目录）：直接在宿主机运行，适合开发调试
-- **Docker 部署**：见 `../docker/`，适合生产环境
+- **Docker 部署**：见 `../docker/`，适合生产环境；一键脚本见本文「一键 Docker 部署」
 
 ## 目录说明
 
 | 文件 | 用途 |
 |---|---|
+| `deploy-docker.sh` | **一键 Docker 部署**（全新部署）：环境检查 → MySQL → 配置 → 镜像 → 构建 → 启动 → 验证 |
 | `install.sh` | 一键安装依赖：创建 .venv（Python3.12）→ pip 装后端依赖 → npm 装前端依赖（幂等） |
 | `build.sh` | 编译前端（npm run build → `frontend/dist`） |
 | `start.sh` | 一键启动：依赖缺失自动安装 → 构建前端 → 启动后端 8091 → 启动前端 dev 3002 |
 | `stop.sh` | 一键停止：停后端 uvicorn + 前端 dev，清理 PID 文件 |
+
+## 一键 Docker 部署
+
+适用：全新机器、从零部署（Docker 未安装的先用 `curl -fsSL https://get.docker.com | sudo sh` 安装）。
+
+```bash
+./deploy/deploy-docker.sh            # 交互模式：先展示部署计划，回车后开始
+./deploy/deploy-docker.sh --dry-run  # 只预览计划，不执行
+./deploy/deploy-docker.sh --yes      # 跳过确认（CI/批量）
+```
+
+- **可自定义项**：脚本顶部「可自定义配置」区，可用环境变量覆盖，例如：
+  `STORAGE_BACKEND=minio VECTOR_BACKEND=milvus ./deploy/deploy-docker.sh`
+- **默认值**：库 `my_rag`、用户 `app_rag`、前端 8081、后端 8091、MySQL 5455、
+  对象存储 `local`、向量库 `chroma`
+
+| 组件 | 可选值 | 默认 | 说明 |
+|---|---|---|---|
+| MySQL | 自带 infra / 已有实例 | 自带（infra） | 已有实例需设 `INSTALL_MYSQL=no` + `EXTERNAL_MYSQL_HOST/PORT` |
+| 对象存储 | `local` / `minio` | `local` | 选 `minio` 自动起容器（9000/9001）；已有 MinIO 用 `EXTERNAL_MINIO_ENDPOINT` |
+| 向量存储 | `chroma` / `milvus` | `chroma` | 选 `milvus` 自动起 etcd + minio + milvus（19530/9091） |
+- **口令**：留空则自动生成随机强口令，部署结束后在报告中展示
+- **进度**：每步输出开始时间、单步耗时、累计耗时；构建阶段每 30 秒报一次进度
+- **日志**：`deploy/logs/deploy-*.log`（权限 600，含生成的口令）、构建日志 `build-*.log`
+- **失败处理**：立即停止并保留容器/数据，便于排查；不会自动清理
+- **密码安全**：真实口令写入 `docker/.env.docker` 与 `docker/.deploy-infra.yml`，
+  两者均已 gitignore，仓库内模板文件不会被改动
+- **只做全新部署**：检测到已有 `.env.docker` 或 `rag-backend` 容器会提示并退出；
+  升级请用 `docker compose ... up -d --build`
+
+窗口较长或排查失败原因时，参照 `../docs/部署指南.md` 的手动步骤。
 
 ## 快速开始
 

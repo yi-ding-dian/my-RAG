@@ -22,7 +22,10 @@ services:
     container_name: rag-backend
     restart: unless-stopped
     ports:
-      - "8091:8091"
+      # 宿主机端口经 MY_RAG_BACKEND_PORT 覆盖，默认 8091（插值规则同前端端口，
+      # 写在 .env.docker 里时 up 命令须带 --env-file / 见下方 rag-frontend 注释）。
+      # 容器内 uvicorn 固定监听 8091；nginx 反代写死服务名 rag-backend:8091，不受影响。
+      - "${MY_RAG_BACKEND_PORT:-8091}:8091"
     env_file:
       - .env.docker                # 生产配置全部经环境变量注入（字段与 backend/config.py 一致）
     volumes:

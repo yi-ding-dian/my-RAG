@@ -30,6 +30,10 @@ dist/
 
 # ===== 开源发布：本地部署与环境 =====
 docker/.env.docker
+docker/.deploy-infra.yml
+docker/.deploy-milvus.yml
+docker/.deploy-mineru.yaml
+deploy/logs/
 # infra compose 运行时数据卷（docker-compose.infra.yml 创建）
 docker/volumes/
 
